@@ -11,9 +11,9 @@ supported:
   - gpio
   - netif:eth
   - i2c
+  - ptp_clock
   - spi
   - qspi
   - memc
-  - usb_cdc
-  - usb_device
+  - usbd
 vendor: arduino

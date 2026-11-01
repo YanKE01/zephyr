@@ -738,7 +738,7 @@ struct it82xx2_usb_ep_fifo_regs {
 #define PULL_DOWN_EN BIT(4)
 
 struct usb_it82xx2_regs {
-	/* 0x00:  Host TX Contrl Register */
+	/* 0x00:  Host TX Control Register */
 	volatile uint8_t host_tx_ctrl;
 	/* 0x01:  Host TX Transaction Type Register */
 	volatile uint8_t host_tx_trans_type;
@@ -1140,6 +1140,60 @@ struct gpio_it8xxx2_regs {
 #define IT8XXX2_GPIO_GPCRP0 ECREG(IT8XXX2_GPIO2_BASE + 0x18)
 #define IT8XXX2_GPIO_GPCRP1 ECREG(IT8XXX2_GPIO2_BASE + 0x19)
 
+/* Get the GPCRn, GPDMRn, and pin for the UART TX strapping pin */
+#ifdef CONFIG_SOC_IT8XXX2_UART_TX_STRATPPING_PIN
+
+#include <zephyr/devicetree.h>
+
+/* Get the UART2 TX pinctrl configuration from pinctrl state */
+#define UART2_TX_NODE_IS_GPH2(node_id, idx)                                                        \
+	DT_SAME_NODE(DT_PINCTRL_0(node_id, idx), DT_NODELABEL(uart2_tx_gph2_default))
+
+#define IT8XXX2_REG_V1_UART2_TX_IS_H2                                                              \
+	(UART2_TX_NODE_IS_GPH2(DT_NODELABEL(ite_uart2_wrapper), 0) ||                              \
+	 UART2_TX_NODE_IS_GPH2(DT_NODELABEL(ite_uart2_wrapper), 1))
+
+#define IT8XXX2_REG_V1_GPCRB1 0xf01619
+#define IT8XXX2_REG_V1_GPDMRB 0xf01662
+#define IT8XXX2_REG_V1_GPCRH2 0xf0164a
+#define IT8XXX2_REG_V1_GPCRH6 0xf0164e
+#define IT8XXX2_REG_V1_GPDMRH 0xf01668
+
+#define IT8XXX2_REG_V2_GPCRB1 0xf01669
+#define IT8XXX2_REG_V2_GPDMRB 0xf01619
+#define IT8XXX2_REG_V2_GPCRF1 0xf01689
+#define IT8XXX2_REG_V2_GPDMRF 0xf0161d
+
+#if DT_SAME_NODE(DT_CHOSEN(zephyr_console), DT_NODELABEL(uart1))
+#define IT8XXX2_GPIO_PIN_EC_UART_TX BIT(1)
+#ifdef CONFIG_SOC_IT8XXX2_REG_SET_V1
+#define IT8XXX2_GPIO_GPCR_EC_UART_TX  IT8XXX2_REG_V1_GPCRB1
+#define IT8XXX2_GPIO_GPDMR_EC_UART_TX IT8XXX2_REG_V1_GPDMRB
+#elif CONFIG_SOC_IT8XXX2_REG_SET_V2
+#define IT8XXX2_GPIO_GPCR_EC_UART_TX  IT8XXX2_REG_V2_GPCRB1
+#define IT8XXX2_GPIO_GPDMR_EC_UART_TX IT8XXX2_REG_V2_GPDMRB
+#endif
+
+#elif DT_SAME_NODE(DT_CHOSEN(zephyr_console), DT_NODELABEL(uart2))
+
+#ifdef CONFIG_SOC_IT8XXX2_REG_SET_V1
+#define IT8XXX2_GPIO_GPDMR_EC_UART_TX IT8XXX2_REG_V1_GPDMRH
+#if IT8XXX2_REG_V1_UART2_TX_IS_H2
+#define IT8XXX2_GPIO_GPCR_EC_UART_TX IT8XXX2_REG_V1_GPCRH2
+#define IT8XXX2_GPIO_PIN_EC_UART_TX  BIT(2)
+#else
+#define IT8XXX2_GPIO_GPCR_EC_UART_TX IT8XXX2_REG_V1_GPCRH6
+#define IT8XXX2_GPIO_PIN_EC_UART_TX  BIT(6)
+#endif
+#elif CONFIG_SOC_IT8XXX2_REG_SET_V2
+#define IT8XXX2_GPIO_GPCR_EC_UART_TX  IT8XXX2_REG_V2_GPCRF1
+#define IT8XXX2_GPIO_GPDMR_EC_UART_TX IT8XXX2_REG_V2_GPDMRF
+#define IT8XXX2_GPIO_PIN_EC_UART_TX   BIT(1)
+#endif
+
+#endif /* DT_SAME_NODE(DT_CHOSEN(zephyr_console), DT_NODELABEL(uart)) */
+#endif /* CONFIG_SOC_IT8XXX2_UART_TX_STRATPPING_PIN */
+
 /**
  *
  * (19xxh) Analog to Digital Converter (ADC) registers
@@ -1256,6 +1310,7 @@ enum chip_pll_mode {
 #define IT8XXX2_ECPM_SCDCR2   ECREG(IT8XXX2_ECPM_BASE + 0x0e)
 #define IT8XXX2_ECPM_SCDCR3   ECREG(IT8XXX2_ECPM_BASE + 0x0f)
 #define IT8XXX2_ECPM_SCDCR4   ECREG(IT8XXX2_ECPM_BASE + 0x10)
+#define IT8XXX2_ECPM_SCDCR8   ECREG(IT8XXX2_ECPM_BASE + 0x18)
 #define IT8XXX2_ECPM_PFACC0R  ECREG(IT8XXX2_ECPM_BASE + 0x20)
 #define IT8XXX2_ECPM_PFACC1R  ECREG(IT8XXX2_ECPM_BASE + 0x21)
 #define IT8XXX2_ECPM_PFACC2R  ECREG(IT8XXX2_ECPM_BASE + 0x40)
@@ -1322,6 +1377,15 @@ enum chip_pll_mode {
 #define IT8XXX2_SMB_PREDEN      BIT(7)
 #endif
 
+/* SMBus register fields */
+/*
+ * it81xx2cx/dx:
+ * bit3@0xf01c20: Gating Enable of I2C Idle to Sleep Control
+ * it82xx2:
+ * bit3@0xf01c09: Gating Enable of I2C Idle to Sleep Control
+ */
+#define IT8XXX2_SMB_GEOIITSC BIT(3)
+
 /**
  * Enhanced SMBus/I2C Interface
  * Ch_D: 0x00F03680, Ch_E: 0x00F03500, Ch_F: 0x00F03580
@@ -1360,6 +1424,7 @@ enum chip_pll_mode {
 #define IT8XXX2_I2C_CMD_ADDL(base)   ECREG(base + 0x26)
 #define IT8XXX2_I2C_RAMH2A(base)     ECREG(base + 0x50)
 #define IT8XXX2_I2C_CMD_ADDH2(base)  ECREG(base + 0x52)
+#define IT8XXX2_I2C_WM_ADDRH2(base)  ECREG(base + 0x56)
 
 /* SMBus/I2C register fields */
 /* 0x09-0xB: SMCLK Timing Setting */
@@ -1563,7 +1628,7 @@ struct gctrl_it8xxx2_regs {
 	volatile uint8_t reserved_22_2f[14];
 	/* 0x30: Memory Controller Configuration */
 	volatile uint8_t GCTRL_MCCR;
-	/* 0x31: Externel ILM/DLM Size */
+	/* 0x31: External ILM/DLM Size */
 	volatile uint8_t GCTRL_EIDSR;
 	/* 0x32: Reserved_32 */
 	volatile uint8_t reserved_32;

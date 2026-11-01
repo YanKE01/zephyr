@@ -10,12 +10,12 @@
 	memory-regions = <&cpuapp_dma_region>;
 };
 
-
 &dma_fast_region {
 	status = "okay";
 };
 
 &dut2 {
-	status = "okay";
+	/* Change to "okay" to test fast uart instance. */
+	status = "disabled";
 	memory-regions = <&dma_fast_region>;
 };

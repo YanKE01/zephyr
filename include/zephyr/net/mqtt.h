@@ -112,6 +112,25 @@ enum mqtt_qos {
 	MQTT_QOS_2_EXACTLY_ONCE  = 0x02
 };
 
+#if defined(CONFIG_MQTT_VERSION_5_0) || defined(__DOXYGEN__)
+/** @brief MQTT v5.0 Retain Handling options. (MQTT 5.0, chapter 3.3.1.3) */
+enum mqtt_retain_handling {
+	/** Send the retained messages matching the Topic Filter
+	 *  of the subscription to the Client at the time of the subscribe.
+	 */
+	MQTT_RH_0_SEND_AT_SUBSCRIBE = 0x00,
+
+	/** If the subscription did not already exist, send all retained message matching
+	 *  the Topic Filter of the subscription to the Client, and if the subscription
+	 *  did exist do not send the retained messages.
+	 */
+	MQTT_RH_1_SEND_IF_NEW = 0x01,
+
+	/** Do not send retained messages at the time of the subscribe. */
+	MQTT_RH_2_DO_NOT_SEND = 0x02
+};
+#endif /* CONFIG_MQTT_VERSION_5_0 */
+
 /** @brief MQTT 3.1 CONNACK return codes. */
 enum mqtt_conn_return_code {
 	/** Connection accepted. */
@@ -252,6 +271,11 @@ struct mqtt_topic_alias {
 
 	/** Topic name size. */
 	uint16_t topic_size;
+#elif defined(CONFIG_CPP)
+	/* An empty struct is not valid C, and compilers that accept it give
+	 * it size 0 while C++ gives 1. Keep a byte so both languages agree.
+	 */
+	uint8_t c;
 #endif /* CONFIG_MQTT_VERSION_5_0 */
 };
 
@@ -266,6 +290,14 @@ struct mqtt_topic {
 	 *  @ref mqtt_qos for details.
 	 */
 	uint8_t qos;
+#if defined(CONFIG_MQTT_VERSION_5_0) || defined(__DOXYGEN__)
+	/** MQTT 5.0, chapter 3.8.3.1 No Local subscription option. */
+	uint8_t no_local;
+	/** MQTT 5.0, chapter 3.8.3.1 Retain As Published subscription option. */
+	uint8_t retain_as_published;
+	/** MQTT 5.0, chapter 3.8.3.1 Retain Handling subscription option. */
+	uint8_t retain_handling;
+#endif
 };
 
 /** @brief Abstracts MQTT UTF-8 encoded string pair.
@@ -406,6 +438,11 @@ struct mqtt_common_ack_properties {
 		/** User Property property was present. */
 		bool has_user_prop;
 	} rx;
+#elif defined(CONFIG_CPP)
+	/* An empty struct is not valid C, and compilers that accept it give
+	 * it size 0 while C++ gives 1. Keep a byte so both languages agree.
+	 */
+	uint8_t c;
 #endif /* CONFIG_MQTT_VERSION_5_0 */
 };
 
@@ -570,7 +607,7 @@ struct mqtt_publish_param {
 /** @brief Parameters for subscribe/unsubscribe message. */
 struct mqtt_subscription_list {
 	/** Array containing topics along with QoS for each. */
-	struct mqtt_topic *list;
+	const struct mqtt_topic *list;
 
 	/** Number of topics in the subscription list */
 	uint16_t list_count;
@@ -624,6 +661,11 @@ struct mqtt_disconnect_param {
 			bool has_server_reference;
 		} rx;
 	} prop;
+#elif defined(CONFIG_CPP)
+	/* An empty struct is not valid C, and compilers that accept it give
+	 * it size 0 while C++ gives 1. Keep a byte so both languages agree.
+	 */
+	uint8_t c;
 #endif /* CONFIG_MQTT_VERSION_5_0 */
 };
 
@@ -658,6 +700,11 @@ struct mqtt_auth_param {
 			bool has_user_prop;
 		} rx;
 	} prop;
+#elif defined(CONFIG_CPP)
+	/* An empty struct is not valid C, and compilers that accept it give
+	 * it size 0 while C++ gives 1. Keep a byte so both languages agree.
+	 */
+	uint8_t c;
 #endif /* CONFIG_MQTT_VERSION_5_0 */
 };
 
@@ -763,13 +810,14 @@ struct mqtt_sec_config {
 	uint32_t alpn_protocol_name_count;
 #endif
 
-	/** Peer hostname for ceritificate verification.
-	 *  May be NULL to skip hostname verification.
-	 */
+	/** Peer hostname for certificate verification. */
 	const char *hostname;
 
 	/** Indicates the preference for copying certificates to the heap. */
 	int cert_nocopy;
+
+	/** Set socket to use native TLS (used with socket offloading). */
+	bool set_native_tls;
 };
 
 /** @brief MQTT transport type. */
@@ -857,8 +905,16 @@ struct mqtt_transport {
 
 #if defined(CONFIG_SOCKS)
 	struct {
-		struct sockaddr addr;
-		socklen_t addrlen;
+		/** SOCKS5 proxy address storage */
+		union {
+			/** SOCKS5 proxy address */
+			struct net_sockaddr_storage addr_storage;
+/** @cond INTERNAL_HIDDEN */
+			/* Use the addr_storage instead of this one. */
+			struct net_sockaddr addr;
+/** @endcond */
+		};
+		net_socklen_t addrlen;
 	} proxy;
 #endif
 };
@@ -1049,8 +1105,8 @@ void mqtt_client_init(struct mqtt_client *client);
  * @note Must be called before calling mqtt_connect().
  */
 int mqtt_client_set_proxy(struct mqtt_client *client,
-			  struct sockaddr *proxy_addr,
-			  socklen_t addrlen);
+			  struct net_sockaddr *proxy_addr,
+			  net_socklen_t addrlen);
 #endif
 
 /**

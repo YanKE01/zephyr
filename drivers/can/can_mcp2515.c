@@ -338,7 +338,7 @@ static int mcp2515_get_max_filters(const struct device *dev, bool ide)
 {
 	ARG_UNUSED(ide);
 
-	return CONFIG_CAN_MAX_FILTER;
+	return CONFIG_CAN_MCP2515_MAX_FILTERS;
 }
 
 static int mcp2515_set_timing(const struct device *dev, const struct can_timing *timing)
@@ -622,12 +622,13 @@ static int mcp2515_add_rx_filter(const struct device *dev, can_rx_callback_t rx_
 	k_mutex_lock(&dev_data->mutex, K_FOREVER);
 
 	/* find free filter */
-	while ((BIT(filter_id) & dev_data->filter_usage) && (filter_id < CONFIG_CAN_MAX_FILTER)) {
+	while ((BIT(filter_id) & dev_data->filter_usage) &&
+		(filter_id < CONFIG_CAN_MCP2515_MAX_FILTERS)) {
 		filter_id++;
 	}
 
 	/* setup filter */
-	if (filter_id < CONFIG_CAN_MAX_FILTER) {
+	if (filter_id < CONFIG_CAN_MCP2515_MAX_FILTERS) {
 		dev_data->filter_usage |= BIT(filter_id);
 
 		dev_data->filter[filter_id] = *filter;
@@ -647,7 +648,7 @@ static void mcp2515_remove_rx_filter(const struct device *dev, int filter_id)
 {
 	struct mcp2515_data *dev_data = dev->data;
 
-	if (filter_id < 0 || filter_id >= CONFIG_CAN_MAX_FILTER) {
+	if (filter_id < 0 || filter_id >= CONFIG_CAN_MCP2515_MAX_FILTERS) {
 		LOG_ERR("filter ID %d out of bounds", filter_id);
 		return;
 	}
@@ -655,15 +656,6 @@ static void mcp2515_remove_rx_filter(const struct device *dev, int filter_id)
 	k_mutex_lock(&dev_data->mutex, K_FOREVER);
 	dev_data->filter_usage &= ~BIT(filter_id);
 	k_mutex_unlock(&dev_data->mutex);
-}
-
-static void mcp2515_set_state_change_callback(const struct device *dev,
-					      can_state_change_callback_t cb, void *user_data)
-{
-	struct mcp2515_data *dev_data = dev->data;
-
-	dev_data->common.state_change_cb = cb;
-	dev_data->common.state_change_cb_user_data = user_data;
 }
 
 static void mcp2515_rx_filter(const struct device *dev, struct can_frame *frame)
@@ -681,7 +673,7 @@ static void mcp2515_rx_filter(const struct device *dev, struct can_frame *frame)
 
 	k_mutex_lock(&dev_data->mutex, K_FOREVER);
 
-	for (; filter_id < CONFIG_CAN_MAX_FILTER; filter_id++) {
+	for (; filter_id < CONFIG_CAN_MCP2515_MAX_FILTERS; filter_id++) {
 		if (!(BIT(filter_id) & dev_data->filter_usage)) {
 			continue; /* filter slot empty */
 		}
@@ -736,7 +728,7 @@ static int mcp2515_get_state(const struct device *dev, enum can_state *state,
 			*state = CAN_STATE_STOPPED;
 		} else if (eflg & MCP2515_EFLG_TXBO) {
 			*state = CAN_STATE_BUS_OFF;
-		} else if ((eflg & MCP2515_EFLG_RXEP) || (eflg & MCP2515_EFLG_TXEP)) {
+		} else if (eflg & (MCP2515_EFLG_RXEP | MCP2515_EFLG_TXEP)) {
 			*state = CAN_STATE_ERROR_PASSIVE;
 		} else if (eflg & MCP2515_EFLG_EWARN) {
 			*state = CAN_STATE_ERROR_WARNING;
@@ -776,21 +768,19 @@ static int mcp2515_get_state(const struct device *dev, enum can_state *state,
 static void mcp2515_handle_errors(const struct device *dev)
 {
 	struct mcp2515_data *dev_data = dev->data;
-	can_state_change_callback_t state_change_cb = dev_data->common.state_change_cb;
-	void *state_change_cb_data = dev_data->common.state_change_cb_user_data;
 	enum can_state state;
 	struct can_bus_err_cnt err_cnt;
 	int err;
 
-	err = mcp2515_get_state(dev, &state, state_change_cb ? &err_cnt : NULL);
+	err = mcp2515_get_state(dev, &state, &err_cnt);
 	if (err != 0) {
 		LOG_ERR("Failed to get CAN controller state [%d]", err);
 		return;
 	}
 
-	if (state_change_cb && dev_data->old_state != state) {
+	if (dev_data->old_state != state) {
 		dev_data->old_state = state;
-		state_change_cb(dev, state, err_cnt, state_change_cb_data);
+		can_fire_state_change_callbacks(dev, state, err_cnt);
 	}
 }
 
@@ -831,13 +821,17 @@ static void mcp2515_handle_interrupts(const struct device *dev)
 			mcp2515_tx_done(dev, 0, 0);
 		}
 
+#if MCP2515_TX_CNT > 1
 		if (canintf & MCP2515_CANINTF_TX1IF) {
 			mcp2515_tx_done(dev, 1, 0);
 		}
+#endif /* MCP2515_TX_CNT > 1 */
 
+#if MCP2515_TX_CNT > 2
 		if (canintf & MCP2515_CANINTF_TX2IF) {
 			mcp2515_tx_done(dev, 2, 0);
 		}
+#endif /* MCP2515_TX_CNT > 2 */
 
 		if (canintf & MCP2515_CANINTF_ERRIF) {
 			mcp2515_handle_errors(dev);
@@ -893,7 +887,6 @@ static DEVICE_API(can, can_api_funcs) = {
 	.add_rx_filter = mcp2515_add_rx_filter,
 	.remove_rx_filter = mcp2515_remove_rx_filter,
 	.get_state = mcp2515_get_state,
-	.set_state_change_callback = mcp2515_set_state_change_callback,
 	.get_core_clock = mcp2515_get_core_clock,
 	.get_max_filters = mcp2515_get_max_filters,
 	.timing_min = {
@@ -920,17 +913,18 @@ static int mcp2515_init(const struct device *dev)
 	k_tid_t tid;
 	int ret;
 
+	sys_slist_init(&dev_data->common.state_change_callbacks);
 	k_sem_init(&dev_data->int_sem, 0, 1);
 	k_mutex_init(&dev_data->mutex);
 	k_sem_init(&dev_data->tx_sem, MCP2515_TX_CNT, MCP2515_TX_CNT);
 
 	if (dev_cfg->common.phy != NULL && !device_is_ready(dev_cfg->common.phy)) {
-		LOG_ERR("CAN transceiver not ready");
+		LOG_ERR_DEVICE_NOT_READY(dev_cfg->common.phy);
 		return -ENODEV;
 	}
 
 	if (!spi_is_ready_dt(&dev_cfg->bus)) {
-		LOG_ERR("SPI bus %s not ready", dev_cfg->bus.bus->name);
+		LOG_ERR_DEVICE_NOT_READY(dev_cfg->bus.bus);
 		return -ENODEV;
 	}
 
@@ -942,7 +936,7 @@ static int mcp2515_init(const struct device *dev)
 
 	/* Initialize interrupt handling  */
 	if (!gpio_is_ready_dt(&dev_cfg->int_gpio)) {
-		LOG_ERR("Interrupt GPIO port not ready");
+		LOG_ERR_DEVICE_NOT_READY(dev_cfg->int_gpio.port);
 		return -ENODEV;
 	}
 
@@ -1005,7 +999,7 @@ static int mcp2515_init(const struct device *dev)
                                                                                                    \
 	static const struct mcp2515_config mcp2515_config_##inst = {                               \
 		.common = CAN_DT_DRIVER_CONFIG_INST_GET(inst, 0, 1000000),                         \
-		.bus = SPI_DT_SPEC_INST_GET(inst, SPI_WORD_SET(8), 0),                             \
+		.bus = SPI_DT_SPEC_INST_GET(inst, SPI_WORD_SET(8)),                                \
 		.int_gpio = GPIO_DT_SPEC_INST_GET(inst, int_gpios),                                \
 		.int_thread_stack_size = CONFIG_CAN_MCP2515_INT_THREAD_STACK_SIZE,                 \
 		.int_thread_priority = CONFIG_CAN_MCP2515_INT_THREAD_PRIO,                         \

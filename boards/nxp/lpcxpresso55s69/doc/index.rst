@@ -228,14 +228,14 @@ Configuring a Debug Probe
 
 LinkServer is the default runner for this board.
 A debug probe is used for both flashing and debugging the board. This board is
-configured by default to use the integrated :ref:`mcu-link-onboard-debug-probe`
+configured by default to use the integrated :ref:`lpc-link2-onboard-debug-probe`
 in the CMSIS-DAP mode. To use this probe with Zephyr, you need to install the
 :ref:`linkserver-debug-host-tools` and make sure they are in your search path.
 Refer to the detailed overview about :ref:`application_debugging` for additional
 information.
 
-The integrated MCU-Link hardware can also be used as a J-Link probe with a
-firmware update, as described in :ref:`mcu-link-jlink-onboard-debug-probe`.
+The integrated LPC-Link2 hardware can also be used as a J-Link probe with a
+firmware update, as described in :ref:`lpclink2-jlink-onboard-debug-probe`.
 The :ref:`jlink-debug-host-tools` should be available in this case.
 
 Configuring a Console
@@ -268,8 +268,8 @@ see the following message in the terminal:
    ***** Booting Zephyr OS v3.7.0 *****
    Hello World! lpcxpresso55s69/lpc55s69/cpu0
 
-Building and flashing secure/non-secure with Arm |reg| TrustZone |reg|
-----------------------------------------------------------------------
+Building and flashing secure/non-secure with Arm® TrustZone®
+------------------------------------------------------------
 The TF-M integration samples can be run using the
 ``lpcxpresso55s69/lpc55s69/cpu0/ns`` target. To run we need to manually flash
 the resulting image (``tfm_merged.hex``) with a J-Link as follows
@@ -296,7 +296,7 @@ Debugging
 =========
 
 Here is an example for the :zephyr:code-sample:`hello_world` application. This example uses the
-:ref:`jlink-debug-host-tools` as default.
+:ref:`linkserver-debug-host-tools` as default.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/hello_world
@@ -311,8 +311,7 @@ should see the following message in the terminal:
    ***** Booting Zephyr OS zephyr-v1.14.0 *****
    Hello World! lpcxpresso55s69
 
-.. include:: ../../common/board-footer.rst
-   :start-after: nxp-board-footer
+.. include:: ../../common/board-footer.rst.inc
 
 .. _LPC55S69 SoC Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-based-processors-and-mcus/lpc-cortex-m-mcus/lpc5500-cortex-m33/high-efficiency-arm-cortex-m33-based-microcontroller-family:LPC55S6x

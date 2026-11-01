@@ -1,8 +1,10 @@
 /*
  * Copyright (c) 2020 Demant
+ * Copyright (c) 2025 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+#include <stdint.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
@@ -158,7 +160,7 @@ void ull_peripheral_iso_release(uint16_t cis_handle)
 	struct ll_conn_iso_group *cig;
 
 	cis = ll_conn_iso_stream_get(cis_handle);
-	LL_ASSERT(cis);
+	LL_ASSERT_DBG(cis);
 
 	cig = cis->group;
 
@@ -318,7 +320,7 @@ uint8_t ull_peripheral_iso_setup(struct pdu_data_llctrl_cis_ind *ind,
 	}
 
 	conn = ll_conn_get(cis->lll.acl_handle);
-	LL_ASSERT(conn != NULL);
+	LL_ASSERT_DBG(conn != NULL);
 
 	cis_offset = sys_get_le24(ind->cis_offset);
 
@@ -337,6 +339,46 @@ uint8_t ull_peripheral_iso_setup(struct pdu_data_llctrl_cis_ind *ind,
 	cis->sync_delay = sys_get_le24(ind->cis_sync_delay);
 	cis->offset = cis_offset;
 	memcpy(cis->lll.access_addr, ind->aa, sizeof(ind->aa));
+
+	/* Calculate and set cig->c_latency if not yet set */
+	if (cig->c_latency == 0U && cis->lll.rx.max_pdu != 0U) /* not yet set */ {
+		uint32_t iso_interval_us = cig->iso_interval * ISO_INT_UNIT_US;
+
+		if (iso_interval_us < ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN)) {
+			/* ISO_Interval is below minimum (5 ms) */
+			iso_interval_us = ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN);
+		}
+
+		if (cis->framed) {
+			/* Transport_Latency = CIG_Sync_Delay + FT x ISO_Interval + SDU_Interval */
+			cig->c_latency = cig->sync_delay + (cis->lll.rx.ft * iso_interval_us) +
+					 cig->c_sdu_interval;
+		} else {
+			/* Transport_Latency = CIG_Sync_Delay + FT x ISO_Interval - SDU_Interval */
+			cig->c_latency = cig->sync_delay + (cis->lll.rx.ft * iso_interval_us) -
+					 cig->c_sdu_interval;
+		}
+	}
+
+	/* Calculate and set cig->p_latency if not yet set */
+	if (cig->p_latency == 0U && cis->lll.tx.max_pdu != 0U) {
+		uint32_t iso_interval_us = cig->iso_interval * ISO_INT_UNIT_US;
+
+		if (iso_interval_us < ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN)) {
+			/* ISO_Interval is below minimum (5 ms) */
+			iso_interval_us = ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN);
+		}
+
+		if (cis->framed) {
+			/* Transport_Latency = CIG_Sync_Delay + FT x ISO_Interval + SDU_Interval */
+			cig->p_latency = cig->sync_delay + (cis->lll.tx.ft * iso_interval_us) +
+					 cig->p_sdu_interval;
+		} else {
+			/* Transport_Latency = CIG_Sync_Delay + FT x ISO_Interval - SDU_Interval */
+			cig->p_latency = cig->sync_delay + (cis->lll.tx.ft * iso_interval_us) -
+					 cig->p_sdu_interval;
+		}
+	}
 #if defined(CONFIG_BT_CTLR_ISOAL_PSN_IGNORE)
 	cis->pkt_seq_num = 0U;
 #endif /* CONFIG_BT_CTLR_ISOAL_PSN_IGNORE */
@@ -366,7 +408,7 @@ static void ticker_op_cb(uint32_t status, void *param)
 {
 	ARG_UNUSED(param);
 
-	LL_ASSERT(status == TICKER_STATUS_SUCCESS);
+	LL_ASSERT_ERR(status == TICKER_STATUS_SUCCESS);
 }
 
 void ull_peripheral_iso_update_ticker(struct ll_conn_iso_group *cig,
@@ -378,8 +420,8 @@ void ull_peripheral_iso_update_ticker(struct ll_conn_iso_group *cig,
 	uint8_t ticker_id_cig = TICKER_ID_CONN_ISO_BASE + ll_conn_iso_group_handle_get(cig);
 	uint32_t ticker_status = ticker_stop(TICKER_INSTANCE_ID_CTLR, TICKER_USER_ID_ULL_HIGH,
 				    ticker_id_cig, ticker_op_cb, NULL);
-	LL_ASSERT((ticker_status == TICKER_STATUS_SUCCESS) ||
-		  (ticker_status == TICKER_STATUS_BUSY));
+	LL_ASSERT_ERR((ticker_status == TICKER_STATUS_SUCCESS) ||
+		      (ticker_status == TICKER_STATUS_BUSY));
 
 	ticker_status = ticker_start(TICKER_INSTANCE_ID_CTLR,
 				     TICKER_USER_ID_ULL_HIGH,
@@ -393,8 +435,8 @@ void ull_peripheral_iso_update_ticker(struct ll_conn_iso_group *cig,
 				     ull_conn_iso_ticker_cb, cig,
 				     ticker_op_cb, NULL);
 
-	LL_ASSERT((ticker_status == TICKER_STATUS_SUCCESS) ||
-		  (ticker_status == TICKER_STATUS_BUSY));
+	LL_ASSERT_ERR((ticker_status == TICKER_STATUS_SUCCESS) ||
+		      (ticker_status == TICKER_STATUS_BUSY));
 
 }
 
@@ -412,8 +454,9 @@ void ull_peripheral_iso_update_peer_sca(struct ll_conn *acl)
 		if (!cig || !cig->lll.num_cis) {
 			continue;
 		}
+
 		cis = ll_conn_iso_stream_get_by_group(cig, NULL);
-		LL_ASSERT(cis);
+		LL_ASSERT_DBG(cis);
 
 		uint16_t cis_handle = cis->lll.handle;
 

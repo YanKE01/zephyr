@@ -40,6 +40,8 @@ LOG_MODULE_REGISTER(flexspi_hyperflash, CONFIG_FLASH_LOG_LEVEL);
 
 #define HYPERFLASH_ERASE_VALUE                  (0xFF)
 
+#include "flash_priv.h"
+
 /* Hyper flash support SDR and DDR, from the FlexSPI controller point of view,
  * if DDR enabled, commands in LUT need to be DDR command and root clock is
  * double of Serial clock (clock output to flash).
@@ -265,7 +267,9 @@ struct flash_flexspi_hyperflash_data {
 	struct device controller;
 	flexspi_device_config_t config;
 	flexspi_port_t port;
+#if defined(CONFIG_FLASH_PAGE_LAYOUT)
 	struct flash_pages_layout layout;
+#endif
 	struct flash_parameters flash_parameters;
 };
 
@@ -398,7 +402,7 @@ static int flash_flexspi_hyperflash_page_program(const struct flash_flexspi_hype
 		.dataSize = len,
 	};
 
-	LOG_DBG("Page programming %d bytes to 0x%08lx", len, offset);
+	LOG_DBG("Page programming %d bytes to 0x%08lx", len, (unsigned long)offset);
 
 	return memc_flexspi_transfer(&data->controller, &transfer);
 }
@@ -566,7 +570,7 @@ static int flash_flexspi_hyperflash_erase(const struct device *dev, off_t offset
 			break;
 		}
 
-		LOG_DBG("Erasing sector at 0x%08lx", offset);
+		LOG_DBG("Erasing sector at 0x%08lx", (unsigned long)offset);
 
 		transfer.deviceAddress = offset;
 		transfer.port = data->port;
@@ -613,7 +617,7 @@ static const struct flash_parameters *flash_flexspi_hyperflash_get_parameters(
 	return &data->flash_parameters;
 }
 
-
+#if defined(CONFIG_FLASH_PAGE_LAYOUT)
 static void flash_flexspi_hyperflash_pages_layout(const struct device *dev,
 		const struct flash_pages_layout **layout,
 		size_t *layout_size)
@@ -623,6 +627,7 @@ static void flash_flexspi_hyperflash_pages_layout(const struct device *dev,
 	*layout = &data->layout;
 	*layout_size = 1;
 }
+#endif
 
 static int flash_flexspi_hyperflash_init(const struct device *dev)
 {
@@ -711,13 +716,16 @@ static DEVICE_API(flash, flash_flexspi_hyperflash_api) = {
 		flash_flexspi_hyperflash_data_##n = {			\
 		.config = FLASH_FLEXSPI_DEVICE_CONFIG(n),		\
 		.port = DT_INST_REG_ADDR(n),				\
-		.layout = {						\
+		IF_ENABLED(CONFIG_FLASH_PAGE_LAYOUT,	\
+		(.layout = {						\
 			.pages_count = DT_INST_PROP(n, size) / 8	\
 				/ SPI_HYPERFLASH_SECTOR_SIZE,		\
 			.pages_size = SPI_HYPERFLASH_SECTOR_SIZE,	\
-		},							\
+		},))							\
 		.flash_parameters = {					\
-			.write_block_size = DT_INST_PROP(n, write_block_size), \
+			.write_block_size = DT_PROP(			\
+				SOC_NV_FLASH_CHILD_NODE(n),\
+				write_block_size),		\
 			.erase_value = HYPERFLASH_ERASE_VALUE,		\
 		},							\
 	};								\

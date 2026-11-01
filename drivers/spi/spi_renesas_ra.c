@@ -103,7 +103,7 @@ static int ra_spi_configure(const struct device *dev, const struct spi_config *c
 		return -ENOTSUP;
 	}
 
-	if (config->operation & SPI_OP_MODE_SLAVE) {
+	if (config->operation & SPI_OP_MODE_PERIPHERAL) {
 		data->fsp_config.operating_mode = SPI_MODE_SLAVE;
 	} else {
 		data->fsp_config.operating_mode = SPI_MODE_MASTER;
@@ -138,7 +138,7 @@ static int ra_spi_configure(const struct device *dev, const struct spi_config *c
 		data->fsp_config_extend.ssl_polarity = SPI_SSLP_LOW;
 	}
 
-	if (!(config->operation & SPI_OP_MODE_SLAVE)) {
+	if (!(config->operation & SPI_OP_MODE_PERIPHERAL)) {
 		LOG_INF("frequency: %d", config->frequency);
 		fsp_err = R_SPI_CalculateBitrate(config->frequency,
 						 &data->fsp_config_extend.spck_div);
@@ -153,13 +153,29 @@ static int ra_spi_configure(const struct device *dev, const struct spi_config *c
 		data->fsp_config_extend.spi_clksyn = SPI_SSL_MODE_CLK_SYN;
 	} else {
 		data->fsp_config_extend.spi_clksyn = SPI_SSL_MODE_SPI;
-		data->fsp_config_extend.ssl_select = SPI_SSL_SELECT_SSL0;
+		switch (config->peripheral) {
+		case 0:
+			data->fsp_config_extend.ssl_select = SPI_SSL_SELECT_SSL0;
+			break;
+		case 1:
+			data->fsp_config_extend.ssl_select = SPI_SSL_SELECT_SSL1;
+			break;
+		case 2:
+			data->fsp_config_extend.ssl_select = SPI_SSL_SELECT_SSL2;
+			break;
+		case 3:
+			data->fsp_config_extend.ssl_select = SPI_SSL_SELECT_SSL3;
+			break;
+		default:
+			LOG_ERR("Invalid SSL");
+			return -EINVAL;
+		}
 	}
 
 	data->fsp_config.p_extend = &data->fsp_config_extend;
 
 	data->fsp_config.p_callback = spi_cb;
-	data->fsp_config.p_context = dev;
+	data->fsp_config.p_context = (void *)dev;
 	fsp_err = R_SPI_Open(&data->spi, &data->fsp_config);
 	if (fsp_err != FSP_SUCCESS) {
 		LOG_ERR("R_SPI_Open error: %d", fsp_err);
@@ -172,19 +188,11 @@ static int ra_spi_configure(const struct device *dev, const struct spi_config *c
 
 static bool ra_spi_transfer_ongoing(struct ra_spi_data *data)
 {
-#if defined(CONFIG_SPI_INTERRUPT)
 	return (spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx));
-#else
-	if (spi_context_total_tx_len(&data->ctx) < spi_context_total_rx_len(&data->ctx)) {
-		return (spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx));
-	} else {
-		return (spi_context_tx_on(&data->ctx) && spi_context_rx_on(&data->ctx));
-	}
-#endif
 }
 
 #ifndef CONFIG_SPI_INTERRUPT
-static int ra_spi_transceive_slave(struct ra_spi_data *data)
+static int ra_spi_transceive_peripheral(struct ra_spi_data *data)
 {
 	R_SPI0_Type *p_spi_reg = data->spi.p_regs;
 	spi_bit_width_t spi_width =
@@ -244,7 +252,7 @@ static int ra_spi_transceive_slave(struct ra_spi_data *data)
 	return 0;
 }
 
-static int ra_spi_transceive_master(struct ra_spi_data *data)
+static int ra_spi_transceive_controller(struct ra_spi_data *data)
 {
 	R_SPI0_Type *p_spi_reg = data->spi.p_regs;
 	spi_bit_width_t spi_width =
@@ -312,10 +320,10 @@ static int ra_spi_transceive_data(struct ra_spi_data *data)
 
 	uint16_t operation = data->ctx.config->operation;
 
-	if (SPI_OP_MODE_GET(operation) == SPI_OP_MODE_MASTER) {
-		ra_spi_transceive_master(data);
+	if (SPI_OP_MODE_GET(operation) == SPI_OP_MODE_CONTROLLER) {
+		ra_spi_transceive_controller(data);
 	} else {
-		ra_spi_transceive_slave(data);
+		ra_spi_transceive_peripheral(data);
 	}
 
 	return 0;
@@ -362,15 +370,15 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 
 #ifdef CONFIG_SPI_INTERRUPT
 	if (data->ctx.rx_len == 0) {
-		data->data_len = spi_context_is_slave(&data->ctx)
+		data->data_len = spi_context_is_peripheral(&data->ctx)
 					 ? spi_context_total_tx_len(&data->ctx)
 					 : data->ctx.tx_len;
 	} else if (data->ctx.tx_len == 0) {
-		data->data_len = spi_context_is_slave(&data->ctx)
+		data->data_len = spi_context_is_peripheral(&data->ctx)
 					 ? spi_context_total_rx_len(&data->ctx)
 					 : data->ctx.rx_len;
 	} else {
-		data->data_len = spi_context_is_slave(&data->ctx)
+		data->data_len = spi_context_is_peripheral(&data->ctx)
 					 ? MAX(spi_context_total_tx_len(&data->ctx),
 					       spi_context_total_rx_len(&data->ctx))
 					 : MIN(data->ctx.tx_len, data->ctx.rx_len);
@@ -426,7 +434,7 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 		ra_spi_transceive_data(data);
 	} while (ra_spi_transfer_ongoing(data));
 
-	/* Wait for transmision complete */
+	/* Wait for transmission complete */
 	while (p_spi_reg->SPSR_b.IDLNF) {
 	}
 	/* Disable the SPI Transfer. */
@@ -435,11 +443,11 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 	spi_context_cs_control(&data->ctx, false);
 	spi_context_complete(&data->ctx, dev, 0);
 #endif
-#ifdef CONFIG_SPI_SLAVE
-	if (spi_context_is_slave(&data->ctx) && !ret) {
+#ifdef CONFIG_SPI_PERIPHERAL
+	if (spi_context_is_peripheral(&data->ctx) && !ret) {
 		ret = data->ctx.recv_frames;
 	}
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 end:
 	spi_context_release(&data->ctx, ret);
@@ -595,7 +603,7 @@ static void ra_spi_retransmit(struct ra_spi_data *data)
 
 static void ra_spi_rxi_isr(const struct device *dev)
 {
-#ifndef CONFIG_SPI_SLAVE
+#ifndef CONFIG_SPI_PERIPHERAL
 	ARG_UNUSED(dev);
 	spi_rxi_isr();
 #else
@@ -603,7 +611,7 @@ static void ra_spi_rxi_isr(const struct device *dev)
 
 	spi_rxi_isr();
 
-	if (spi_context_is_slave(&data->ctx) && data->spi.rx_count == data->spi.count) {
+	if (spi_context_is_peripheral(&data->ctx) && data->spi.rx_count == data->spi.count) {
 		if (data->ctx.rx_buf != NULL && data->ctx.tx_buf != NULL) {
 			data->ctx.recv_frames = MIN(spi_context_total_tx_len(&data->ctx),
 						    spi_context_total_rx_len(&data->ctx));
@@ -826,7 +834,7 @@ static void ra_spi_eri_isr(const struct device *dev)
 		return 0;                                                                          \
 	}                                                                                          \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(index, spi_ra_init##index, PM_DEVICE_DT_INST_GET(index),             \
+	DEVICE_DT_INST_DEFINE(index, spi_ra_init##index, NULL,                                     \
 			      &ra_spi_data_##index, &ra_spi_config_##index, PRE_KERNEL_1,          \
 			      CONFIG_SPI_INIT_PRIORITY, &ra_spi_driver_api);
 

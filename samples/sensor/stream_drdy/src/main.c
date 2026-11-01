@@ -12,7 +12,6 @@
 #include <zephyr/sys/util_macro.h>
 #include <zephyr/kernel.h>
 #include <zephyr/rtio/rtio.h>
-#include <zephyr/drivers/sensor.h>
 
 #define STREAMDEV_ALIAS(i) DT_ALIAS(_CONCAT(stream, i))
 #define STREAMDEV_DEVICE(i, _) \
@@ -52,7 +51,7 @@ static int print_accels_stream(const struct device *dev, struct rtio_iodev *iode
 	struct rtio_cqe *cqe;
 	uint8_t *buf;
 	uint32_t buf_len;
-	struct rtio_sqe *handles[NUM_SENSORS];
+	rtio_sqe_handle_t handles[NUM_SENSORS];
 	struct sensor_three_axis_data *accel_data = (struct sensor_three_axis_data *)accel_buf;
 
 	/* Start the streams */

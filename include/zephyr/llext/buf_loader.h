@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_LLEXT_BUF_LOADER_H
-#define ZEPHYR_LLEXT_BUF_LOADER_H
+#ifndef ZEPHYR_INCLUDE_LLEXT_BUF_LOADER_H_
+#define ZEPHYR_INCLUDE_LLEXT_BUF_LOADER_H_
 
 #include <zephyr/llext/loader.h>
 
@@ -16,6 +16,7 @@ extern "C" {
 /**
  * @file
  * @brief LLEXT buffer loader implementation.
+ * @ingroup llext_loader_apis
  *
  * @addtogroup llext_loader_apis
  * @{
@@ -78,7 +79,8 @@ void *llext_buf_peek(struct llext_loader *ldr, size_t pos);
 			   IS_ENABLED(CONFIG_LLEXT_STORAGE_WRITABLE) ?                             \
 				LLEXT_STORAGE_WRITABLE : LLEXT_STORAGE_PERSISTENT)
 
-/* @brief Initialize an llext_buf_loader structure for a temporary buffer
+/**
+ * @brief Initialize an llext_buf_loader structure for a temporary buffer
  *
  * ELF data from the specified buffer can only be used during llext_load().
  * The LLEXT subsystem will copy all necessary data to internal buffers at load
@@ -124,4 +126,4 @@ void *llext_buf_peek(struct llext_loader *ldr, size_t pos);
 }
 #endif
 
-#endif /* ZEPHYR_LLEXT_BUF_LOADER_H */
+#endif /* ZEPHYR_INCLUDE_LLEXT_BUF_LOADER_H_ */

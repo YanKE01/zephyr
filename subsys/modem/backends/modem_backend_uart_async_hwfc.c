@@ -5,11 +5,14 @@
  */
 
 #include "modem_backend_uart_async.h"
+#include "../modem_workqueue.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(modem_backend_uart_async_hwfc, CONFIG_MODEM_MODULES_LOG_LEVEL);
 
 #include <zephyr/kernel.h>
+#include <zephyr/pm/device_runtime.h>
+#include <zephyr/drivers/gpio.h>
 #include <string.h>
 
 struct rx_buf_t {
@@ -136,16 +139,17 @@ static void modem_backend_uart_async_hwfc_event_handler(const struct device *dev
 	case UART_TX_DONE:
 		atomic_clear_bit(&backend->async.common.state,
 				 MODEM_BACKEND_UART_ASYNC_STATE_TRANSMIT_BIT);
-		k_work_submit(&backend->transmit_idle_work);
+		modem_work_submit(&backend->transmit_idle_work);
 		break;
 
 	case UART_TX_ABORTED:
 		if (modem_backend_uart_async_hwfc_is_open(backend)) {
-			LOG_WRN("Transmit aborted (%zu sent)", evt->data.tx.len);
+			LOG_WRN("%s: Transmit aborted (%zu sent)", backend->uart->name,
+				evt->data.tx.len);
 		}
 		atomic_clear_bit(&backend->async.common.state,
 				 MODEM_BACKEND_UART_ASYNC_STATE_TRANSMIT_BIT);
-		k_work_submit(&backend->transmit_idle_work);
+		modem_work_submit(&backend->transmit_idle_work);
 
 		break;
 
@@ -159,7 +163,7 @@ static void modem_backend_uart_async_hwfc_event_handler(const struct device *dev
 		err = uart_rx_buf_rsp(backend->uart, buf->buf,
 				      backend->async.rx_buf_size - sizeof(struct rx_buf_t));
 		if (err) {
-			LOG_ERR("uart_rx_buf_rsp: %d", err);
+			LOG_ERR("%s: uart_rx_buf_rsp: %d", backend->uart->name, err);
 			rx_buf_unref(&backend->async, buf->buf);
 		}
 		break;
@@ -177,12 +181,12 @@ static void modem_backend_uart_async_hwfc_event_handler(const struct device *dev
 			rx_event.len = evt->data.rx.len;
 			err = k_msgq_put(&backend->async.rx_queue, &rx_event, K_NO_WAIT);
 			if (err) {
-				LOG_WRN("RX queue overflow: %d (dropped %u)", err,
-					evt->data.rx.len);
+				LOG_WRN("%s: RX queue overflow: %d (dropped %u)",
+					backend->uart->name, err, evt->data.rx.len);
 				rx_buf_unref(&backend->async, evt->data.rx.buf);
 				break;
 			}
-			k_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
+			modem_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
 		}
 		break;
 
@@ -191,14 +195,15 @@ static void modem_backend_uart_async_hwfc_event_handler(const struct device *dev
 				    MODEM_BACKEND_UART_ASYNC_STATE_OPEN_BIT)) {
 			if (!atomic_test_and_set_bit(&backend->async.common.state,
 						     MODEM_BACKEND_UART_ASYNC_STATE_RECOVERY_BIT)) {
-				k_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
+				modem_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
 				LOG_DBG("RX recovery started");
 			}
 		}
 		break;
 
 	case UART_RX_STOPPED:
-		LOG_WRN("Receive stopped for reasons: %u", (uint8_t)evt->data.rx_stop.reason);
+		LOG_WRN("%s: Receive stopped for reasons: %u", backend->uart->name,
+			(uint8_t)evt->data.rx_stop.reason);
 		break;
 
 	default:
@@ -206,7 +211,7 @@ static void modem_backend_uart_async_hwfc_event_handler(const struct device *dev
 	}
 
 	if (modem_backend_uart_async_hwfc_is_uart_stopped(backend)) {
-		k_work_submit(&backend->async.common.rx_disabled_work);
+		modem_work_submit(&backend->async.common.rx_disabled_work);
 	}
 }
 
@@ -218,6 +223,15 @@ static int modem_backend_uart_async_hwfc_open(void *data)
 
 	if (!buf) {
 		return -ENOMEM;
+	}
+
+	ret = pm_device_runtime_get(backend->uart);
+	if (ret < 0) {
+		LOG_ERR_PM_DEVICE_RUNTIME_GET(backend->uart, ret);
+		return ret;
+	}
+	if (backend->dtr_gpio) {
+		gpio_pin_set_dt(backend->dtr_gpio, 1);
 	}
 
 	atomic_clear(&backend->async.common.state);
@@ -258,11 +272,14 @@ static uint32_t get_transmit_buf_size(const struct modem_backend_uart *backend)
 	return backend->async.common.transmit_buf_size;
 }
 
-static int modem_backend_uart_async_hwfc_transmit(void *data, const uint8_t *buf, size_t size)
+static int modem_backend_uart_async_hwfc_transmit_chain(
+	void *data, const struct modem_pipe_data_fragment *frags, size_t num_frags)
 {
 	struct modem_backend_uart *backend = (struct modem_backend_uart *)data;
+	uint32_t remaining = get_transmit_buf_size(backend);
+	uint32_t offset = 0;
+	uint32_t to_copy;
 	bool transmitting;
-	uint32_t bytes_to_transmit;
 	int ret;
 
 	transmitting = atomic_test_and_set_bit(&backend->async.common.state,
@@ -271,26 +288,32 @@ static int modem_backend_uart_async_hwfc_transmit(void *data, const uint8_t *buf
 		return 0;
 	}
 
-	/* Determine amount of bytes to transmit */
-	bytes_to_transmit = MIN(size, get_transmit_buf_size(backend));
+	/* Linearize data from fragments into internal buffer */
+	for (int i = 0; i < num_frags; i++) {
+		to_copy = MIN(remaining, frags[i].size);
+		memcpy(backend->async.common.transmit_buf + offset, frags[i].data, to_copy);
+		offset += to_copy;
+		remaining -= to_copy;
+		if (remaining == 0) {
+			/* Early exit if no space remaining */
+			break;
+		}
+	}
 
-	/* Copy buf to transmit buffer which is passed to UART */
-	memcpy(backend->async.common.transmit_buf, buf, bytes_to_transmit);
-
-	ret = uart_tx(backend->uart, backend->async.common.transmit_buf, bytes_to_transmit,
+	ret = uart_tx(backend->uart, backend->async.common.transmit_buf, offset,
 		      CONFIG_MODEM_BACKEND_UART_ASYNC_TRANSMIT_TIMEOUT_MS * 1000L);
 
 #if CONFIG_MODEM_STATS
-	advertise_transmit_buf_stats(backend, bytes_to_transmit);
+	advertise_transmit_buf_stats(backend, offset);
 #endif
 
 	if (ret != 0) {
-		LOG_ERR("Failed to %s %u bytes. (%d)",
-			"start async transmit for", bytes_to_transmit, ret);
+		LOG_ERR("%s: Failed to %s %u bytes. (%d)", backend->uart->name,
+			"start async transmit for", offset, ret);
 		return ret;
 	}
 
-	return (int)bytes_to_transmit;
+	return (int)offset;
 }
 
 static int modem_backend_uart_async_hwfc_receive(void *data, uint8_t *buf, size_t size)
@@ -335,7 +358,7 @@ static int modem_backend_uart_async_hwfc_receive(void *data, uint8_t *buf, size_
 
 	if (backend->async.rx_event.len != 0 ||
 	    k_msgq_num_used_get(&backend->async.rx_queue) != 0) {
-		k_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
+		modem_work_schedule(&backend->receive_ready_work, K_NO_WAIT);
 	}
 
 	modem_backend_uart_async_hwfc_rx_recovery(backend);
@@ -346,8 +369,12 @@ static int modem_backend_uart_async_hwfc_receive(void *data, uint8_t *buf, size_
 static int modem_backend_uart_async_hwfc_close(void *data)
 {
 	struct modem_backend_uart *backend = (struct modem_backend_uart *)data;
+	int ret;
 
-	atomic_clear_bit(&backend->async.common.state, MODEM_BACKEND_UART_ASYNC_STATE_OPEN_BIT);
+	if (!atomic_test_and_clear_bit(&backend->async.common.state,
+				       MODEM_BACKEND_UART_ASYNC_STATE_OPEN_BIT)) {
+		return 0;
+	}
 	uart_tx_abort(backend->uart);
 
 	if (!atomic_test_and_clear_bit(&backend->async.common.state,
@@ -356,12 +383,21 @@ static int modem_backend_uart_async_hwfc_close(void *data)
 		uart_rx_disable(backend->uart);
 	}
 
+	if (backend->dtr_gpio) {
+		gpio_pin_set_dt(backend->dtr_gpio, 0);
+	}
+	ret = pm_device_runtime_put_async(backend->uart, K_NO_WAIT);
+	if (ret < 0) {
+		LOG_ERR_PM_DEVICE_RUNTIME_PUT(backend->uart, ret);
+		return ret;
+	}
+
 	return 0;
 }
 
 static const struct modem_pipe_api modem_backend_uart_async_api = {
 	.open = modem_backend_uart_async_hwfc_open,
-	.transmit = modem_backend_uart_async_hwfc_transmit,
+	.transmit_chain = modem_backend_uart_async_hwfc_transmit_chain,
 	.receive = modem_backend_uart_async_hwfc_receive,
 	.close = modem_backend_uart_async_hwfc_close,
 };

@@ -107,7 +107,7 @@ static int paj7620_set_sampling_rate(const struct device *dev, const struct sens
 	int ret;
 	int fps;
 	const struct paj7620_config *config = dev->config;
-	int64_t uval = val->val1 * 1000000 + val->val2;
+	int64_t uval = ((int64_t)val->val1 * (int64_t)1000000) + val->val2;
 
 	if (uval <= 120000000) {
 		fps = PAJ7620_NORMAL_SPEED;
@@ -218,7 +218,7 @@ static int paj7620_init(const struct device *dev)
 	const struct paj7620_config *config = dev->config;
 
 	if (!i2c_is_ready_dt(&config->i2c)) {
-		LOG_ERR("I2C bus device not ready");
+		LOG_ERR_DEVICE_NOT_READY(config->i2c.bus);
 		return -ENODEV;
 	}
 

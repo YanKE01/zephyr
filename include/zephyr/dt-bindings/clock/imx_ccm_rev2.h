@@ -1,5 +1,5 @@
 /*
- * Copyright 2021,2024 NXP
+ * Copyright 2021,2024-2025 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -19,6 +19,9 @@
 #define IMX_CCM_CORESYS_CLK            0
 #define IMX_CCM_PLATFORM_CLK           0x1UL
 #define IMX_CCM_BUS_CLK                0x2UL
+
+/* Cortex-A55 core clock driven by ARM_PLL */
+#define IMX_CCM_ARM_PLL_CLK 0x10UL
 
 /* LPUART */
 #define IMX_CCM_LPUART_CLK             0x300UL
@@ -73,6 +76,8 @@
 /* USDHC */
 #define IMX_CCM_USDHC1_CLK             0x600UL
 #define IMX_CCM_USDHC2_CLK             0x601UL
+/** Clock identifier for uSDHC3 peripheral. */
+#define IMX_CCM_USDHC3_CLK             0x602UL
 
 /* DMA  */
 #define IMX_CCM_EDMA_CLK               0x700UL
@@ -121,6 +126,7 @@
 /* ADC */
 #define IMX_CCM_LPADC1_CLK             0x1500UL
 #define IMX_CCM_LPADC2_CLK             0x1501UL
+#define IMX_CCM_SAR_ADC1_CLK           0x1500UL
 
 /* TPM */
 #define IMX_CCM_TPM_CLK                0x1600UL
@@ -149,11 +155,58 @@
 #define IMX_CCM_I3C1_CLK               0x2200UL
 #define IMX_CCM_I3C2_CLK               0x2201UL
 
+/* LPIT */
+#define IMX_CCM_LPIT_CLK  0x2300UL
+#define IMX_CCM_LPIT1_CLK 0x2300UL
+#define IMX_CCM_LPIT2_CLK 0x2301UL
+#define IMX_CCM_LPIT3_CLK 0x2302UL
+
+/* KPP */
+#define IMX_CCM_KPP_CLK                0x2400UL
+
+/* USB */
+#define IMX_CCM_USB_CLK                0x2500UL
+#define IMX_CCM_USB_PHY_CLK            0x2600UL
+
+/** SYS_CTR 24 MHz XTAL base clock */
+#define IMX_CCM_SYSCTR_BASE_CLK        0x2700UL
+/** SYS_CTR 32 kHz LPO slow clock */
+#define IMX_CCM_SYSCTR_SLOW_CLK        0x2701UL
+
+/** PDM/MICFIL clock identifier */
+#define IMX_CCM_PDM_CLK                0x2800UL
+
+/* XBAR */
+/** XBAR1 peripheral clock identifier */
+#define IMX_CCM_XBAR1_CLK             0x2900UL
+/** XBAR2 peripheral clock identifier */
+#define IMX_CCM_XBAR2_CLK             0x2901UL
+/** XBAR3 peripheral clock identifier */
+#define IMX_CCM_XBAR3_CLK             0x2902UL
+
+/* ENC (EQDC) */
+/** ENC1/EQDC1 peripheral clock identifier */
+#define IMX_CCM_ENC1_CLK               0x2A00UL
+/** ENC2/EQDC2 peripheral clock identifier */
+#define IMX_CCM_ENC2_CLK               0x2A01UL
+/** ENC3/EQDC3 peripheral clock identifier */
+#define IMX_CCM_ENC3_CLK               0x2A02UL
+/** ENC4/EQDC4 peripheral clock identifier */
+#define IMX_CCM_ENC4_CLK               0x2A03UL
+
 /* QTMR */
 #define IMX_CCM_QTMR_CLK               0x6000UL
 #define IMX_CCM_QTMR1_CLK              0x6000UL
 #define IMX_CCM_QTMR2_CLK              0x6001UL
 #define IMX_CCM_QTMR3_CLK              0x6002UL
 #define IMX_CCM_QTMR4_CLK              0x6003UL
+
+/* MEDIA */
+#define IMX_CCM_MEDIA_AXI_CLK      0x3000UL
+#define IMX_CCM_MEDIA_APB_CLK      0x3100UL
+#define IMX_CCM_MEDIA_DISP_PIX_CLK 0x3200UL
+#define IMX_CCM_MEDIA_LDB_CLK      0x3300UL
+#define IMX_CCM_MIPI_PHY_CFG_CLK   0x3400UL
+#define IMX_CCM_CAM_PIX_CLK        0x3500UL
 
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_IMX_CCM_REV2_H_ */

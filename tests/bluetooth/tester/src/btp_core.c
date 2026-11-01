@@ -38,7 +38,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_BTTESTER_LOG_LEVEL);
 #define CAP_SUPPORTED 1
 #endif
 
-static ATOMIC_DEFINE(registered_services, BTP_SERVICE_ID_MAX);
+static ATOMIC_DEFINE(registered_services, BTP_SERVICE_ID_COUNT);
 
 static uint8_t supported_commands(const void *cmd, uint16_t cmd_len,
 				  void *rsp, uint16_t *rsp_len)
@@ -50,6 +50,10 @@ static uint8_t supported_commands(const void *cmd, uint16_t cmd_len,
 
 	return BTP_STATUS_SUCCESS;
 }
+
+#define SERVICES_BITMAP_BYTES DIV_ROUND_UP(BTP_SERVICE_ID_COUNT, BITS_PER_BYTE)
+#define SUPPORTED_SERVICES_RSP_LEN (sizeof(struct btp_core_read_supported_services_rp) + \
+		SERVICES_BITMAP_BYTES)
 
 static uint8_t supported_services(const void *cmd, uint16_t cmd_len,
 				  void *rsp, uint16_t *rsp_len)
@@ -141,8 +145,16 @@ static uint8_t supported_services(const void *cmd, uint16_t cmd_len,
 #if defined(CONFIG_BT_PBP)
 	tester_set_bit(rp->data, BTP_SERVICE_ID_PBP);
 #endif /* CONFIG_BT_PBP */
+#if defined(CONFIG_BT_CLASSIC)
+	tester_set_bit(rp->data, BTP_SERVICE_ID_SDP);
+#endif /* CONFIG_BT_CLASSIC */
 
-	*rsp_len = sizeof(*rp) + 4U;
+	/* octet 4 */
+#if defined(CONFIG_BT_RFCOMM)
+	tester_set_bit(rp->data, BTP_SERVICE_ID_RFCOMM);
+#endif /* CONFIG_BT_RFCOMM */
+
+	*rsp_len = SUPPORTED_SERVICES_RSP_LEN;
 
 	return BTP_STATUS_SUCCESS;
 }
@@ -292,6 +304,16 @@ static uint8_t register_service(const void *cmd, uint16_t cmd_len,
 		status = tester_init_pbp();
 		break;
 #endif /* CONFIG_BT_PBP */
+#if defined(CONFIG_BT_CLASSIC)
+	case BTP_SERVICE_ID_SDP:
+		status = tester_init_sdp();
+		break;
+#endif /* CONFIG_BT_CLASSIC */
+#if defined(CONFIG_BT_RFCOMM)
+	case BTP_SERVICE_ID_RFCOMM:
+		status = tester_init_rfcomm();
+		break;
+#endif /* CONFIG_BT_RFCOMM */
 	default:
 		LOG_WRN("unknown id: 0x%02x", cp->id);
 		status = BTP_STATUS_FAILED;
@@ -447,6 +469,16 @@ static uint8_t unregister_service(const void *cmd, uint16_t cmd_len,
 		status = tester_unregister_pbp();
 		break;
 #endif /* CONFIG_BT_PBP */
+#if defined(CONFIG_BT_CLASSIC)
+	case BTP_SERVICE_ID_SDP:
+		status = tester_unregister_sdp();
+		break;
+#endif /* CONFIG_BT_CLASSIC */
+#if defined(CONFIG_BT_RFCOMM)
+	case BTP_SERVICE_ID_RFCOMM:
+		status = tester_unregister_rfcomm();
+		break;
+#endif /* CONFIG_BT_RFCOMM */
 	default:
 		LOG_WRN("unknown id: 0x%x", cp->id);
 		status = BTP_STATUS_FAILED;

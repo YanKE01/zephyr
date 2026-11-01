@@ -40,7 +40,7 @@ K_THREAD_DEFINE(sensor_shell_processing_tid, CONFIG_SENSOR_SHELL_THREAD_STACK_SI
 
 int cmd_sensor_stream(const struct shell *sh, size_t argc, char *argv[])
 {
-	static struct rtio_sqe *current_streaming_handle;
+	static rtio_sqe_handle_t current_streaming_handle = RTIO_SQE_HANDLE_INVALID;
 	static struct sensor_shell_processing_context ctx;
 	const struct device *dev = device_get_binding(argv[1]);
 
@@ -54,9 +54,9 @@ int cmd_sensor_stream(const struct shell *sh, size_t argc, char *argv[])
 		return -ENODEV;
 	}
 
-	if (current_streaming_handle != NULL) {
+	if (current_streaming_handle != RTIO_SQE_HANDLE_INVALID) {
 		shell_info(sh, "Disabling existing stream");
-		rtio_sqe_cancel(current_streaming_handle);
+		rtio_sqe_cancel(&sensor_read_rtio, current_streaming_handle);
 	}
 
 	if (strcmp("off", argv[2]) == 0) {
@@ -90,6 +90,8 @@ int cmd_sensor_stream(const struct shell *sh, size_t argc, char *argv[])
 		iodev_sensor_shell_trigger.trigger = SENSOR_TRIG_FIFO_FULL;
 	} else if (strcmp("tap", argv[3]) == 0) {
 		iodev_sensor_shell_trigger.trigger = SENSOR_TRIG_TAP;
+	} else if (strcmp("timer", argv[3]) == 0) {
+		iodev_sensor_shell_trigger.trigger = SENSOR_TRIG_TIMER;
 	} else {
 		shell_error(sh, "Invalid trigger (%s)", argv[3]);
 		return -EINVAL;

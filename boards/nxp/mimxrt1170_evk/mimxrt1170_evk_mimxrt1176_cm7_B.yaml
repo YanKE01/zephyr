@@ -5,7 +5,7 @@
 #
 
 identifier: mimxrt1170_evk@B/mimxrt1176/cm7
-name: NXP MIMXRT1170-EVKB CM7
+name: NXP MIMXRT1170-EVKB (CM7)
 type: mcu
 arch: arm
 toolchain:
@@ -25,6 +25,7 @@ supported:
   - i2c
   - mipi_dsi
   - netif:eth
+  - ptp_clock
   - pwm
   - spi
   - usbd

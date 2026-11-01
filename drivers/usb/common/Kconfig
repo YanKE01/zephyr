@@ -4,5 +4,7 @@
 menu "USB common"
 
 rsource "nrf_usbd_common/Kconfig"
+rsource "stm32/Kconfig"
+rsource "nordic/Kconfig"
 
 endmenu

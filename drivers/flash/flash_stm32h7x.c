@@ -14,13 +14,9 @@
 #include <zephyr/init.h>
 #include <zephyr/sys/barrier.h>
 #include <soc.h>
-#if defined(CONFIG_SOC_SERIES_STM32H7RSX)
-#include <stm32h7rsxx_ll_bus.h>
-#include <stm32h7rsxx_ll_utils.h>
-#else
-#include <stm32h7xx_ll_bus.h>
-#include <stm32h7xx_ll_utils.h>
-#endif /* CONFIG_SOC_SERIES_STM32H7RSX */
+#include <stm32_bitops.h>
+#include <stm32_ll_bus.h>
+#include <stm32_ll_utils.h>
 
 #include "flash_stm32.h"
 #include "stm32_hsem.h"
@@ -30,6 +26,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_DOMAIN);
 
+BUILD_ASSERT(DT_NODE_EXISTS(DT_INST(0, st_stm32_nv_flash)), "st,stm32-nv-flash node missing");
+
 /* Let's wait for double the max erase time to be sure that the operation is
  * completed.
  */
@@ -37,20 +35,13 @@ LOG_MODULE_REGISTER(LOG_DOMAIN);
 /* No information in documentation about that. */
 #define STM32H7_FLASH_OPT_TIMEOUT_MS 800
 
-#if DT_NODE_HAS_PROP(DT_INST(0, st_stm32_nv_flash), bank2_flash_size)
-#define STM32H7_M4_FLASH_SIZE DT_PROP_OR(DT_INST(0, st_stm32_nv_flash), bank2_flash_size, 0)
-#ifdef CONFIG_CPU_CORTEX_M4
-#if STM32H7_M4_FLASH_SIZE == 0
-#error Flash driver on M4 requires the DT property bank2-flash-size
-#else
-#define REAL_FLASH_SIZE_KB (KB(STM32H7_M4_FLASH_SIZE * 2))
-#endif
-#else
+#if defined(CONFIG_STM32H7_DUAL_CORE)
+/* Dual core STM32H7x products feature two banks of the same size */
 #define REAL_FLASH_SIZE_KB (DT_REG_SIZE(DT_INST(0, st_stm32_nv_flash)) * 2)
-#endif
 #else
 #define REAL_FLASH_SIZE_KB DT_REG_SIZE(DT_INST(0, st_stm32_nv_flash))
-#endif
+#endif /* CONFIG_STM32H7_DUAL_CORE */
+
 #define SECTOR_PER_BANK ((REAL_FLASH_SIZE_KB / FLASH_SECTOR_SIZE) / 2)
 #if defined(DUAL_BANK)
 #define STM32H7_SERIES_MAX_FLASH_KB KB(2048)
@@ -148,9 +139,9 @@ uint8_t flash_stm32_get_rdp_level(const struct device *dev)
 	return (regs->OPTSR_CUR & FLASH_OPTSR_RDP_Msk) >> FLASH_OPTSR_RDP_Pos;
 }
 
-void flash_stm32_set_rdp_level(const struct device *dev, uint8_t level)
+int flash_stm32_set_rdp_level(const struct device *dev, uint8_t level)
 {
-	write_optsr(dev, FLASH_OPTSR_RDP_Msk, (uint32_t)level << FLASH_OPTSR_RDP_Pos);
+	return write_optsr(dev, FLASH_OPTSR_RDP_Msk, (uint32_t)level << FLASH_OPTSR_RDP_Pos);
 }
 #endif /* CONFIG_FLASH_STM32_READOUT_PROTECTION */
 
@@ -323,7 +314,7 @@ bool flash_stm32_valid_range(const struct device *dev, off_t offset, uint32_t le
 		 * Locations beyond bank2 are caught by flash_stm32_range_exists
 		 */
 		if ((offset < BANK2_OFFSET) && (offset + len > REAL_FLASH_SIZE_KB / 2)) {
-			LOG_ERR("Range ovelaps flash bank discontinuity");
+			LOG_ERR("Range overlaps flash bank discontinuity");
 			return false;
 		}
 	}
@@ -333,7 +324,7 @@ bool flash_stm32_valid_range(const struct device *dev, off_t offset, uint32_t le
 		if ((offset % (FLASH_NB_32BITWORD_IN_FLASHWORD * 4)) != 0) {
 			LOG_ERR("Write offset not aligned on flashword length. "
 				"Offset: 0x%lx, flashword length: %d",
-				(unsigned long)offset, FLASH_NB_32BITWORD_IN_FLASHWORD * 4);
+				(long)offset, FLASH_NB_32BITWORD_IN_FLASHWORD * 4);
 			return false;
 		}
 	}
@@ -397,7 +388,7 @@ static int flash_stm32_check_status(const struct device *dev)
 
 #ifdef DUAL_BANK
 	sr = regs->SR2;
-	if (sr & (FLASH_FLAG_SNECCERR_BANK1 | FLASH_FLAG_DBECCERR_BANK1)) {
+	if (sr & (FLASH_FLAG_SNECCERR_BANK2 | FLASH_FLAG_DBECCERR_BANK2)) {
 		uint32_t word = regs->ECC_FA2 & FLASH_ECC_FA_FAIL_ECC_ADDR;
 
 		LOG_WRN("Bank%d ECC error at 0x%08x", 2,
@@ -465,9 +456,10 @@ static struct flash_stm32_sector_t get_sector(const struct device *dev, off_t of
 #ifdef DUAL_BANK
 	off_t temp_offset = offset + (CONFIG_FLASH_BASE_ADDRESS & 0xffffff);
 
-	bool bank_swap;
 	/* Check whether bank1/2 are swapped */
-	bank_swap = (READ_BIT(FLASH->OPTCR, FLASH_OPTCR_SWAP_BANK) == FLASH_OPTCR_SWAP_BANK);
+	bool bank_swap = stm32_reg_read_bits(&FLASH->OPTCR, FLASH_OPTCR_SWAP_BANK) ==
+			 FLASH_OPTCR_SWAP_BANK;
+
 	sector.sector_index = offset / FLASH_SECTOR_SIZE;
 	if ((temp_offset < (REAL_FLASH_SIZE_KB / 2)) && !bank_swap) {
 		sector.bank = 1;
@@ -573,7 +565,7 @@ static int wait_write_queue(const struct flash_stm32_sector_t *sector)
 
 static int write_ndwords(const struct device *dev, off_t offset, const uint64_t *data, uint8_t n)
 {
-	volatile uint64_t *flash = (uint64_t *)(offset + FLASH_STM32_BASE_ADDRESS);
+	volatile uint64_t *flash = (uint64_t *)((uintptr_t)offset + FLASH_STM32_BASE_ADDRESS);
 	int rc;
 	int i;
 	struct flash_stm32_sector_t sector = get_sector(dev, offset);
@@ -712,7 +704,8 @@ static void flash_stm32h7_flush_caches(const struct device *dev, off_t offset, s
 		return; /* Cache not enabled */
 	}
 
-	SCB_InvalidateDCache_by_Addr((uint32_t *)(FLASH_STM32_BASE_ADDRESS + offset), len);
+	SCB_InvalidateDCache_by_Addr((uint32_t *)(uintptr_t)(FLASH_STM32_BASE_ADDRESS +
+							     offset), len);
 }
 #endif /* CONFIG_CPU_CORTEX_M7 */
 
@@ -794,6 +787,9 @@ static int flash_stm32h7_write(const struct device *dev, off_t offset, const voi
 		rc = rc2;
 	}
 
+#ifdef CONFIG_DCACHE
+	flash_stm32h7_flush_caches(dev, offset, len);
+#endif
 	flash_stm32_sem_give(dev);
 
 	return rc;
@@ -909,7 +905,7 @@ void flash_stm32_page_layout(const struct device *dev, const struct flash_pages_
 static struct flash_stm32_priv flash_data = {
 	.regs = (FLASH_TypeDef *)DT_INST_REG_ADDR(0),
 #if DT_NODE_HAS_PROP(DT_INST(0, st_stm32h7_flash_controller), clocks)
-	.pclken = {.bus = DT_INST_CLOCKS_CELL(0, bus), .enr = DT_INST_CLOCKS_CELL(0, bits)},
+	.pclken = STM32_DT_INST_CLOCK_INFO(0),
 #endif
 };
 
@@ -933,11 +929,6 @@ static int stm32h7_flash_init(const struct device *dev)
 	/* Only stm32h7 dual core devices have the clocks property */
 	struct flash_stm32_priv *p = FLASH_STM32_PRIV(dev);
 	const struct device *const clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
-
-	if (!device_is_ready(clk)) {
-		LOG_ERR("clock control device not ready");
-		return -ENODEV;
-	}
 
 	/* enable clock : enable the RCC_AHB3ENR_FLASHEN bit */
 	if (clock_control_on(clk, (clock_control_subsys_t)&p->pclken) != 0) {
@@ -963,5 +954,5 @@ static int stm32h7_flash_init(const struct device *dev)
 	return 0;
 }
 
-DEVICE_DT_INST_DEFINE(0, stm32h7_flash_init, NULL, &flash_data, NULL, POST_KERNEL,
+DEVICE_DT_INST_DEFINE(0, stm32h7_flash_init, NULL, &flash_data, NULL, PRE_KERNEL_1,
 		      CONFIG_FLASH_INIT_PRIORITY, &flash_stm32h7_api);

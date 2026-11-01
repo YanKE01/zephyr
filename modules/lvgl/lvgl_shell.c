@@ -12,7 +12,7 @@
 #include "lvgl_mem.h"
 #endif
 
-#ifdef CONFIG_LV_USE_MONKEY
+#if LV_USE_MONKEY
 static lv_monkey_t *lvgl_monkeys[CONFIG_LV_Z_MAX_MONKEY_COUNT];
 
 static const char *lvgl_monkey_indev_as_string(lv_monkey_t *monkey)
@@ -59,7 +59,7 @@ static void dump_monkey_info(const struct shell *sh)
 	shell_print(sh, "id   device    active");
 	for (size_t i = 0; i < CONFIG_LV_Z_MAX_MONKEY_COUNT; i++) {
 		if (lvgl_monkeys[i] != NULL) {
-			shell_print(sh, "%-4u %-9s %-3s", i,
+			shell_print(sh, "%-4zu %-9s %-3s", i,
 				    lvgl_monkey_indev_as_string(lvgl_monkeys[i]),
 				    lv_monkey_get_enable(lvgl_monkeys[i]) ? "yes" : "no");
 		}
@@ -136,7 +136,7 @@ static int cmd_lvgl_monkey_set(const struct shell *sh, size_t argc, char *argv[]
 
 	return 0;
 }
-#endif /* CONFIG_LV_USE_MONKEY */
+#endif /* LV_USE_MONKEY */
 
 static int cmd_lvgl_stats(const struct shell *sh, size_t argc, char *argv[])
 {
@@ -180,7 +180,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(lvgl_cmd_stats,
 					     cmd_lvgl_stats_memory, 1, 1),
 			       SHELL_SUBCMD_SET_END);
 
-#ifdef CONFIG_LV_USE_MONKEY
+#if LV_USE_MONKEY
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	lvgl_cmd_monkey,
 	SHELL_CMD_ARG(create, NULL,
@@ -192,13 +192,13 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 				 "<index> <active|inactive>"),
 		      cmd_lvgl_monkey_set, 3, 0),
 	SHELL_SUBCMD_SET_END);
-#endif /* CONFIG_LV_USE_MONKEY */
+#endif /* LV_USE_MONKEY */
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	lvgl_cmds, SHELL_CMD(stats, &lvgl_cmd_stats, "Show LVGL statistics", cmd_lvgl_stats),
-#ifdef CONFIG_LV_USE_MONKEY
+#if LV_USE_MONKEY
 	SHELL_CMD(monkey, &lvgl_cmd_monkey, "LVGL monkey testing", cmd_lvgl_monkey),
-#endif /* CONFIG_LV_USE_MONKEY */
+#endif /* LV_USE_MONKEY */
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(lvgl, &lvgl_cmds, "LVGL shell commands", NULL);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 NXP
+ * Copyright (c) 2021, 2025 NXP
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -85,16 +85,16 @@
 #define PCA9420_MODECFG_3_LDO2_OUT_POS       0U
 /** @brief SW1 active discharge control */
 #define PCA9420_ACT_DISCHARGE_CNTL_SW1_MASK  0x08U
-#define PCA9420_ACT_DISCHARGE_CNTL_SW1_POS   4U
+#define PCA9420_ACT_DISCHARGE_CNTL_SW1_POS   3U
 /** @brief SW2 active discharge control */
 #define PCA9420_ACT_DISCHARGE_CNTL_SW2_MASK  0x04U
-#define PCA9420_ACT_DISCHARGE_CNTL_SW2_POS   3U
+#define PCA9420_ACT_DISCHARGE_CNTL_SW2_POS   2U
 /** @brief LDO1 active discharge control */
 #define PCA9420_ACT_DISCHARGE_CNTL_LDO1_MASK 0x02U
-#define PCA9420_ACT_DISCHARGE_CNTL_LDO1_POS  2U
+#define PCA9420_ACT_DISCHARGE_CNTL_LDO1_POS  1U
 /** @brief LDO2 active discharge control */
 #define PCA9420_ACT_DISCHARGE_CNTL_LDO2_MASK 0x01U
-#define PCA9420_ACT_DISCHARGE_CNTL_LDO2_POS  1U
+#define PCA9420_ACT_DISCHARGE_CNTL_LDO2_POS  0U
 
 /** VIN ILIM resolution, uA/LSB */
 #define PCA9420_VIN_ILIM_UA_LSB 170000
@@ -157,7 +157,7 @@ static const struct linear_range buck2_ranges[] = {
 };
 
 static const struct linear_range ldo1_ranges[] = {
-	LINEAR_RANGE_INIT(1700000, 25000U, 0x0U, 0x9U),
+	LINEAR_RANGE_INIT(1700000, 25000U, 0x0U, 0x8U),
 	LINEAR_RANGE_INIT(1900000, 0U, 0x9U, 0xFU),
 };
 

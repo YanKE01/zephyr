@@ -1,10 +1,8 @@
-# Copyright (c) 2024 Cypress Semiconductor Corporation (an Infineon company) or
-# an affiliate of Cypress Semiconductor Corporation
+# SPDX-FileCopyrightText: Copyright (c) 2026 Infineon Technologies AG,
+# SPDX-FileCopyrightText: or an affiliate of Infineon Technologies AG. All rights reserved.
+#
 # SPDX-License-Identifier: Apache-2.0
 
-# Infineon CAT1B devices
-
-# Series definitions
 config SOC_SERIES_CYW20829
 	select ARM
 	select CPU_HAS_ARM_MPU
@@ -13,9 +11,11 @@ config SOC_SERIES_CYW20829
 	select DYNAMIC_INTERRUPTS
 	select HAS_SEGGER_RTT if ZEPHYR_SEGGER_MODULE
 	select HAS_PM
+	select PM_STATE_SET_IRQ_UNLOCKED
 	select BUILD_OUTPUT_HEX
 	select BUILD_OUTPUT_BIN
 	select SOC_EARLY_INIT_HOOK
+	select USE_INFINEON_LEGACY_HAL
 
 config INFINEON_SECURE_LCS
 	bool "Secure LCS stage support"

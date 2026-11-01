@@ -21,7 +21,6 @@
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/check.h>
 
 #include "hci_core.h"
 #include "conn_internal.h"
@@ -52,28 +51,8 @@ const static uint8_t df_dummy_switch_pattern[BT_HCI_LE_SWITCH_PATTERN_LEN_MIN] =
 
 #define DF_SAMPLING_ANTENNA_NUMBER_MIN 0x2
 
-#if defined(CONFIG_BT_DF_CONNECTIONLESS_CTE_RX) || defined(CONFIG_BT_DF_CONNECTION_CTE_RX)
-static bool valid_cte_rx_common_params(uint8_t cte_types, uint8_t slot_durations,
-				       uint8_t num_ant_ids, const uint8_t *ant_ids);
-#endif /* CONFIG_BT_DF_CONNECTIONLESS_CTE_RX || CONFIG_BT_DF_CONNECTION_CTE_RX */
 
-#if defined(CONFIG_BT_DF_CONNECTIONLESS_CTE_RX)
-static bool valid_cl_cte_rx_params(const struct bt_df_per_adv_sync_cte_rx_param *params);
-static int
-prepare_cl_cte_rx_enable_cmd_params(struct net_buf **buf, struct bt_le_per_adv_sync *sync,
-				    const struct bt_df_per_adv_sync_cte_rx_param *params,
-				    bool enable);
-static int hci_df_set_cl_cte_rx_enable(struct bt_le_per_adv_sync *sync, bool enable,
-				       const struct bt_df_per_adv_sync_cte_rx_param *params);
-#endif /* CONFIG_BT_DF_CONNECTIONLESS_CTE_RX */
 
-#if defined(CONFIG_BT_DF_CONNECTION_CTE_RX)
-static int prepare_conn_cte_rx_enable_cmd_params(struct net_buf **buf, struct bt_conn *conn,
-						 const struct bt_df_conn_cte_rx_param *params,
-						 bool enable);
-static int hci_df_set_conn_cte_rx_enable(struct bt_conn *conn, bool enable,
-					 const struct bt_df_conn_cte_rx_param *params);
-#endif /* CONFIG_BT_DF_CONNECTION_CTE_RX */
 
 static uint8_t get_hci_cte_type(enum bt_df_cte_type type)
 {
@@ -478,8 +457,7 @@ static bool valid_conn_cte_tx_params(const struct bt_df_conn_cte_tx_param *param
 	/* If AoD is not enabled, ant_ids are ignored by controller:
 	 * BT Core spec 5.2 Vol 4, Part E sec. 7.8.84.
 	 */
-	if ((params->cte_types & BT_DF_CTE_TYPE_AOD_1US ||
-	     params->cte_types & BT_DF_CTE_TYPE_AOD_1US) &&
+	if ((params->cte_types & (BT_DF_CTE_TYPE_AOD_1US | BT_DF_CTE_TYPE_AOD_2US)) &&
 	    (params->num_ant_ids < BT_HCI_LE_SWITCH_PATTERN_LEN_MIN ||
 	     params->num_ant_ids > BT_HCI_LE_SWITCH_PATTERN_LEN_MAX || !params->ant_ids ||
 	     !BT_FEAT_LE_ANT_SWITCH_TX_AOD(bt_dev.le.features))) {
@@ -764,7 +742,6 @@ int hci_df_vs_prepare_connection_iq_report(struct net_buf *buf,
 
 	return 0;
 }
-
 #endif /* CONFIG_BT_DF_CONNECTION_CTE_RX */
 
 #if defined(CONFIG_BT_DF_CONNECTION_CTE_REQ)
@@ -822,7 +799,7 @@ static int hci_df_set_conn_cte_req_enable(struct bt_conn *conn, bool enable,
 
 	bt_hci_cmd_state_set_init(buf, &state, conn->flags, BT_CONN_CTE_REQ_ENABLED, enable);
 
-	err = bt_hci_cmd_send_sync(BT_HCI_OP_LE_SET_CONN_CTE_RX_PARAMS, buf, &rsp);
+	err = bt_hci_cmd_send_sync(BT_HCI_OP_LE_CONN_CTE_REQ_ENABLE, buf, &rsp);
 	if (err) {
 		return err;
 	}
@@ -1036,10 +1013,10 @@ bt_df_set_per_adv_sync_cte_rx_enable(struct bt_le_per_adv_sync *sync, bool enabl
 int bt_df_per_adv_sync_cte_rx_enable(struct bt_le_per_adv_sync *sync,
 				     const struct bt_df_per_adv_sync_cte_rx_param *params)
 {
-	CHECKIF(!sync) {
+	if (!sync) {
 		return -EINVAL;
 	}
-	CHECKIF(!params) {
+	if (!params) {
 		return -EINVAL;
 	}
 
@@ -1048,7 +1025,7 @@ int bt_df_per_adv_sync_cte_rx_enable(struct bt_le_per_adv_sync *sync,
 
 int bt_df_per_adv_sync_cte_rx_disable(struct bt_le_per_adv_sync *sync)
 {
-	CHECKIF(!sync) {
+	if (!sync) {
 		return -EINVAL;
 	}
 
@@ -1075,11 +1052,11 @@ static int bt_df_set_conn_cte_rx_enable(struct bt_conn *conn, bool enable,
 
 int bt_df_conn_cte_rx_enable(struct bt_conn *conn, const struct bt_df_conn_cte_rx_param *params)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 
-	CHECKIF(!params) {
+	if (!params) {
 		return -EINVAL;
 	}
 
@@ -1088,7 +1065,7 @@ int bt_df_conn_cte_rx_enable(struct bt_conn *conn, const struct bt_df_conn_cte_r
 
 int bt_df_conn_cte_rx_disable(struct bt_conn *conn)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 
@@ -1099,11 +1076,11 @@ int bt_df_conn_cte_rx_disable(struct bt_conn *conn)
 #if defined(CONFIG_BT_DF_CONNECTION_CTE_TX)
 int bt_df_set_conn_cte_tx_param(struct bt_conn *conn, const struct bt_df_conn_cte_tx_param *params)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 
-	CHECKIF(!params) {
+	if (!params) {
 		return -EINVAL;
 	}
 
@@ -1119,7 +1096,6 @@ int bt_df_set_conn_cte_tx_param(struct bt_conn *conn, const struct bt_df_conn_ct
 
 	return hci_df_set_conn_cte_tx_param(conn, params);
 }
-
 #endif /* CONFIG_BT_DF_CONNECTION_CTE_TX */
 
 #if defined(CONFIG_BT_DF_CONNECTION_CTE_REQ)
@@ -1146,11 +1122,11 @@ static int bt_df_set_conn_cte_req_enable(struct bt_conn *conn, bool enable,
 
 int bt_df_conn_cte_req_enable(struct bt_conn *conn, const struct bt_df_conn_cte_req_params *params)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 
-	CHECKIF(!params) {
+	if (!params) {
 		return -EINVAL;
 	}
 
@@ -1159,7 +1135,7 @@ int bt_df_conn_cte_req_enable(struct bt_conn *conn, const struct bt_df_conn_cte_
 
 int bt_df_conn_cte_req_disable(struct bt_conn *conn)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 
@@ -1170,7 +1146,7 @@ int bt_df_conn_cte_req_disable(struct bt_conn *conn)
 #if defined(CONFIG_BT_DF_CONNECTION_CTE_RSP)
 static int bt_df_set_conn_cte_rsp_enable(struct bt_conn *conn, bool enable)
 {
-	CHECKIF(!conn) {
+	if (!conn) {
 		return -EINVAL;
 	}
 

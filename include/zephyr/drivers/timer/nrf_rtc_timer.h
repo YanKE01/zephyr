@@ -7,7 +7,7 @@
 #ifndef ZEPHYR_INCLUDE_DRIVERS_TIMER_NRF_RTC_TIMER_H
 #define ZEPHYR_INCLUDE_DRIVERS_TIMER_NRF_RTC_TIMER_H
 
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +15,7 @@ extern "C" {
 
 /** @brief Maximum allowed time span that is considered to be in the future.
  */
-#define NRF_RTC_TIMER_MAX_SCHEDULE_SPAN BIT(23)
+#define NRF_RTC_TIMER_MAX_SCHEDULE_SPAN BIT(CONFIG_NRF_RTC_COUNTER_BIT_WIDTH - 1)
 
 /** @brief RTC timer compare event handler.
  *

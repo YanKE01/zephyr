@@ -7,7 +7,7 @@
 
 /dts-v1/;
 
-#include <espressif/esp32s3/esp32s3_wroom_n8.dtsi>
+#include <espressif/esp32s3/esp32s3.dtsi>
 #include <zephyr/dt-bindings/led/led.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include "adafruit_qt_py_esp32s3-pinctrl.dtsi"
@@ -36,6 +36,7 @@
 
 	buttons {
 		compatible = "gpio-keys";
+
 		button0: button_0 {
 			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "User button";
@@ -51,6 +52,11 @@
 		gpio-map = <0 0 &gpio1 7 0>,
 			   <1 0 &gpio1 8 0>;
 	};
+};
+
+&flash0 {
+	reg = <0x0 DT_SIZE_M(8)>;
+	ranges = <0x0 0x0 DT_SIZE_M(8)>;
 };
 
 &usb_serial {
@@ -112,8 +118,8 @@ zephyr_i2c: &i2c1 {
 		spi-one-frame = <0xf0>; /* 11110000: 625 ns high and 625 ns low */
 		spi-zero-frame = <0xc0>; /* 11000000: 312.5 ns high and 937.5 ns low */
 		color-mapping = <LED_COLOR_ID_GREEN
-				LED_COLOR_ID_RED
-				LED_COLOR_ID_BLUE>;
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
 	};
 };
 
@@ -154,5 +160,13 @@ zephyr_i2c: &i2c1 {
 };
 
 &esp32_bt_hci {
+	status = "okay";
+};
+
+zephyr_udc0: &usb_otg {
+	status = "okay";
+};
+
+zephyr_uhc0: &usb_otg {
 	status = "okay";
 };

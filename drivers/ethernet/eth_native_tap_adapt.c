@@ -25,7 +25,6 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <net/if.h>
-#include <time.h>
 #include <inttypes.h>
 #include <nsi_tracing.h>
 
@@ -44,7 +43,7 @@ int eth_iface_create(const char *dev_name, const char *if_name, bool tun_only)
 	struct ifreq ifr;
 	int fd, ret = -EINVAL;
 
-	fd = open(dev_name, O_RDWR);
+	fd = open(dev_name, O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		return -errno;
 	}
@@ -115,22 +114,6 @@ int eth_wait_data(int fd)
 	}
 
 	return -EAGAIN;
-}
-
-int eth_clock_gettime(uint64_t *second, uint32_t *nanosecond)
-{
-	struct timespec tp;
-	int ret;
-
-	ret = clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
-	if (ret < 0) {
-		return -errno;
-	}
-
-	*second = (uint64_t)tp.tv_sec;
-	*nanosecond = (uint32_t)tp.tv_nsec;
-
-	return 0;
 }
 
 int eth_promisc_mode(const char *if_name, bool enable)

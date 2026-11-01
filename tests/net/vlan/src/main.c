@@ -93,24 +93,24 @@ static unsigned char icmpv6_echo_reply[] = {
 };
 
 /* Interface 1 addresses */
-static struct in6_addr my_addr1 = { { { 0x20, 0x01, 0x0d, 0xb8, 1, 0, 0, 0,
+static struct net_in6_addr my_addr1 = { { { 0x20, 0x01, 0x0d, 0xb8, 1, 0, 0, 0,
 					0, 0, 0, 0, 0, 0, 0, 0x1 } } };
 
 /* Interface 2 addresses */
-static struct in6_addr my_addr2 = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+static struct net_in6_addr my_addr2 = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
 					0, 0, 0, 0, 0, 0, 0, 0x1 } } };
 
 /* VLAN Interface 3 addresses */
-static struct in6_addr my_addr3 = { { { 0x20, 0x01, 0x0d, 0xb8, 2, 0, 0, 0,
+static struct net_in6_addr my_addr3 = { { { 0x20, 0x01, 0x0d, 0xb8, 2, 0, 0, 0,
 					0, 0, 0, 0, 0, 0, 0, 0x1 } } };
 
 /* Extra address is assigned to ll_addr */
-static struct in6_addr ll_addr = { { { 0xfe, 0x80, 0x43, 0xb8, 0, 0, 0, 0,
+static struct net_in6_addr ll_addr = { { { 0xfe, 0x80, 0x43, 0xb8, 0, 0, 0, 0,
 				       0, 0, 0, 0xf2, 0xaa, 0x29, 0x02,
 				       0x04 } } };
 
 /* Peer addresses */
-static struct in6_addr peer_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+static struct net_in6_addr peer_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
 					 0, 0, 0, 0, 0, 0, 0, 0x2 } } };
 
 /* Keep track of all ethernet interfaces */
@@ -221,7 +221,7 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 			      context->expecting_tag);
 
 		zassert_equal(context->expecting_tag,
-			      net_eth_vlan_get_vid(ntohs(hdr->vlan.tci)),
+			      net_eth_vlan_get_vid(net_ntohs(hdr->vlan.tci)),
 			      "Invalid VLAN tag in ethernet header");
 
 		k_sleep(K_MSEC(10));
@@ -235,15 +235,42 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 	return ret;
 }
 
-static enum ethernet_hw_caps eth_vlan_capabilities(const struct device *dev)
+static enum ethernet_hw_caps eth_vlan_capabilities(const struct device *dev __unused,
+						   struct net_if *iface __unused)
 {
-	return ETHERNET_HW_VLAN;
+	return ETHERNET_HW_VLAN | ETHERNET_HW_FILTERING;
+}
+
+/* Last receive filter change that the device was told about */
+static struct {
+	struct net_if *iface;
+	struct net_eth_addr mac_address;
+	bool set;
+	int count;
+} eth_filter_data;
+
+static int eth_vlan_set_config(const struct device *dev __unused,
+			       struct net_if *iface,
+			       enum ethernet_config_type type,
+			       const struct ethernet_config *config)
+{
+	if (type != ETHERNET_CONFIG_TYPE_FILTER) {
+		return -ENOTSUP;
+	}
+
+	eth_filter_data.iface = iface;
+	eth_filter_data.mac_address = config->filter.mac_address;
+	eth_filter_data.set = config->filter.set;
+	eth_filter_data.count++;
+
+	return 0;
 }
 
 static struct ethernet_api api_funcs = {
 	.iface_api.init = eth_vlan_iface_init,
 
 	.get_capabilities = eth_vlan_capabilities,
+	.set_config = eth_vlan_set_config,
 	.send = eth_tx,
 };
 
@@ -300,7 +327,8 @@ static int eth_tx_embed_ll_hdr(const struct device *dev, struct net_pkt *pkt)
 	return 0;
 }
 
-static enum ethernet_hw_caps eth_vlan_embed_ll_hdr_capabilities(const struct device *dev)
+static enum ethernet_hw_caps eth_vlan_embed_ll_hdr_capabilities(const struct device *dev __unused,
+								struct net_if *iface __unused)
 {
 	return ETHERNET_HW_VLAN;
 }
@@ -863,7 +891,7 @@ static void test_vlan_disable_all(void)
 	zassert_equal(ret, -EINVAL, "Wrong iface type (%d)", ret);
 }
 
-static bool add_neighbor(struct net_if *iface, struct in6_addr *addr)
+static bool add_neighbor(struct net_if *iface, struct net_in6_addr *addr)
 {
 	struct net_linkaddr *ll_addr;
 	struct net_nbr *nbr;
@@ -886,11 +914,11 @@ static bool add_neighbor(struct net_if *iface, struct in6_addr *addr)
 }
 
 static void comm_sendto_recvfrom(int client_sock,
-				 struct sockaddr *client_addr,
-				 socklen_t client_addrlen,
+				 struct net_sockaddr *client_addr,
+				 net_socklen_t client_addrlen,
 				 int server_sock,
-				 struct sockaddr *server_addr,
-				 socklen_t server_addrlen)
+				 struct net_sockaddr *server_addr,
+				 net_socklen_t server_addrlen)
 {
 	ssize_t sent = 0;
 
@@ -907,7 +935,7 @@ static void comm_sendto_recvfrom(int client_sock,
 
 	sent = zsock_sendto(client_sock, TEST_STR_SMALL, strlen(TEST_STR_SMALL),
 			    0, server_addr, server_addrlen);
-	zassert_equal(sent, strlen(TEST_STR_SMALL), "sendto failed (%d vs %d)",
+	zassert_equal(sent, strlen(TEST_STR_SMALL), "sendto failed (%zd vs %zu)",
 		      sent, strlen(TEST_STR_SMALL));
 
 	if (k_sem_take(&wait_data, WAIT_TIME)) {
@@ -931,8 +959,8 @@ ZTEST(net_vlan, test_vlan_ipv6_sendto_recvfrom)
 	int ret;
 	int client_sock;
 	int server_sock;
-	struct sockaddr_in6 client_addr;
-	struct sockaddr_in6 server_addr;
+	struct net_sockaddr_in6 client_addr;
+	struct net_sockaddr_in6 server_addr;
 	struct eth_context *ctx;
 
 	if (NET_VLAN_MAX_COUNT == 0) {
@@ -963,17 +991,17 @@ ZTEST(net_vlan, test_vlan_ipv6_sendto_recvfrom)
 	zassert_true(ret, "Cannot add neighbor");
 
 	ret = zsock_bind(server_sock,
-			 (struct sockaddr *)&server_addr,
+			 (struct net_sockaddr *)&server_addr,
 			 sizeof(server_addr));
 	zassert_equal(ret, 0, "bind failed");
 
 	test_started = true;
 
 	comm_sendto_recvfrom(client_sock,
-			     (struct sockaddr *)&client_addr,
+			     (struct net_sockaddr *)&client_addr,
 			     sizeof(client_addr),
 			     server_sock,
-			     (struct sockaddr *)&server_addr,
+			     (struct net_sockaddr *)&server_addr,
 			     sizeof(server_addr));
 
 	ret = zsock_close(client_sock);
@@ -988,18 +1016,18 @@ ZTEST(net_vlan, test_zz_vlan_embed_ll_hdr)
 	struct net_if *iface;
 	int ret;
 	int client_sock;
-	struct sockaddr_in6 client_addr;
-	struct sockaddr_in6 dest_addr;
+	struct net_sockaddr_in6 client_addr;
+	struct net_sockaddr_in6 dest_addr = { 0 };
 	struct net_if_addr *ifaddr;
 	ssize_t sent = 0;
-	struct ifreq ifreq = { 0 };
+	struct net_ifreq ifreq = { 0 };
 	char ifname[CONFIG_NET_INTERFACE_NAME_LEN];
 
 	/* embed ll interface addresses */
-	static struct in6_addr my_vlan_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0x90, 0, 0, 0,
+	static struct net_in6_addr my_vlan_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0x90, 0, 0, 0,
 						    0, 0, 0, 0, 0, 0, 0, 0x2 } } };
 
-	static struct in6_addr peer_vlan_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0x90, 0, 0, 0,
+	static struct net_in6_addr peer_vlan_addr = { { { 0x20, 0x01, 0x0d, 0xb8, 0x90, 0, 0, 0,
 						    0, 0, 0, 0, 0, 0, 0, 0x1 } } };
 
 	if (NET_VLAN_MAX_COUNT == 0) {
@@ -1033,18 +1061,20 @@ ZTEST(net_vlan, test_zz_vlan_embed_ll_hdr)
 	zassert_true(ret > 0, "cannot get interface name (%d/%s)", ret, strerror(-ret));
 
 	strncpy(ifreq.ifr_name, ifname, sizeof(ifreq.ifr_name));
-	ret = zsock_setsockopt(client_sock, SOL_SOCKET, SO_BINDTODEVICE, &ifreq,
+	ret = zsock_setsockopt(client_sock, ZSOCK_SOL_SOCKET, ZSOCK_SO_BINDTODEVICE, &ifreq,
 			       sizeof(ifreq));
 	zassert_equal(ret, 0, "SO_BINDTODEVICE failed, %d", -errno);
 
 	ret = add_neighbor(iface, &peer_vlan_addr);
 	zassert_true(ret, "Cannot add neighbor");
 
+	dest_addr.sin6_family = NET_AF_INET6;
+	dest_addr.sin6_port = net_htons(SERVER_PORT);
 	net_ipaddr_copy(&dest_addr.sin6_addr, &peer_vlan_addr);
 
 	sent = zsock_sendto(client_sock, TEST_STR_SMALL, strlen(TEST_STR_SMALL),
-			    0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-	zassert_equal(sent, strlen(TEST_STR_SMALL), "send (%d) failed %d/%s",
+			    0, (struct net_sockaddr *)&dest_addr, sizeof(dest_addr));
+	zassert_equal(sent, strlen(TEST_STR_SMALL), "send (%zd) failed %d/%s",
 		      sent, -errno, strerror(errno));
 
 	if (k_sem_take(&wait_data, WAIT_TIME)) {
@@ -1075,7 +1105,46 @@ ZTEST(net_vlan, test_vlan_enable_disable_all)
 	test_vlan_disable_all();
 }
 
-static bool add_peer_neighbor(struct net_if *iface, struct in6_addr *addr,
+/* A VLAN interface has no receive filter of its own, so a multicast group
+ * joined on it must be programmed to the Ethernet interface it is attached
+ * to.
+ */
+ZTEST(net_vlan, test_vlan_mcast_filter)
+{
+	static const struct net_eth_addr mcast_addr = {
+		{ 0x01, 0x00, 0x5e, 0x00, 0x00, 0x01 }
+	};
+	struct net_if *iface, *main_iface;
+	int ret;
+
+	if (NET_VLAN_MAX_COUNT == 0) {
+		ztest_test_skip();
+	}
+
+	iface = vlan_interfaces[0];
+	main_iface = net_eth_get_vlan_main(iface);
+	zassert_not_null(main_iface, "No main interface for the VLAN one");
+
+	memset(&eth_filter_data, 0, sizeof(eth_filter_data));
+
+	ret = net_eth_mcast_addr_add(iface, &mcast_addr);
+	zassert_ok(ret, "Cannot join the group (%d)", ret);
+
+	zassert_equal(eth_filter_data.count, 1, "Filter not programmed");
+	zassert_equal_ptr(eth_filter_data.iface, main_iface,
+			  "Filter programmed for a wrong interface");
+	zassert_true(eth_filter_data.set, "Filter not enabled");
+	zassert_mem_equal(eth_filter_data.mac_address.addr, mcast_addr.addr,
+			  sizeof(mcast_addr.addr), "Wrong address filtered");
+
+	ret = net_eth_mcast_addr_rm(iface, &mcast_addr);
+	zassert_ok(ret, "Cannot leave the group (%d)", ret);
+
+	zassert_equal(eth_filter_data.count, 2, "Filter not removed");
+	zassert_false(eth_filter_data.set, "Filter not disabled");
+}
+
+static bool add_peer_neighbor(struct net_if *iface, struct net_in6_addr *addr,
 			      uint8_t *lladdr)
 {
 	struct net_linkaddr ll_addr = {
@@ -1146,8 +1215,8 @@ ZTEST(net_vlan, test_vlan_tag_0)
 	 */
 	pkt = net_pkt_rx_alloc_with_buffer(iface,
 					   sizeof(icmpv6_echo_request),
-					   AF_INET6,
-					   IPPROTO_ICMPV6,
+					   NET_AF_INET6,
+					   NET_IPPROTO_ICMPV6,
 					   K_NO_WAIT);
 	zassert_not_null(pkt, "Cannot allocate pkt");
 
@@ -1168,6 +1237,92 @@ ZTEST(net_vlan, test_vlan_tag_0)
 
 	zassert_false(expecting_vlan_tag_0, "VLAN tag 0 not received");
 	zassert_equal(test_iface, eth_interfaces[0], "Wrong interface");
+}
+
+/* Feed a frame that carries the VLAN ethertype but is too short to hold the
+ * whole VLAN header, and verify that it is dropped without the VLAN header
+ * being pulled off the buffer.
+ */
+static void recv_truncated_vlan_frame(size_t frame_len)
+{
+	/* dst is filled in with our own MAC below so that the frame is not
+	 * dropped as being for someone else before it is parsed.
+	 */
+	uint8_t frame[sizeof(struct net_eth_vlan_hdr) - 1] = {
+		[6] = 0x00, [7] = 0x00, [8] = 0x5e,	/* src */
+		[9] = 0x00, [10] = 0x53, [11] = 0xff,
+		[12] = 0x81, [13] = 0x00,		/* VLAN ethertype */
+		[14] = (VLAN_TAG_7 >> 8), [15] = (VLAN_TAG_7 & 0xff),
+		[16] = 0x86,				/* first half of type */
+	};
+	struct eth_context *context;
+	struct net_pkt *pkt;
+	uint8_t *data;
+	uint16_t len;
+	int ret;
+
+	zassert_true(frame_len <= sizeof(frame), "Frame is not truncated");
+
+	context = net_if_get_device(eth_interfaces[0])->data;
+	memcpy(&frame[0], context->mac_addr, 6);
+
+	pkt = net_pkt_rx_alloc_with_buffer(eth_interfaces[0], sizeof(frame),
+					   NET_AF_UNSPEC, 0, K_NO_WAIT);
+	zassert_not_null(pkt, "Cannot allocate pkt");
+
+	ret = net_pkt_write(pkt, frame, frame_len);
+	zassert_equal(ret, 0, "Cannot write to pkt");
+
+	/* Hold on to the packet so that the buffer is still around for
+	 * inspection after the stack has dropped and unreffed it.
+	 */
+	net_pkt_ref(pkt);
+
+	data = pkt->buffer->data;
+	len = pkt->buffer->len;
+
+	ret = net_recv_data(eth_interfaces[0], pkt);
+	zassert_false(ret < 0, "Cannot receive data (%d)", ret);
+
+	/* Give the RX thread a chance to process the frame. */
+	k_msleep(10);
+
+	/* A truncated VLAN header must not be pulled. Without the length
+	 * check this either asserts inside net_buf_simple_pull() or, with
+	 * assertions compiled out, underflows the buffer length.
+	 */
+	zassert_equal(pkt->buffer->len, len,
+		      "Truncated %zu byte VLAN frame was pulled (len %u -> %u)",
+		      frame_len, len, pkt->buffer->len);
+	zassert_equal_ptr(pkt->buffer->data, data,
+			  "Truncated %zu byte VLAN frame advanced the buffer",
+			  frame_len);
+
+	net_pkt_unref(pkt);
+}
+
+ZTEST(net_vlan, test_vlan_truncated_header)
+{
+	int ret;
+
+	if (NET_VLAN_MAX_COUNT == 0) {
+		ztest_test_skip();
+		return;
+	}
+
+	ret = net_eth_vlan_enable(eth_interfaces[0], VLAN_TAG_7);
+	zassert_true(ret == 0 || ret == -EALREADY,
+		     "Cannot enable %d (%d)", VLAN_TAG_7, ret);
+
+	/* Anything shorter than the 18 byte VLAN header, but still long
+	 * enough to pass the plain Ethernet header check, must be dropped.
+	 * The 16 and 17 byte cases are the interesting ones as there the
+	 * VLAN tag itself is fully attacker controlled.
+	 */
+	for (size_t frame_len = sizeof(struct net_eth_hdr);
+	     frame_len < sizeof(struct net_eth_vlan_hdr); frame_len++) {
+		recv_truncated_vlan_frame(frame_len);
+	}
 }
 
 ZTEST_SUITE(net_vlan, NULL, setup, NULL, NULL, NULL);

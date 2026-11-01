@@ -31,6 +31,7 @@ if(CONFIG_SOC_LPC11U66
     OR CONFIG_SOC_MKW40Z4
     OR CONFIG_SOC_MKW41Z4
     OR CONFIG_SOC_MIMX9131
+    OR CONFIG_SOC_MIMX9111
     )
 
     set (CONFIG_SOC_SDKNG_UNSUPPORTED ON)
@@ -47,18 +48,13 @@ endif()
 # MCU_DEVICE_PATH: SOC name without core suffix. Must match the name of the
 #              folder in MCUX HAL. IE MIMXRT595S, or LPC55S36
 
-if(NOT HWMv2)
-  # Include HWMv1 logic for MCUX variables
-  include(${CMAKE_CURRENT_LIST_DIR}/hwmv1.cmake)
-else()
-  string(TOUPPER ${CONFIG_SOC} MCUX_DEVICE_PATH)
-  string(TOUPPER ${CONFIG_SOC} MCUX_DEVICE)
-  set(MCUX_CPU CPU_${CONFIG_SOC_PART_NUMBER})
+string(TOUPPER ${CONFIG_SOC} MCUX_DEVICE_PATH)
+string(TOUPPER ${CONFIG_SOC} MCUX_DEVICE)
+set(MCUX_CPU CPU_${CONFIG_SOC_PART_NUMBER})
 
-  if(DEFINED CONFIG_MCUX_CORE_SUFFIX)
-    string(APPEND MCUX_DEVICE ${CONFIG_MCUX_CORE_SUFFIX})
-    string(APPEND MCUX_CPU ${CONFIG_MCUX_CORE_SUFFIX})
-  endif()
+if(DEFINED CONFIG_MCUX_CORE_SUFFIX)
+  string(APPEND MCUX_DEVICE ${CONFIG_MCUX_CORE_SUFFIX})
+  string(APPEND MCUX_CPU ${CONFIG_MCUX_CORE_SUFFIX})
 endif()
 
 if(DEFINED CONFIG_SOC_SDKNG_UNSUPPORTED)
@@ -73,19 +69,35 @@ endif() # CONFIG_SOC_SDKNG_UNSUPPORTED
 
 enable_language(C ASM)
 
-zephyr_linker_sources(RWDATA
-  ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
-  )
+if(CONFIG_CPU_CORTEX_A)
+  zephyr_compile_definitions(FSL_SDK_DRIVER_QUICK_ACCESS_DISABLE)
+else()
+  if(CONFIG_MCUX_DATA_QUICK_ACCESS_SRAM)
+    zephyr_linker_sources(RWDATA
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
+      )
+  elseif(CONFIG_MCUX_DATA_QUICK_ACCESS_DTCM)
+    zephyr_linker_sources(DTCM_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
+      )
+  endif()
 
-zephyr_linker_sources_ifdef(CONFIG_ARCH_HAS_RAMFUNC_SUPPORT
-  RAMFUNC_SECTION
-  ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
-  )
+  if(CONFIG_MCUX_CODE_QUICK_ACCESS_RAMFUNC)
+    zephyr_linker_sources(RAMFUNC_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
+      )
+  elseif(CONFIG_MCUX_CODE_QUICK_ACCESS_ITCM)
+    zephyr_linker_sources(ITCM_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
+      )
+  endif()
+endif()
 
-zephyr_linker_sources_ifdef(CONFIG_NOCACHE_MEMORY
-  NOCACHE_SECTION
-  ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/nocache.ld
-  )
+if(CONFIG_MCUX_NONCACHEABLE_NOCACHE)
+  zephyr_linker_sources(NOCACHE_SECTION
+    ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/nocache.ld
+    )
+endif()
 
 if(NOT CONFIG_ASSERT OR CONFIG_FORCE_NO_ASSERT)
   zephyr_compile_definitions(NDEBUG) # squelch fsl_flexcan.c warning
@@ -125,19 +137,26 @@ zephyr_library_compile_definitions_ifdef(CONFIG_NOCACHE_MEMORY
   __STARTUP_INITIALIZE_NONCACHEDATA
   )
 
-zephyr_library_compile_definitions_ifdef(CONFIG_HAS_MCUX_CACHE
-  FSL_SDK_ENABLE_DRIVER_CACHE_CONTROL
+zephyr_library_compile_definitions_ifdef(CONFIG_SOC_MCXA_EARLY_SRAM_ECC_INIT
+  BYPASS_ECC_RAM_INIT
+  )
+
+if(CONFIG_HAS_MCUX_CACHE OR CONFIG_HAS_MCUX_XCACHE)
+  zephyr_library_compile_definitions(FSL_SDK_ENABLE_DRIVER_CACHE_CONTROL)
+endif()
+
+# CMSIS SystemInit() disables the hardware watchdog by default
+# (DISABLE_WDOG defaults to 1). Leave it running so the Zephyr watchdog
+# driver can manage it when a SoC opts in and the boot-time disable policy
+# asks to preserve it (see CONFIG_MCUX_SYSINIT_KEEP_WATCHDOG).
+zephyr_library_compile_definitions_ifdef(CONFIG_MCUX_SYSINIT_KEEP_WATCHDOG
+  DISABLE_WDOG=0
   )
 
 # MCUX_SDK and MCUX_SDK_NG share wireless/framework_5.3.3, wifi_nxp
 add_subdirectory_ifdef(CONFIG_IEEE802154_KW41Z
   ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/middleware/wireless/framework_5.3.3
   ${CMAKE_CURRENT_BINARY_DIR}/middleware/wireless/framework
-  )
-
-add_subdirectory_ifdef(CONFIG_WIFI_NXP
-  ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/middleware/wifi_nxp
-  ${CMAKE_CURRENT_BINARY_DIR}/middleware/wifi_nxp
   )
 
 add_subdirectory(${ZEPHYR_CURRENT_MODULE_DIR}/mcux/middleware

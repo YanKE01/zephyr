@@ -8,8 +8,8 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-#ifndef ZEPHYR_INCLUDE_BLUETOOTH_HFP_AG_H_
-#define ZEPHYR_INCLUDE_BLUETOOTH_HFP_AG_H_
+#ifndef ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_HFP_AG_H_
+#define ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_HFP_AG_H_
 
 /**
  * @brief Hands Free Profile - Audio Gateway (HFP-AG)
@@ -41,7 +41,16 @@ enum bt_hfp_ag_indicator {
 #define BT_HFP_AG_CODEC_MSBC    0x02
 #define BT_HFP_AG_CODEC_LC3_SWB 0x03
 
+/**
+ * @struct bt_hfp_ag
+ * @brief HFP AG structure
+ */
 struct bt_hfp_ag;
+
+/**
+ * @struct bt_hfp_ag_call
+ * @brief HFP AG call structure
+ */
 struct bt_hfp_ag_call;
 
 /** @typedef bt_hfp_ag_query_subscriber_func_t
@@ -147,6 +156,41 @@ struct bt_hfp_ag_cb {
 	 */
 	void (*sco_disconnected)(struct bt_conn *sco_conn, uint8_t reason);
 
+	/** Get indicator values callback
+	 *
+	 *  If this callback is provided it will be called whenever the AG needs to provide current
+	 *  indicator values to the HF.
+	 *  This typically occurs when the HF sends `AT+CIND?` command to query the current status
+	 *  of AG indicators.
+	 *
+	 *  The application should populate the indicator values through the provided pointers. All
+	 *  indicator values should be set according to the current status of the AG.
+	 *
+	 *  @param ag HFP AG object.
+	 *  @param service Pointer to store service availability indicator value.
+	 *                 0 = service is not available, 1 = service is available.
+	 *  @param strength Pointer to store signal strength indicator value.
+	 *                Range: 0-5 (0 = no signal, 5 = maximum signal).
+	 *  @param roam Pointer to store roaming status indicator value.
+	 *              0 = not roaming, 1 = roaming.
+	 *  @param battery Pointer to store battery level indicator value.
+	 *                 Range: 0-5 (0 = battery exhausted, 5 = battery full).
+	 *
+	 *  @note The AG is in SLC establishment phase. The AG callback `connected()` is not
+	 *        notified at this time.
+	 *
+	 *  @note If the callback is not provided by the application or the returned error is no
+	 *        zero, the value of these all indicators will be set to 0 by default. And the
+	 *        specific can be set and notified by calling the dedicated function. Such as
+	 *        `service availability indicator value` can be set by calling the function
+	 *        `bt_hfp_ag_service_availability()`. The `signal strength value` can be set
+	 *        by calling `bt_hfp_ag_signal_strength()`, and so on.
+	 *
+	 *  @return 0 in case of success or negative value in case of error.
+	 */
+	int (*get_indicator_value)(struct bt_hfp_ag *ag, uint8_t *service, uint8_t *strength,
+				   uint8_t *roam, uint8_t *battery);
+
 	/** Get ongoing call information Callback
 	 *
 	 *  If this callback is provided it will be called whenever the AT command `AT+CIND?` is
@@ -197,6 +241,30 @@ struct bt_hfp_ag_cb {
 	 */
 	int (*number_call)(struct bt_hfp_ag *ag, const char *number);
 
+	/** HF last number redial request Callback
+	 *
+	 *  If this callback is provided it will be called whenever a
+	 *  last number redial request is received from HF via `AT+BLDN` command.
+	 *  When the callback is triggered, the application needs to provide
+	 *  the last dialed phone number.
+	 *  If the callback is invalid, the last number redial from HF
+	 *  cannot be supported.
+	 *
+	 *  The application should:
+	 *  1. Retrieve the last dialed phone number from its call history
+	 *  2. Copy the phone number to the provided buffer
+	 *
+	 *  @param ag HFP AG object.
+	 *  @param number Buffer to store the last dialed phone number.
+	 *                The buffer size is @kconfig{CONFIG_BT_HFP_AG_PHONE_NUMBER_MAX_LEN} + 1,
+	 *                and should be null-terminated.
+	 *
+	 *  @return 0 in case of success or negative value in case of error.
+	 *          If successful, the AG will proceed with the call setup procedure.
+	 *          If error, an ERROR response will be sent to HF.
+	 */
+	int (*redial)(struct bt_hfp_ag *ag, char number[CONFIG_BT_HFP_AG_PHONE_NUMBER_MAX_LEN + 1]);
+
 	/** HF outgoing Callback
 	 *
 	 *  If this callback is provided it will be called whenever a
@@ -234,7 +302,7 @@ struct bt_hfp_ag_cb {
 	 *  call is in the ringing
 	 *
 	 *  @param call HFP AG call object.
-	 *  @param in_bond true - in-bond ringing, false - No in-bond ringing
+	 *  @param in_band true - in-band ringing, false - No in-band ringing
 	 */
 	void (*ringing)(struct bt_hfp_ag_call *call, bool in_band);
 
@@ -289,6 +357,7 @@ struct bt_hfp_ag_cb {
 	 *  supported codec ids are updated.
 	 *
 	 *  @param ag HFP AG object.
+	 *  @param ids Bitmap of supported codec IDs.
 	 */
 	void (*codec)(struct bt_hfp_ag *ag, uint32_t ids);
 
@@ -305,17 +374,16 @@ struct bt_hfp_ag_cb {
 	/** Audio connection request callback
 	 *
 	 *  If this callback is provided it will be called whenever the
-	 *  audio conenction request is triggered by HF.
+	 *  audio connection request is triggered by HF.
 	 *  When AT+BCC AT command received, it means the procedure of
 	 *  establishment of audio connection is triggered by HF.
 	 *  If the callback is provided by application, AG needs to
 	 *  start the codec connection procedure by calling
 	 *  function `bt_hfp_ag_audio_connect` in application layer.
-	 *  Or, the codec conenction procedure will be started with
+	 *  Or, the codec connection procedure will be started with
 	 *  default codec id `BT_HFP_AG_CODEC_CVSD`.
 	 *
 	 *  @param ag HFP AG object.
-	 *  @param err Result of codec negotiation.
 	 */
 	void (*audio_connect_req)(struct bt_hfp_ag *ag);
 
@@ -669,13 +737,13 @@ int bt_hfp_ag_set_operator(struct bt_hfp_ag *ag, uint8_t mode, char *name);
 
 /** @brief Create audio connection
  *
- *  Create audio conenction by HFP AG. There are two setups included,
+ *  Create audio connection by HFP AG. There are two setups included,
  *  Codec connection and audio connection.
  *  The codec connection will be established firstly if the codec
  *  negotiation are supported by both side. If the passed codec id
  *  is not same as the last codec connection, the codec connection
  *  procedure will be triggered.
- *  After the codec conenction is established, the audio conenction
+ *  After the codec connection is established, the audio connection
  *  will be started.
  *  The passed codec id could be one of BT_HFP_AG_CODEC_XXX. If the
  *  codec negotiation feature is supported by both side, the codec id
@@ -863,4 +931,4 @@ int bt_hfp_ag_ongoing_calls(struct bt_hfp_ag *ag, struct bt_hfp_ag_ongoing_call 
  * @}
  */
 
-#endif /* ZEPHYR_INCLUDE_BLUETOOTH_HFP_HF_H_ */
+#endif /* ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_HFP_AG_H_ */

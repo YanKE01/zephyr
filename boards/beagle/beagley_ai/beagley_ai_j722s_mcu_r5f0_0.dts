@@ -8,7 +8,7 @@
 /dts-v1/;
 
 #include <ti/j722s_mcu_r5.dtsi>
-#include "beagley_ai_j722s_mcu_r5f0_0-pinctrl.dtsi"
+#include "beagley_ai_j722s_r5f0_0-pinctrl.dtsi"
 #include <freq.h>
 
 / {
@@ -16,11 +16,15 @@
 	compatible = "beagle,beagley-ai";
 
 	chosen {
-		zephyr,sram = &atcm;
+		zephyr,sram = &ddr1;
 		zephyr,console = &uart1;
 		zephyr,shell-uart = &uart1;
 		zephyr,ipc = &ipc0;
 		zephyr,ipc_shm = &ddr0;
+	};
+
+	aliases {
+		watchdog0 = &mcu_rti0;
 	};
 
 	cpus {
@@ -60,6 +64,6 @@
 	current-speed = <115200>;
 };
 
-&systick_timer {
+&mcu_rti0 {
 	status = "okay";
 };

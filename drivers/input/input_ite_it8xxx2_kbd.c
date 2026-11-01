@@ -86,11 +86,13 @@ static void it8xxx2_kbd_drive_column(const struct device *dev, int col)
 	key = irq_lock();
 	inst->KBS_KSOL = (inst->KBS_KSOL & ~ksol_mask) | (kso_val & ksol_mask);
 	inst->KBS_KSOH1 = (inst->KBS_KSOH1 & ~ksoh1_mask) | ((kso_val >> 8) & ksoh1_mask);
-	irq_unlock(key);
-
 	if (common->col_size > 16) {
-		inst->KBS_KSOH2 = (kso_val >> 16) & 0xff;
+		const uint8_t ksoh2_mask = (kso_mask >> 16) & 0xff;
+
+		inst->KBS_KSOH2 = (inst->KBS_KSOH2 & ~ksoh2_mask) |
+				  ((kso_val >> 16) & ksoh2_mask);
 	}
+	irq_unlock(key);
 }
 
 static kbd_row_t it8xxx2_kbd_read_row(const struct device *dev)
@@ -169,12 +171,16 @@ static int it8xxx2_kbd_init(const struct device *dev)
 		 *   Bit[7:6] = 00b: Select alternate KSO function
 		 *   Bit[2] = 1b: Enable the internal pull-up of KSO pin
 		 *
-		 * NOTE: Set input temporarily for gpio_pin_configure(), after
-		 * that pinctrl_apply_state() set to alternate function
-		 * immediately.
+		 * NOTE: Set (output | dt_flag) temporarily for kso16 and
+		 * kso17 pins, after that pinctrl_apply_state() set to
+		 * alternate function immediately.
 		 */
-		gpio_pin_configure_dt(&config->kso16_gpios, GPIO_INPUT);
-		gpio_pin_configure_dt(&config->kso17_gpios, GPIO_INPUT);
+		if (!(config->kso_ignore_mask & BIT(16))) {
+			gpio_pin_configure_dt(&config->kso16_gpios, GPIO_OUTPUT);
+		}
+		if (common->col_size > 17 && !(config->kso_ignore_mask & BIT(17))) {
+			gpio_pin_configure_dt(&config->kso17_gpios, GPIO_OUTPUT);
+		}
 	}
 	/*
 	 * Enable the internal pull-up and kbs mode of the KSI[7:0] pins.
@@ -191,7 +197,9 @@ static int it8xxx2_kbd_init(const struct device *dev)
 	inst->KBS_KSOL = inst->KBS_KSOL & ~ksol_mask;
 	inst->KBS_KSOH1 = inst->KBS_KSOH1 & ~ksoh1_mask;
 	if (common->col_size > 16) {
-		inst->KBS_KSOH2 = 0x00;
+		const uint8_t ksoh2_mask = (kso_mask >> 16) & 0xff;
+
+		inst->KBS_KSOH2 = inst->KBS_KSOH2 & ~ksoh2_mask;
 	}
 
 	for (int i = 0; i < KEYBOARD_KSI_PIN_COUNT; i++) {
@@ -245,8 +253,8 @@ static const struct it8xxx2_kbd_config it8xxx2_kbd_cfg_0 = {
 	.irq = DT_INST_IRQN(0),
 	.wuc_map_list = it8xxx2_kbd_wuc,
 	.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(0),
-	.kso16_gpios = GPIO_DT_SPEC_INST_GET(0, kso16_gpios),
-	.kso17_gpios = GPIO_DT_SPEC_INST_GET(0, kso17_gpios),
+	.kso16_gpios = GPIO_DT_SPEC_INST_GET_OR(0, kso16_gpios, {0}),
+	.kso17_gpios = GPIO_DT_SPEC_INST_GET_OR(0, kso17_gpios, {0}),
 	.kso_ignore_mask = DT_INST_PROP(0, kso_ignore_mask),
 };
 
@@ -264,5 +272,9 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_PM_DEVICE_SYSTEM_MANAGED) ||
 
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1,
 	     "only one ite,it8xxx2-kbd compatible node can be supported");
-BUILD_ASSERT(IN_RANGE(DT_INST_PROP(0, row_size), 1, 8), "invalid row-size");
-BUILD_ASSERT(IN_RANGE(DT_INST_PROP(0, col_size), 1, 18), "invalid col-size");
+BUILD_ASSERT(DT_INST_PROP(0, col_size) < 17 ||
+	     DT_INST_NODE_HAS_PROP(0, kso16_gpios),
+	     "kso16-gpios must be defined in dts when col-size is 17 or 18");
+BUILD_ASSERT(DT_INST_PROP(0, col_size) < 18 ||
+	     DT_INST_NODE_HAS_PROP(0, kso17_gpios),
+	     "kso17-gpios must be defined in dts when col-size is 18");

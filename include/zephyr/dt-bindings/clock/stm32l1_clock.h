@@ -6,7 +6,9 @@
 #ifndef ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_
 #define ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_
 
-#include "stm32_common_clocks.h"
+#include <zephyr/dt-bindings/clock/stm32_common_clocks.h>
+
+/** @cond INTERNAL_HIDDEN */
 
 /** Bus gatting clocks */
 #define STM32_CLOCK_BUS_AHB1    0x01c
@@ -25,10 +27,15 @@
 /* Low speed clocks defined in stm32_common_clocks.h */
 #define STM32_SRC_HSE		(STM32_SRC_LSI + 1)
 #define STM32_SRC_HSI		(STM32_SRC_HSE + 1)
+/** Bus clock */
+#define STM32_SRC_TIMPCLK1	(STM32_SRC_HSI + 1)
+#define STM32_SRC_TIMPCLK2	(STM32_SRC_TIMPCLK1 + 1)
 
 /** @brief RCC_CSR register offset */
 #define CSR_REG		0x34
 
-#define RTC_SEL(val)		STM32_DT_CLOCK_SELECT((val), 3, 16, CSR_REG)
+#define RTC_SEL(val)		STM32_DT_CLOCK_SELECT((val), 17, 16, CSR_REG)
+
+/** @endcond */
 
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_ */

@@ -11,6 +11,7 @@
 #include <zephyr/usb_c/usbc.h>
 #include <zephyr/usb_c/tcpci.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/byteorder.h>
 #include "rt1715.h"
 
 #define DT_DRV_COMPAT richtek_rt1715
@@ -46,8 +47,10 @@ struct rt1715_data {
 
 	/** VCONN discharge callback set by USB-C stack */
 	tcpc_vconn_discharge_cb_t vconn_discharge_cb;
-	/** VCONN discharge callback data set by USB-C stack */
+	/** VCONN control callback set by USB-C stack */
 	tcpc_vconn_control_cb_t vconn_cb;
+	/** USB-C connector device passed to VCONN callbacks */
+	const struct device *usbc_dev;
 	/** Polarity of CC lines for PD and VCONN */
 	enum tc_cc_polarity cc_polarity;
 
@@ -172,18 +175,22 @@ static int rt1715_tcpc_set_cc(const struct device *dev, enum tc_cc_pull pull)
 }
 
 static void rt1715_tcpc_set_vconn_discharge_cb(const struct device *dev,
-					       tcpc_vconn_discharge_cb_t cb)
+					       tcpc_vconn_discharge_cb_t cb,
+					       const struct device *usbc_dev)
 {
 	struct rt1715_data *data = dev->data;
 
 	data->vconn_discharge_cb = cb;
+	data->usbc_dev = usbc_dev;
 }
 
-static void rt1715_tcpc_set_vconn_cb(const struct device *dev, tcpc_vconn_control_cb_t vconn_cb)
+static void rt1715_tcpc_set_vconn_cb(const struct device *dev, tcpc_vconn_control_cb_t vconn_cb,
+				     const struct device *usbc_dev)
 {
 	struct rt1715_data *data = dev->data;
 
 	data->vconn_cb = vconn_cb;
+	data->usbc_dev = usbc_dev;
 }
 
 static int rt1715_tcpc_vconn_discharge(const struct device *dev, bool enable)
@@ -227,7 +234,7 @@ static int rt1715_tcpc_set_vconn(const struct device *dev, bool enable)
 	}
 
 	if (data->vconn_cb != NULL) {
-		ret = data->vconn_cb(dev, data->cc_polarity, enable);
+		ret = data->vconn_cb(dev, data->usbc_dev, data->cc_polarity, enable);
 	}
 
 	return ret;
@@ -282,7 +289,7 @@ static int rt1715_tcpc_rx_fifo_enqueue(const struct device *dev)
 
 	rxbcnt = buf[0];
 	rxftype = buf[1];
-	rxhead = (buf[3] << 8) | buf[2];
+	rxhead = sys_get_le16(&buf[2]);
 
 	/* rxbcnt = 1 (frame type) + 2 (Message Header) + Rx data byte count */
 	if (rxbcnt < 3) {
@@ -371,34 +378,6 @@ static int rt1715_tcpc_dump_std_reg(const struct device *dev)
 	LOG_INF("TCPC %s:%s registers:", cfg->bus.bus->name, dev->name);
 
 	return tcpci_tcpm_dump_std_reg(&cfg->bus);
-}
-
-void rt1715_tcpc_alert_handler_cb(const struct device *dev, void *data, enum tcpc_alert alert)
-{
-}
-
-static int rt1715_tcpc_get_status_register(const struct device *dev, enum tcpc_status_reg reg,
-					   uint32_t *status)
-{
-	const struct rt1715_cfg *cfg = dev->config;
-
-	if (reg == TCPC_VENDOR_DEFINED_STATUS) {
-		return tcpci_read_reg8(&cfg->bus, RT1715_REG_RT_INT, (uint8_t *)status);
-	}
-
-	return tcpci_tcpm_get_status_register(&cfg->bus, reg, (uint16_t *)status);
-}
-
-static int rt1715_tcpc_clear_status_register(const struct device *dev, enum tcpc_status_reg reg,
-					     uint32_t mask)
-{
-	const struct rt1715_cfg *cfg = dev->config;
-
-	if (reg == TCPC_VENDOR_DEFINED_STATUS) {
-		return tcpci_write_reg8(&cfg->bus, RT1715_REG_RT_INT, (uint8_t)mask);
-	}
-
-	return tcpci_tcpm_clear_status_register(&cfg->bus, reg, (uint16_t)mask);
 }
 
 static int rt1715_tcpc_mask_status_register(const struct device *dev, enum tcpc_status_reg reg,
@@ -497,9 +476,6 @@ static DEVICE_API(tcpc, rt1715_driver_api) = {
 	.set_cc_polarity = rt1715_tcpc_set_cc_polarity,
 	.transmit_data = rt1715_tcpc_transmit_data,
 	.dump_std_reg = rt1715_tcpc_dump_std_reg,
-	.alert_handler_cb = rt1715_tcpc_alert_handler_cb,
-	.get_status_register = rt1715_tcpc_get_status_register,
-	.clear_status_register = rt1715_tcpc_clear_status_register,
 	.mask_status_register = rt1715_tcpc_mask_status_register,
 	.set_drp_toggle = rt1715_tcpc_set_drp_toggle,
 	.get_chip_info = rt1715_tcpc_get_chip_info,
@@ -528,7 +504,7 @@ void rt1715_alert_work_cb(struct k_work *work)
 		return;
 	}
 
-	tcpci_tcpm_get_status_register(&cfg->bus, TCPC_ALERT_STATUS, &alert_reg);
+	tcpci_tcpm_get_alert_status(&cfg->bus, &alert_reg);
 
 	while (alert_reg != 0) {
 		enum tcpc_alert alert_type = tcpci_alert_reg_to_enum(alert_reg);
@@ -540,8 +516,7 @@ void rt1715_alert_work_cb(struct k_work *work)
 		} else if (alert_type == TCPC_ALERT_FAULT_STATUS) {
 			uint8_t fault;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_FAULT_STATUS,
-						       (uint16_t *)&fault);
+			tcpci_tcpm_get_fault_status(&cfg->bus, &fault);
 			tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_FAULT_STATUS,
 							 (uint16_t)fault);
 
@@ -549,8 +524,7 @@ void rt1715_alert_work_cb(struct k_work *work)
 		} else if (alert_type == TCPC_ALERT_POWER_STATUS) {
 			uint8_t pwr_status;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_POWER_STATUS,
-						       (uint16_t *)&pwr_status);
+			tcpci_tcpm_get_power_status(&cfg->bus, &pwr_status);
 
 			LOG_DBG("power status: %02x", pwr_status);
 		} else if (alert_type == TCPC_ALERT_MSG_STATUS) {
@@ -572,7 +546,7 @@ void rt1715_alert_work_cb(struct k_work *work)
 	}
 
 	tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_ALERT_STATUS, clear_flags);
-	tcpci_tcpm_get_status_register(&cfg->bus, TCPC_ALERT_STATUS, &alert_reg);
+	tcpci_tcpm_get_alert_status(&cfg->bus, &alert_reg);
 
 	/* If alert_reg is not 0 or the interrupt signal is still active */
 	if ((alert_reg != 0) || gpio_pin_get_dt(&cfg->alert_gpio)) {
@@ -593,7 +567,7 @@ void rt1715_init_work_cb(struct k_work *work)
 
 	LOG_INF("Initializing RT1715 chip: %s", data->dev->name);
 
-	ret = tcpci_tcpm_get_status_register(&cfg->bus, TCPC_POWER_STATUS, (uint16_t *)&power_reg);
+	ret = tcpci_tcpm_get_power_status(&cfg->bus, &power_reg);
 	if (ret != 0 || (power_reg & TCPC_REG_POWER_STATUS_UNINIT)) {
 		data->init_retries++;
 
@@ -624,7 +598,11 @@ void rt1715_init_work_cb(struct k_work *work)
 	tcpci_write_reg8(&cfg->bus, RT1715_REG_LP_CTRL, lp_reg);
 
 	/* Initialize alert interrupt */
-	gpio_pin_configure_dt(&cfg->alert_gpio, GPIO_INPUT);
+	ret = gpio_pin_configure_dt(&cfg->alert_gpio, GPIO_INPUT);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure alert GPIO: %d", ret);
+		return;
+	}
 
 	gpio_init_callback(&data->alert_cb, rt1715_alert_cb, BIT(cfg->alert_gpio.pin));
 
@@ -635,7 +613,11 @@ void rt1715_init_work_cb(struct k_work *work)
 		return;
 	}
 
-	gpio_pin_interrupt_configure_dt(&cfg->alert_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	ret = gpio_pin_interrupt_configure_dt(&cfg->alert_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure alert interrupt: %d", ret);
+		return;
+	}
 
 	tcpci_init_alert_mask(data->dev);
 	data->initialized = true;
@@ -656,6 +638,32 @@ static int rt1715_dev_init(const struct device *dev)
 
 	if (!device_is_ready(cfg->bus.bus)) {
 		return -EIO;
+	}
+
+	if (cfg->vconn_ctrl_gpio.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->vconn_ctrl_gpio)) {
+			LOG_ERR("VCONN control GPIO is not ready");
+			return -ENODEV;
+		}
+
+		ret = gpio_pin_configure_dt(&cfg->vconn_ctrl_gpio, GPIO_OUTPUT_INACTIVE);
+		if (ret != 0) {
+			LOG_ERR("Failed to configure VCONN control GPIO: %d", ret);
+			return ret;
+		}
+	}
+
+	if (cfg->vconn_disc_gpio.port != NULL) {
+		if (!gpio_is_ready_dt(&cfg->vconn_disc_gpio)) {
+			LOG_ERR("VCONN discharge GPIO is not ready");
+			return -ENODEV;
+		}
+
+		ret = gpio_pin_configure_dt(&cfg->vconn_disc_gpio, GPIO_OUTPUT_INACTIVE);
+		if (ret != 0) {
+			LOG_ERR("Failed to configure VCONN discharge GPIO: %d", ret);
+			return ret;
+		}
 	}
 
 	/* Resets the chip */

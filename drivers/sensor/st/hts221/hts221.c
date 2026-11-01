@@ -230,7 +230,7 @@ int hts221_init(const struct device *dev)
 		(HTS221_CFG_IRQ(inst)), ())
 
 #define HTS221_SPI_OPERATION (SPI_WORD_SET(8) |				\
-			      SPI_OP_MODE_MASTER |			\
+			      SPI_OP_MODE_CONTROLLER |			\
 			      SPI_MODE_CPOL |				\
 			      SPI_MODE_CPHA |				\
 			      SPI_HALF_DUPLEX)				\
@@ -240,8 +240,7 @@ int hts221_init(const struct device *dev)
 		STMEMSC_CTX_SPI(&hts221_config_##inst.stmemsc_cfg),		\
 		.stmemsc_cfg = {						\
 			.spi = SPI_DT_SPEC_INST_GET(inst,			\
-						    HTS221_SPI_OPERATION,	\
-						    0),				\
+						    HTS221_SPI_OPERATION)	\
 		},								\
 		HTS221_CONFIG_COMMON(inst)					\
 	}

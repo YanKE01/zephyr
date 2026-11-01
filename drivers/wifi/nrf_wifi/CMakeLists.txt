@@ -27,11 +27,9 @@ zephyr_library_sources_ifndef(CONFIG_NRF70_OFFLOADED_RAW_TX
   src/fmac_main.c
 )
 
-if(NOT CONFIG_NRF71_ON_IPC)
-  zephyr_library_sources_ifdef(CONFIG_NRF_WIFI_PATCHES_BUILTIN
-    src/fw_load.c
-  )
-endif()
+zephyr_library_sources_ifdef(CONFIG_NRF_WIFI_PATCHES_BUILTIN
+  src/fw_load.c
+)
 
 if(NOT CONFIG_NRF70_RADIO_TEST AND NOT CONFIG_NRF70_OFFLOADED_RAW_TX)
   zephyr_library_sources(
@@ -64,6 +62,15 @@ zephyr_library_sources_ifdef(CONFIG_NRF70_UTIL
   src/wifi_util.c
 )
 
+zephyr_library_sources_ifdef(CONFIG_NRF70_RADIO_TEST_SHELL
+  src/radio_test_shell.c
+)
+
+zephyr_library_sources_ifdef(CONFIG_NRF70_RADIO_TEST_FICR_SHELL
+  src/ficr_prog.c
+  src/radio_test_ficr_shell.c
+)
+
 if(CONFIG_NRF70_UTIL OR CONFIG_NRF70_DEBUG_SHELL)
   zephyr_library_sources(src/shell.c)
 endif()
@@ -74,11 +81,11 @@ zephyr_library_sources_ifdef(CONFIG_NRF70_DEBUG_SHELL
 
 zephyr_library_link_libraries(nrf70-buslib nrf-wifi-shim)
 
-if (CONFIG_NRF_WIFI_PATCHES_BUILTIN)
+if(CONFIG_NRF_WIFI_PATCHES_BUILTIN)
   zephyr_blobs_verify(MODULE nrf_wifi REQUIRED)
   # RPU FW patch binaries based on the selected configuration
   if(CONFIG_NRF70_SYSTEM_MODE)
-    if (CONFIG_NRF70_SYSTEM_WITH_RAW_MODES)
+    if(CONFIG_NRF70_SYSTEM_WITH_RAW_MODES)
       set(NRF70_PATCH ${FW_BINS_BASE}/system_with_raw/nrf70.bin)
     else()
       set(NRF70_PATCH ${FW_BINS_BASE}/default/nrf70.bin)

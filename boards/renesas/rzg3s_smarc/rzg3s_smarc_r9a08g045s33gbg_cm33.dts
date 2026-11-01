@@ -29,6 +29,7 @@
 		sw0 = &sw_1;
 		sw1 = &sw_2;
 		sw2 = &sw_3;
+		i2c-0 = &i2c0;
 	};
 
 	buttons {
@@ -54,10 +55,10 @@
 	};
 
 	ddr: memory@60000000 {
-		compatible ="zephyr,memory-region", "mmio-sram";
+		compatible = "zephyr,memory-region", "mmio-sram";
 		reg = <0x60000000 DT_SIZE_M(16)>;
 		zephyr,memory-region = "DDR";
-		zephyr,memory-attr = <( DT_MEM_ARM(ATTR_MPU_RAM) )>;
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM)>;
 	};
 
 	sram_mcpu0: memory@23000 {
@@ -107,7 +108,7 @@
 	status = "okay";
 };
 
-&gpio13{
+&gpio13 {
 	status = "okay";
 };
 
@@ -129,4 +130,8 @@
 	status = "okay";
 	rx-max-filters = <32>;
 	phys = <&transceiver0>;
+};
+
+&i2c0 {
+	status = "okay";
 };

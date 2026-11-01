@@ -47,9 +47,56 @@ extern "C" {
 
 /**
  * @defgroup crc CRC
+ * @since 1.8
+ * @version 1.0.0
  * @ingroup checksum
  * @{
  */
+
+/**
+ * @brief CRC polynomial definitions
+ * @anchor CRC_POLYNOMIAL
+ *
+ * @{
+ */
+
+/** CRC4 polynomial */
+#define CRC4_POLY 0x3
+
+/** CRC4_TI polynomial */
+#define CRC4_REFLECT_POLY 0xC
+
+/** CRC7_BE polynomial */
+#define CRC7_BE_POLY 0x09
+
+/** CRC8 polynomial */
+#define CRC8_POLY 0x07
+
+/** CRC8_REFLECT polynomial */
+#define CRC8_REFLECT_POLY 0xE0
+
+/** CRC16 polynomial */
+#define CRC16_POLY 0x8005
+
+/** CRC16_ANSI polynomial */
+#define CRC16_REFLECT_POLY 0xA001
+
+/** CRC16_CCITT/CRC16_ITU_T polynomial */
+#define CRC16_CCITT_POLY 0x1021
+
+/**  CRC24_PGP polynomial */
+#define CRC24_PGP_POLY 0x01864CFBU
+
+/** CRC32_IEEE polynomial */
+#define CRC32_IEEE_POLY 0x04C11DB7U
+
+/** CRC32C polynomial */
+#define CRC32C_POLY 0x1EDC6F41U
+
+/** CRC32_K_4_2 polynomial */
+#define CRC32K_4_2_POLY 0x93A409EBU
+
+/** @} */
 
 /**
  * @brief CRC algorithm enumeration
@@ -71,6 +118,7 @@ enum crc_type {
 	CRC32_C,     /**< Use @ref crc32_c */
 	CRC32_IEEE,  /**< Use @ref crc32_ieee */
 	CRC32_K_4_2, /**< Use @ref crc32_k_4_2_update */
+	CRC32_MPEG2, /**< Use @ref crc32_mpeg2 */
 };
 
 /**
@@ -81,7 +129,7 @@ enum crc_type {
  * and polynomial used in addition to the initial value. This is O(n*8) where n
  * is the length of the buffer provided. No reflection is performed.
  *
- * @note If you are planning to use a CRC based on poly 0x1012 the functions
+ * @note If you are planning to use a CRC based on poly 0x1021 the functions
  * crc16_itu_t() is faster and thus recommended over this one.
  *
  * @param poly The polynomial to use omitting the leading x^16
@@ -102,7 +150,7 @@ uint16_t crc16(uint16_t poly, uint16_t seed, const uint8_t *src, size_t len);
  * and polynomial used in addition to the initial value. This is O(n*8) where n
  * is the length of the buffer provided. Both input and output are reflected.
  *
- * @note If you are planning to use a CRC based on poly 0x1012 the function
+ * @note If you are planning to use a CRC based on poly 0x1021 the function
  * crc16_ccitt() is faster and thus recommended over this one.
  *
  * The following checksums can, among others, be calculated by this function,
@@ -292,6 +340,36 @@ uint32_t crc32_c(uint32_t crc, const uint8_t *data,
 uint32_t crc32_k_4_2_update(uint32_t crc, const uint8_t *data, size_t len);
 
 /**
+ * @brief Generate CRC-32/MPEG-2 checksum.
+ *
+ * Uses polynomial 0x04C11DB7 with initial value 0xFFFFFFFF, no input or output
+ * reflection and no final XOR (CRC-32/MPEG-2). Equivalent to calling
+ * @ref crc32_mpeg2_update with @p crc set to 0xFFFFFFFF.
+ *
+ * @param  data         Pointer to data on which the CRC should be calculated.
+ * @param  len          Data length.
+ *
+ * @return CRC-32 value.
+ */
+uint32_t crc32_mpeg2(const uint8_t *data, size_t len);
+
+/**
+ * @brief Update a CRC-32/MPEG-2 checksum.
+ *
+ * Computes a CRC-32 using polynomial 0x04C11DB7 in MSB-first form, with no
+ * input or output reflection and no final XOR. With @p crc set to 0xFFFFFFFF
+ * on the first call this produces the standard CRC-32/MPEG-2 value.
+ *
+ * @param crc   CRC-32 checksum that needs to be updated (use 0xFFFFFFFF for
+ *              the first call to match CRC-32/MPEG-2).
+ * @param data  Pointer to data on which the CRC should be calculated.
+ * @param len   Data length.
+ *
+ * @return CRC-32 value.
+ */
+uint32_t crc32_mpeg2_update(uint32_t crc, const uint8_t *data, size_t len);
+
+/**
  * @brief Compute CCITT variant of CRC 8
  *
  * Normal CCITT variant of CRC 8 is using 0x07.
@@ -392,6 +470,17 @@ uint32_t crc24_pgp(const uint8_t *data, size_t len);
 uint32_t crc24_pgp_update(uint32_t crc, const uint8_t *data, size_t len);
 
 /**
+ * @brief Calculate an RTCM3 CRC24Q frame checksum
+ *
+ * @param[in] data RTCM3 Frame
+ * @param[in] len Frame length in bytes.
+ *
+ * @return 0 if the data-frame contains a checksum and it matches.
+ * @return Result if data-frame does not contain checksum.
+ */
+uint32_t crc24q_rtcm3(const uint8_t *data, size_t len);
+
+/**
  * @brief Compute a CRC checksum, in a generic way.
  *
  * This is a dispatch function that calls the individual CRC routine
@@ -456,6 +545,8 @@ static inline uint32_t crc_by_type(enum crc_type type, const uint8_t *src, size_
 		return crc32_ieee_update(seed, src, len);
 	case CRC32_K_4_2:
 		return crc32_k_4_2_update(seed, src, len);
+	case CRC32_MPEG2:
+		return crc32_mpeg2_update(seed, src, len);
 	default:
 		break;
 	}

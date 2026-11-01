@@ -14,7 +14,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/irq.h>
-#include <nrf_erratas.h>
 
 LOG_MODULE_REGISTER(clock_control, CONFIG_CLOCK_CONTROL_LOG_LEVEL);
 
@@ -253,7 +252,8 @@ static void clkstarted_handle(const struct device *dev,
 			      enum clock_control_nrf_type type)
 {
 #if CONFIG_CLOCK_CONTROL_NRF_HFINT_CALIBRATION
-	if (nrf54l_errata_30() && (type == CLOCK_CONTROL_NRF_TYPE_HFCLK)) {
+	if ((NRF_ERRATA_DYNAMIC_CHECK(54L, 30) || NRF_ERRATA_DYNAMIC_CHECK(71, 30)) &&
+	    (type == CLOCK_CONTROL_NRF_TYPE_HFCLK)) {
 		nrf54l_errata_30_workaround();
 	}
 #endif
@@ -317,7 +317,7 @@ static void hfclk_start(void)
 		hf_start_tstamp = k_uptime_get();
 	}
 
-	nrfx_clock_hfclk_start();
+	nrfx_clock_start(NRF_CLOCK_DOMAIN_HFCLK);
 }
 
 static void hfclk_stop(void)
@@ -326,17 +326,34 @@ static void hfclk_stop(void)
 		hf_stop_tstamp = k_uptime_get();
 	}
 
-	nrfx_clock_hfclk_stop();
+	nrfx_clock_stop(NRF_CLOCK_DOMAIN_HFCLK);
 }
 
 #if NRF_CLOCK_HAS_HFCLK24M
+static struct onoff_client hfclk_for_24m_cli;
+
 static void hfclk24m_start(void)
 {
+	int ret;
+	struct onoff_manager *mgr = z_nrf_clock_control_get_onoff(CLOCK_CONTROL_NRF_TYPE_HFCLK);
+
+	/* HFCLK (XO) is automatically requested when XO24M is started but it's
+	 * easier to manage from software perspective if XO is explicitly requested.
+	 */
+	sys_notify_init_spinwait(&hfclk_for_24m_cli.notify);
+	ret = onoff_request(mgr, &hfclk_for_24m_cli);
+	if (ret < 0) {
+		LOG_ERR("Failed to request HFCLK for HFCLK24M: %d", ret);
+		__ASSERT_NO_MSG(false);
+	}
 	nrfx_clock_start(NRF_CLOCK_DOMAIN_HFCLK24M);
 }
 
 static void hfclk24m_stop(void)
 {
+	struct onoff_manager *mgr = z_nrf_clock_control_get_onoff(CLOCK_CONTROL_NRF_TYPE_HFCLK);
+
+	(void)onoff_cancel_or_release(mgr, &hfclk_for_24m_cli);
 	nrfx_clock_stop(NRF_CLOCK_DOMAIN_HFCLK24M);
 }
 #endif
@@ -494,7 +511,7 @@ static int async_start(const struct device *dev, clock_control_subsys_t subsys,
 	subdata->cb = cb;
 	subdata->user_data = user_data;
 
-	 get_sub_config(dev, type)->start();
+	get_sub_config(dev, type)->start();
 
 	return 0;
 }
@@ -600,6 +617,7 @@ static void lfclk_spinwait(enum nrf_lfclk_start_mode mode)
 		? NRF_CLOCK_LFCLK_XTAL
 		: CLOCK_CONTROL_NRF_K32SRC;
 	nrf_clock_lfclk_t type;
+	bool can_sleep;
 
 	if ((mode == CLOCK_CONTROL_NRF_LF_START_AVAILABLE) &&
 	    (target_type == NRF_CLOCK_LFCLK_XTAL) &&
@@ -613,51 +631,38 @@ static void lfclk_spinwait(enum nrf_lfclk_start_mode mode)
 		return;
 	}
 
-	bool isr_mode = k_is_in_isr() || k_is_pre_kernel();
-	int key = isr_mode ? irq_lock() : 0;
+	can_sleep = IS_ENABLED(CONFIG_MULTITHREADING) && !k_is_in_isr() && !k_is_pre_kernel();
 
-	if (!isr_mode) {
-		nrf_clock_int_disable(NRF_CLOCK, NRF_CLOCK_INT_LF_STARTED_MASK);
-	}
+	nrf_clock_int_disable(NRF_CLOCK, NRF_CLOCK_INT_LF_STARTED_MASK);
 
-	while (!(nrfx_clock_is_running(d, (void *)&type)
-		 && ((type == target_type)
-		     || (mode == CLOCK_CONTROL_NRF_LF_START_AVAILABLE)))) {
-		/* Synth source start is almost instant and LFCLKSTARTED may
-		 * happen before calling idle. That would lead to deadlock.
-		 */
-		if (!IS_ENABLED(CONFIG_CLOCK_CONTROL_NRF_K32SRC_SYNTH)) {
-			if (isr_mode || !IS_ENABLED(CONFIG_MULTITHREADING)) {
-				k_cpu_atomic_idle(key);
-			} else {
-				k_msleep(1);
+	while (true) {
+		if (nrfx_clock_is_running(d, (void *)&type)) {
+			if (type == target_type) {
+				/* LFCLK is running stable with target source */
+				break;
+			}
+
+			if (target_type == NRF_CLOCK_LFCLK_XTAL &&
+			    nrf_clock_lf_src_get(NRF_CLOCK) == NRF_CLOCK_LFCLK_RC &&
+			    nrf_clock_event_check(NRF_CLOCK, NRF_CLOCK_EVENT_LFCLKSTARTED)) {
+				/* Switch LFCLK source to target */
+				nrf_clock_event_clear(NRF_CLOCK, NRF_CLOCK_EVENT_LFCLKSTARTED);
+				nrf_clock_lf_src_set(NRF_CLOCK, CLOCK_CONTROL_NRF_K32SRC);
+				nrf_clock_task_trigger(NRF_CLOCK, NRF_CLOCK_TASK_LFCLKSTART);
+			}
+
+			if (mode == CLOCK_CONTROL_NRF_LF_START_AVAILABLE) {
+				/* LFCLK is running and will switch to target source */
+				break;
 			}
 		}
 
-		/* Clock interrupt is locked, LFCLKSTARTED is handled here. */
-		if ((target_type ==  NRF_CLOCK_LFCLK_XTAL)
-		    && (nrf_clock_lf_src_get(NRF_CLOCK) == NRF_CLOCK_LFCLK_RC)
-		    && nrf_clock_event_check(NRF_CLOCK,
-					     NRF_CLOCK_EVENT_LFCLKSTARTED)) {
-			nrf_clock_event_clear(NRF_CLOCK,
-					      NRF_CLOCK_EVENT_LFCLKSTARTED);
-			nrf_clock_lf_src_set(NRF_CLOCK,
-					     CLOCK_CONTROL_NRF_K32SRC);
-
-			/* Clear pending interrupt, otherwise new clock event
-			 * would not wake up from idle.
-			 */
-			NVIC_ClearPendingIRQ(DT_INST_IRQN(0));
-			nrf_clock_task_trigger(NRF_CLOCK,
-					       NRF_CLOCK_TASK_LFCLKSTART);
+		if (can_sleep) {
+			k_msleep(1);
 		}
 	}
 
-	if (isr_mode) {
-		irq_unlock(key);
-	} else {
-		nrf_clock_int_enable(NRF_CLOCK, NRF_CLOCK_INT_LF_STARTED_MASK);
-	}
+	nrf_clock_int_enable(NRF_CLOCK, NRF_CLOCK_INT_LF_STARTED_MASK);
 }
 
 void z_nrf_clock_control_lf_on(enum nrf_lfclk_start_mode start_mode)
@@ -695,6 +700,20 @@ void z_nrf_clock_control_lf_on(enum nrf_lfclk_start_mode start_mode)
 	}
 }
 
+static void hfclkstarted_handle(const struct device *dev)
+{
+	struct nrf_clock_control_sub_data *data =
+			get_sub_data(dev, CLOCK_CONTROL_NRF_TYPE_HFCLK);
+
+	if (GET_STATUS(data->flags) == CLOCK_CONTROL_STATUS_STARTING) {
+		/* Handler is called only if state is set. BT specific API
+		 * does not set this state and does not require handler to
+		 * be called.
+		 */
+		clkstarted_handle(dev, CLOCK_CONTROL_NRF_TYPE_HFCLK);
+	}
+}
+
 static void clock_event_handler(nrfx_clock_evt_type_t event)
 {
 	const struct device *dev = CLOCK_DEVICE;
@@ -702,7 +721,7 @@ static void clock_event_handler(nrfx_clock_evt_type_t event)
 	switch (event) {
 #if NRF_CLOCK_HAS_XO_TUNE
 	case NRFX_CLOCK_EVT_XO_TUNED:
-		clkstarted_handle(dev, CLOCK_CONTROL_NRF_TYPE_HFCLK);
+		hfclkstarted_handle(dev);
 		break;
 	case NRFX_CLOCK_EVT_XO_TUNE_ERROR:
 	case NRFX_CLOCK_EVT_XO_TUNE_FAILED:
@@ -716,19 +735,8 @@ static void clock_event_handler(nrfx_clock_evt_type_t event)
 #else
 	/* HFCLK started should be used only if tune operation is done implicitly. */
 	case NRFX_CLOCK_EVT_HFCLK_STARTED:
-	{
-		struct nrf_clock_control_sub_data *data =
-				get_sub_data(dev, CLOCK_CONTROL_NRF_TYPE_HFCLK);
-
-		/* Check needed due to anomaly 201:
-		 * HFCLKSTARTED may be generated twice.
-		 */
-		if (GET_STATUS(data->flags) == CLOCK_CONTROL_STATUS_STARTING) {
-			clkstarted_handle(dev, CLOCK_CONTROL_NRF_TYPE_HFCLK);
-		}
-
+		hfclkstarted_handle(dev);
 		break;
-	}
 #endif
 #if NRF_CLOCK_HAS_HFCLK24M
 	case NRFX_CLOCK_EVT_HFCLK24M_STARTED:
@@ -751,7 +759,7 @@ static void clock_event_handler(nrfx_clock_evt_type_t event)
 		}
 		clkstarted_handle(dev, CLOCK_CONTROL_NRF_TYPE_LFCLK);
 		break;
-#if NRF_CLOCK_HAS_CALIBRATION
+#if NRF_CLOCK_HAS_CALIBRATION || NRF_LFRC_HAS_CALIBRATION
 	case NRFX_CLOCK_EVT_CAL_DONE:
 		if (IS_ENABLED(CONFIG_CLOCK_CONTROL_NRF_DRIVER_CALIBRATION)) {
 			z_nrf_clock_calibration_done_handler();
@@ -794,18 +802,20 @@ static void hfclkaudio_init(void)
 
 static int clk_init(const struct device *dev)
 {
-	nrfx_err_t nrfx_err;
 	int err;
 	static const struct onoff_transitions transitions = {
 		.start = onoff_start,
 		.stop = onoff_stop
 	};
 
+#if NRF_LFRC_HAS_CALIBRATION
+	IRQ_CONNECT(LFRC_IRQn, DT_INST_IRQ(0, priority), nrfx_isr, nrfx_power_clock_irq_handler, 0);
+#endif
+
 	IRQ_CONNECT(DT_INST_IRQN(0), DT_INST_IRQ(0, priority),
 		    nrfx_isr, nrfx_power_clock_irq_handler, 0);
 
-	nrfx_err = nrfx_clock_init(clock_event_handler);
-	if (nrfx_err != NRFX_SUCCESS) {
+	if (nrfx_clock_init(clock_event_handler) != 0) {
 		return -EIO;
 	}
 

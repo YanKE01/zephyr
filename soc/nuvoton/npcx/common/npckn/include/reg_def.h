@@ -73,7 +73,10 @@ struct pmc_reg {
 	volatile uint8_t PMCSR;
 	volatile uint8_t reserved1[2];
 	/* 0x003: Enable in Sleep Control */
-	volatile uint8_t ENIDL_CTL;
+	union {
+		volatile uint8_t ENSLP_CTL;
+		volatile uint8_t ENIDL_CTL; /* Deprecated name of ENSLP_CTL */
+	};
 	/* 0x004: Disable in Idle Control */
 	volatile uint8_t DISIDL_CTL;
 	/* 0x005: Disable in Idle Control 1 */
@@ -98,10 +101,10 @@ struct pmc_reg {
 #define NPCX_PMCSR_OHFC                       6
 #define NPCX_PMCSR_OLFC                       7
 #define NPCX_DISIDL_CTL_RAM_DID               5
-#define NPCX_ENIDL_CTL_ADC_ACC_DIS            1
-#define NPCX_ENIDL_CTL_PECI_ENI               2
-#define NPCX_ENIDL_CTL_LP_WK_CTL              6
-#define NPCX_ENIDL_CTL_ADC_LFSL               7
+#define NPCX_ENSLP_CTL_ADC_ACC_DIS            1
+#define NPCX_ENSLP_CTL_PECI_ENI               2
+#define NPCX_ENSLP_CTL_LP_WK_CTL              6
+#define NPCX_ENSLP_CTL_ADC_LFSL               7
 
 /* Macro functions for Development and Debugger Interface (DDI) registers */
 #define NPCX_DBGCTRL(base)   (*(volatile uint8_t *)(base + 0x004))
@@ -237,7 +240,7 @@ struct glue_reg {
 	/* 0x02d: Voltage Detection Control and Status */
 	volatile uint8_t VD_CTS;
 	volatile uint8_t reserved7[2];
-	/* 0x030: Exteral Power-Up Reset Control */
+	/* 0x030: External Power-Up Reset Control */
 	volatile uint8_t EPURST_CTL;
 	volatile uint8_t reserved8[7];
 	/* 0x038: PSL Control and Status 3 */
@@ -308,6 +311,9 @@ struct uart_reg {
 #define NPCX_UMDSL_FIFO_MD                    0
 #define NPCX_UMDSL_ETD                        4
 #define NPCX_UMDSL_ERD                        5
+
+#define NPCX_UFRS_CHAR_DATA_BIT_8 0
+#define NPCX_UFRS_CHAR_DATA_BIT_7 1
 
 #define NPCX_UFTSTS_TEMPTY_LVL                FIELD(0, 5)
 #define NPCX_UFTSTS_TEMPTY_LVL_STS            5
@@ -476,45 +482,45 @@ struct adc_reg {
 	(*(volatile uint16_t *)(base + NPCX_TEMP_THR_DCTL_OFFSET(ctrl)))
 
 /* ADC register fields */
-#define NPCX_ATCTL_SCLKDIV_FIELD              FIELD(0, 6)
-#define NPCX_ATCTL_DLY_FIELD                  FIELD(8, 3)
-#define NPCX_ASCADD_SADDR_FIELD               FIELD(0, 5)
-#define NPCX_ADCSTS_EOCEV                     0
-#define NPCX_ADCSTS_EOCCEV                    1
-#define NPCX_ADCSTS_TEOCEV                    4
-#define NPCX_ADCSTS_TEOCCEV                   5
-#define NPCX_ADCCNF_ADCEN                     0
-#define NPCX_ADCCNF_ADCMD_FIELD               FIELD(1, 2)
-#define NPCX_ADCCNF_ADCRPTC                   3
-#define NPCX_ADCCNF_START                     4
-#define NPCX_ADCCNF_ADCTTE                    5
-#define NPCX_ADCCNF_INTECEN                   6
-#define NPCX_ADCCNF_INTECCEN                  7
-#define NPCX_ADCCNF_INTETCEN                  8
-#define NPCX_ADCCNF_INTOVFEN                  9
-#define NPCX_ADCCNF_STOP                      11
-#define NPCX_CHNDAT_CHDAT_FIELD               FIELD(0, 10)
-#define NPCX_CHNDAT_NEW                       15
-#define NPCX_THRCTS_ADC_WKEN                  15
-#define NPCX_THRCTS_THR3_IEN                  10
-#define NPCX_THRCTS_THR2_IEN                  9
-#define NPCX_THRCTS_THR1_IEN                  8
-#define NPCX_THRCTS_ADC_EVENT                 7
-#define NPCX_THRCTS_THR3_STS                  2
-#define NPCX_THRCTS_THR2_STS                  1
-#define NPCX_THRCTS_THR1_STS                  0
-#define NPCX_THR_DCTL_THRD_EN                 15
-#define NPCX_THR_DCTL_THR_DVAL                FIELD(0, 10)
-#define NPCX_V2T_CTRL_TEMP_EN                 0
-#define NPCX_V2T_CTRL_OVT_EN                  1
-#define NPCX_V2T_CTRL_TINTC_EN                2
-#define NPCX_V2T_CTRL_TINTCC_EN               3
-#define NPCX_V2T_CTRL_TINTT_EN                4
-#define NPCX_V2T_CTRL_TINTO_EN                5
-#define NPCX_V2T_CTRL_OVT_MODE                6
-#define NPCX_V2T_TCHNDAT_DAT_FRACION       FIELD(0, 3)
-#define NPCX_V2T_TCHNDAT_DAT               FIELD(3, 8)
-#define NPCX_V2T_TCHNDAT_DAT_FULL          FIELD(0, 11) /* Data(8 bit) + Fraction (3 bit) */
+#define NPCX_ATCTL_SCLKDIV_FIELD     FIELD(0, 6)
+#define NPCX_ATCTL_DLY_FIELD         FIELD(8, 3)
+#define NPCX_ASCADD_SADDR_FIELD      FIELD(0, 5)
+#define NPCX_ADCSTS_EOCEV            0
+#define NPCX_ADCSTS_EOCCEV           1
+#define NPCX_ADCSTS_TEOCEV           4
+#define NPCX_ADCSTS_TEOCCEV          5
+#define NPCX_ADCCNF_ADCEN            0
+#define NPCX_ADCCNF_ADCMD_FIELD      FIELD(1, 2)
+#define NPCX_ADCCNF_ADCRPTC          3
+#define NPCX_ADCCNF_START            4
+#define NPCX_ADCCNF_ADCTTE           5
+#define NPCX_ADCCNF_INTECEN          6
+#define NPCX_ADCCNF_INTECCEN         7
+#define NPCX_ADCCNF_INTETCEN         8
+#define NPCX_ADCCNF_INTOVFEN         9
+#define NPCX_ADCCNF_STOP             11
+#define NPCX_CHNDAT_CHDAT_FIELD      FIELD(0, 10)
+#define NPCX_CHNDAT_NEW              15
+#define NPCX_THRCTS_ADC_WKEN         15
+#define NPCX_THRCTS_THR3_IEN         10
+#define NPCX_THRCTS_THR2_IEN         9
+#define NPCX_THRCTS_THR1_IEN         8
+#define NPCX_THRCTS_ADC_EVENT        7
+#define NPCX_THRCTS_THR3_STS         2
+#define NPCX_THRCTS_THR2_STS         1
+#define NPCX_THRCTS_THR1_STS         0
+#define NPCX_THR_DCTL_THRD_EN        15
+#define NPCX_THR_DCTL_THR_DVAL       FIELD(0, 10)
+#define NPCX_V2T_CTRL_TEMP_EN        0
+#define NPCX_V2T_CTRL_OVT_EN         1
+#define NPCX_V2T_CTRL_TINTC_EN       2
+#define NPCX_V2T_CTRL_TINTCC_EN      3
+#define NPCX_V2T_CTRL_TINTT_EN       4
+#define NPCX_V2T_CTRL_TINTO_EN       5
+#define NPCX_V2T_CTRL_OVT_MODE       6
+#define NPCX_V2T_TCHNDAT_DAT_FRACION FIELD(0, 3)
+#define NPCX_V2T_TCHNDAT_DAT         FIELD(3, 8)
+#define NPCX_V2T_TCHNDAT_DAT_FULL    FIELD(0, 11) /* Data(8 bit) + Fraction (3 bit) */
 
 /*
  * Timer Watchdog (TWD) device registers
@@ -732,6 +738,7 @@ struct espi_reg {
 #define NPCX_ESPISTS_PMSGRX              21
 #define NPCX_ESPISTS_BMBURSTERR          22
 #define NPCX_ESPISTS_BMBURSTDONE         23
+#define NPCX_STATUS_IMG_VWIRE_AVAIL      6
 #define NPCX_VWSWIRQ_IRQ_NUM             FIELD(0, 7)
 #define NPCX_VWSWIRQ_IRQ_LVL             7
 #define NPCX_VWSWIRQ_INDEX               FIELD(8, 7)
@@ -742,11 +749,15 @@ struct espi_reg {
 #define NPCX_VWSWIRQ_EDGE_IRQ            28
 #define NPCX_VWEVMS_WIRE                 FIELD(0, 4)
 #define NPCX_VWEVMS_VALID                FIELD(4, 4)
+#define NPCX_VWEVMS_INDEX                FIELD(8, 7)
+#define NPCX_VWEVMS_INDEX_EN             15
 #define NPCX_VWEVMS_IE                   18
+#define NPCX_VWEVMS_ENESPIRST            19
 #define NPCX_VWEVMS_WE                   20
 #define NPCX_VWEVSM_WIRE                 FIELD(0, 4)
 #define NPCX_VWEVSM_VALID                FIELD(4, 4)
 #define NPCX_VWEVSM_BIT_VALID(n)         (4+n)
+#define NPCX_VWEVSM_DIRTY                16
 #define NPCX_VWEVSM_HW_WIRE              FIELD(24, 4)
 #define NPCX_VWGPSM_INDEX_EN             15
 #define NPCX_OOBCTL_OOB_FREE             0
@@ -758,9 +769,12 @@ struct espi_reg {
 #define NPCX_FLASHCFG_FLASHREQSIZE       FIELD(13, 3)
 #define NPCX_FLASHCFG_FLCAPA             FIELD(16, 2)
 #define NPCX_FLASHCFG_TRGFLEBLKSIZE      FIELD(18, 8)
+#define NPCX_FLASHCFG_TRGRPMCSUPP        FIELD(26, 6)
 #define NPCX_FLASHCFG_FLREQSUP           FIELD(0, 3)
+#define NPCX_FLASHCFG2_RPMC1OP1CODE      FIELD(24, 8)
+#define NPCX_FLASHCFG2_RPMC1COUNT        FIELD(20, 4)
 #define NPCX_FLASHCTL_FLASH_NP_FREE      0
-#define NPCX_FLASHCTL_FLASH_TX_AVAIL     1
+#define NPCX_FLASHCTL_FLASH_ACC_TX_AVAIL 1
 #define NPCX_FLASHCTL_STRPHDR            2
 #define NPCX_FLASHCTL_DMATHRESH          FIELD(3, 2)
 #define NPCX_FLASHCTL_AMTSIZE            FIELD(5, 8)
@@ -1049,6 +1063,8 @@ struct kbc_reg {
 #define NPCX_HICTRL_PMIOCIE              5
 #define NPCX_HICTRL_PMICIE               6
 #define NPCX_HICTRL_FW_OBF               7
+#define NPCX_HIIRQC_IRQ1B                0
+#define NPCX_HIIRQC_IRQ12B               1
 #define NPCX_HIKMST_OBF                  0
 #define NPCX_HIKMST_IBF                  1
 #define NPCX_HIKMST_F0                   2
@@ -1480,20 +1496,15 @@ struct ps2_reg {
 #define NPCX_PSCON_IDB                   FIELD(4, 3)
 #define NPCX_PSCON_WPUED                 7
 
-#define NPCX_PSOSIG_WDAT0                0
-#define NPCX_PSOSIG_WDAT1                1
-#define NPCX_PSOSIG_WDAT2                2
-#define NPCX_PSOSIG_CLK0                 3
-#define NPCX_PSOSIG_CLK1                 4
-#define NPCX_PSOSIG_CLK2                 5
-#define NPCX_PSOSIG_WDAT3                6
-#define NPCX_PSOSIG_CLK3                 7
-#define NPCX_PSOSIG_CLK(n)               (((n) < 3) ? ((n) + 3) : 7)
-#define NPCX_PSOSIG_WDAT(n)              (((n) < 3) ? ((n) + 0) : 6)
-#define NPCX_PSOSIG_CLK_MASK_ALL \
-					 (BIT(NPCX_PSOSIG_CLK0) | \
-					  BIT(NPCX_PSOSIG_CLK1) | \
-					  BIT(NPCX_PSOSIG_CLK2) | \
+#define NPCX_PSOSIG_WDAT2                1
+#define NPCX_PSOSIG_WDAT3                2
+#define NPCX_PSOSIG_CLK2                 4
+#define NPCX_PSOSIG_CLK3                 5
+#define NPCX_PSOSIG_CLK(n)               (((n) == 2) ? NPCX_PSOSIG_CLK2 : \
+						       NPCX_PSOSIG_CLK3)
+#define NPCX_PSOSIG_WDAT(n)              (((n) == 2) ? NPCX_PSOSIG_WDAT2 : \
+						       NPCX_PSOSIG_WDAT3)
+#define NPCX_PSOSIG_CLK_MASK_ALL         (BIT(NPCX_PSOSIG_CLK2) | \
 					  BIT(NPCX_PSOSIG_CLK3))
 
 #define NPCX_PSIEN_SOTIE                 0
@@ -1563,7 +1574,7 @@ struct fiu_reg {
 	volatile uint8_t reserved9[3];
 	/* 0x041: Master Inactive Counter Threshold */
 	volatile uint8_t MI_CNT_THRSH;
-	/* 0x042: FIU Matser Status */
+	/* 0x042: FIU Master Status */
 	volatile uint8_t FIU_MSR_STS;
 	/* 0x043: FIU Master Interrupt Enable and Configuration */
 	volatile uint8_t FIU_MSR_IE_CFG;
@@ -1848,10 +1859,6 @@ struct lct_reg {
 	volatile uint8_t reserved5;
 	/* 0x00C: LCT Weeks */
 	volatile uint8_t LCTWEEK;
-#if DT_HAS_COMPAT_STATUS_OKAY(nuvoton_npcx_lct_v2)
-	/* 0x00D: LCT Weeks MSB */
-	volatile uint8_t LCTWEEKM;
-#endif
 };
 
 #define NPCX_LCTCONT_LCTEN        0
@@ -1933,8 +1940,6 @@ struct gdma_reg {
 	volatile uint32_t CDST;
 	/* 0x018: Channel Current Transfer Count */
 	volatile uint32_t CTCNT;
-	/* 0x01C: Reserved */
-	volatile uint32_t reserved1;
 };
 
 /* DMA register fields */
@@ -1954,5 +1959,15 @@ struct gdma_reg {
 #define NPCX_DMACTL_TC                   18
 #define NPCX_DMACTL_GDMAERR              20
 #define NPCX_DMACTL_BUSY_EN              23
+
+/* BBRM register fields */
+#define NPCX_BKUPSTS_VCC1_STS BIT(5)
+#define NPCX_BKUPSTS_IBBR     BIT(7)
+
+/* Deprecated ENIDL_CTL names of the ENSLP_CTL register fields */
+#define NPCX_ENIDL_CTL_ADC_ACC_DIS NPCX_ENSLP_CTL_ADC_ACC_DIS
+#define NPCX_ENIDL_CTL_PECI_ENI    NPCX_ENSLP_CTL_PECI_ENI
+#define NPCX_ENIDL_CTL_LP_WK_CTL   NPCX_ENSLP_CTL_LP_WK_CTL
+#define NPCX_ENIDL_CTL_ADC_LFSL    NPCX_ENSLP_CTL_ADC_LFSL
 
 #endif /* _NUVOTON_NPCX_REG_DEF_H */

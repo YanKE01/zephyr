@@ -26,8 +26,13 @@ config BT_CCP_CALL_CONTROL_CLIENT_BEARER_COUNT
 	help
 	  The number of supported telephone bearers on the CCP Call Control Client
 
+config BT_CCP_CALL_CONTROL_CLIENT_CB_USER_DATA
+	bool "Call Control Profile Client support for user_data in callbacks"
+	help
+	  This option enables support for user_data in Call Control Profile Client callbacks.
+
 module = BT_CCP_CALL_CONTROL_CLIENT
-module-str = "Call Control Profile Client"
+module-str = Call Control Profile Client
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # BT_CCP_CALL_CONTROL_CLIENT
@@ -50,8 +55,22 @@ config BT_CCP_CALL_CONTROL_SERVER_BEARER_COUNT
 	help
 	  The number of supported telephone bearers on the CCP Call Control Server
 
+config BT_CCP_CALL_CONTROL_SERVER_PROVIDER_NAME_MAX_LENGTH
+	int "The maximum length of the bearer provider name excluding null terminator"
+	default BT_TBS_MAX_PROVIDER_NAME_LENGTH
+	range 1 BT_TBS_MAX_PROVIDER_NAME_LENGTH
+	help
+	  Sets the maximum length of the bearer provider name.
+
+config BT_CCP_CALL_CONTROL_SERVER_URI_SCHEMES_MAX_LENGTH
+	int "The maximum length of the bearer URI schemes support list excluding null terminator"
+	default BT_TBS_MAX_SCHEME_LIST_LENGTH
+	range 1 BT_TBS_MAX_SCHEME_LIST_LENGTH
+	help
+	  Sets the maximum length of the bearer URI schemes support list.
+
 module = BT_CCP_CALL_CONTROL_SERVER
-module-str = "Call Control Profile Call Control Server"
+module-str = Call Control Profile Call Control Server
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # BT_CCP_CALL_CONTROL_SERVER

@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "mesh_test.h"
-#include "argparse.h"
+#include "bsim_args_runner.h"
 #include <bs_pc_backchannel.h>
 #include "mesh/crypto.h"
 #include <zephyr/bluetooth/hci.h>
@@ -23,8 +23,8 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
 const struct bt_mesh_test_cfg *cfg;
 
-K_MEM_SLAB_DEFINE_STATIC(msg_pool, sizeof(struct bt_mesh_test_msg),
-			 RECV_QUEUE_SIZE, 4);
+K_MEM_SLAB_DEFINE_STATIC_TYPE(msg_pool, struct bt_mesh_test_msg,
+			      RECV_QUEUE_SIZE);
 static K_QUEUE_DEFINE(recv);
 struct bt_mesh_test_stats test_stats;
 struct bt_mesh_msg_ctx test_send_ctx;
@@ -292,9 +292,6 @@ void bt_mesh_device_setup(const struct bt_mesh_prov *prov, const struct bt_mesh_
 
 	if (IS_ENABLED(CONFIG_BT_SETTINGS)) {
 		LOG_INF("Loading stored settings");
-		if (IS_ENABLED(CONFIG_BT_MESH_USES_MBEDTLS_PSA)) {
-			settings_load_subtree("itsemul");
-		}
 		settings_load_subtree("bt");
 	}
 

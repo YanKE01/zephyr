@@ -5,7 +5,7 @@
 
 /dts-v1/;
 
-#include <espressif/esp32c3/esp32c3_fx4.dtsi>
+#include <espressif/esp32c3/esp32c3.dtsi>
 #include "esp32c3_supermini-pinctrl.dtsi"
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/led/led.h>
@@ -32,6 +32,7 @@
 
 	gpio_keys {
 		compatible = "gpio-keys";
+
 		user_button1: button_1 {
 			label = "User SW1";
 			gpios = <&gpio0 9 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
@@ -41,12 +42,17 @@
 
 	leds {
 		compatible = "gpio-leds";
+
 		blue_led_0: led_0 {
 			gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
 			label = "Blue LED 0";
 		};
 	};
+};
 
+&flash0 {
+	reg = <0x0 DT_SIZE_M(4)>;
+	ranges = <0x0 0x0 DT_SIZE_M(4)>;
 };
 
 &spi2 {
@@ -55,13 +61,11 @@
 	status = "okay";
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
-
 };
 
 &usb_serial {
 	status = "okay";
 };
-
 
 &i2c0 {
 	status = "okay";

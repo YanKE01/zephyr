@@ -155,10 +155,9 @@
 #define ADXL367_NO_ACTIVITY_DETECTION_2			0x2
 #define ADXL367_REFERENCED_ACTIVITY_ENABLE		0x3
 
-#define ADXL367_TEMP_OFFSET				1185
-#define ADXL367_TEMP_25C				165
-#define ADXL367_TEMP_SCALE				18518518LL
-#define ADXL367_TEMP_SCALE_DIV				1000000000
+#define ADXL367_TEMP_SENSITIVITY 54 /* LSB per C */
+#define ADXL367_TEMP_25C         (165) /* Counts at 25 C */
+#define ADXL367_TEMP_SCALE       (uint32_t)(1000000 / ADXL367_TEMP_SENSITIVITY)
 
 #define ADXL367_THRESH_H_MSK				GENMASK(6, 0)
 #define ADXL367_THRESH_L_MSK				GENMASK(7, 2)
@@ -385,6 +384,7 @@ struct adxl367_dev_config {
 
 #ifdef CONFIG_ADXL367_TRIGGER
 	struct gpio_dt_spec interrupt;
+	uint8_t int_map_reg;
 #endif
 
 	enum adxl367_odr odr;
@@ -393,6 +393,7 @@ struct adxl367_dev_config {
 	bool autosleep;
 	bool low_noise;
 	bool temp_en;
+	bool self_test_enable;
 
 	struct adxl367_activity_threshold activity_th;
 	struct adxl367_activity_threshold inactivity_th;
@@ -442,7 +443,7 @@ void adxl367_submit(const struct device *dev, struct rtio_iodev_sqe *iodev_sqe);
 int adxl367_get_decoder(const struct device *dev, const struct sensor_decoder_api **decoder);
 int adxl367_get_accel_data(const struct device *dev,
 			   struct adxl367_xyz_accel_data *accel_data);
-int adxl367_get_temp_data(const struct device *dev, int16_t *raw_temp);
+int adxl367_get_temp_data(const struct device *dev, int16_t *raw_temp, bool check_data_rdy);
 void adxl367_accel_convert(struct sensor_value *val, int16_t value,
 				enum adxl367_range range);
 void adxl367_temp_convert(struct sensor_value *val, int16_t value);

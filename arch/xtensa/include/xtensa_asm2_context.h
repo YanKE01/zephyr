@@ -41,9 +41,11 @@
  *
  * SP-60  Saved SCOMPARE special register (if S32C1I enabled)
  *
- * SP-64  Saved EXCCAUSE special register
+ * SP-64  Saved BR special register (if booleans enabled)
  *
- * SP-68  Saved THREADPTR special register (if processor has thread pointer)
+ * SP-68  Saved EXCCAUSE special register
+ *
+ * SP-72  Saved THREADPTR special register (if processor has thread pointer)
  *
  *       (The above fixed-size region is known as the "base save area" in the
  *        code below)
@@ -81,7 +83,7 @@
 #include <zephyr/toolchain.h>
 
 /* Stack needs to aligned on 16-bytes as mentioned on Xtensa ISA.
- * So we pad _xtensa_irq_bsa_t to achieve that. The followings
+ * So we pad _xtensa_irq_bsa_t to achieve that. The following
  * are see how much space is taken depending on features enabled.
  */
 
@@ -91,7 +93,7 @@
 # define _BSA_PADDING_FPU		(0)
 #endif
 
-#if defined(CONFIG_XTENSA_HIFI_SHARING)
+#if defined(CONFIG_XTENSA_EAGER_HIFI_SHARING)
 # define _BSA_PADDING_HIFI		(XCHAL_CP1_SA_SIZE + XCHAL_CP1_SA_ALIGN)
 #else
 # define _BSA_PADDING_HIFI		(0)
@@ -109,6 +111,12 @@
 # define _BSA_PADDING_S32C1I		(0)
 #endif
 
+#if XCHAL_HAVE_BOOLEANS
+# define _BSA_PADDING_BOOLEANS		(sizeof(uintptr_t))
+#else
+# define _BSA_PADDING_BOOLEANS		(0)
+#endif
+
 #if XCHAL_HAVE_LOOPS
 # define _BSA_PADDING_LOOPS		(sizeof(uintptr_t) * 3U)
 #else
@@ -116,7 +124,7 @@
 #endif
 
 /* Must have fields regardless of features. */
-#define _BSA_PADDING_COMMON		(sizeof(uintptr_t) * 12U)
+#define _BSA_PADDING_COMMON		(sizeof(uintptr_t) * 13U)
 
 /* Raw size by adding up all the above. */
 #define _BSA_PADDING_BASE_SIZE		\
@@ -124,6 +132,7 @@
 	 _BSA_PADDING_HIFI + \
 	 _BSA_PADDING_THREADPTR + \
 	 _BSA_PADDING_S32C1I + \
+	 _BSA_PADDING_BOOLEANS + \
 	 _BSA_PADDING_LOOPS + \
 	 _BSA_PADDING_COMMON)
 
@@ -152,6 +161,35 @@
  * are saved after the BSA.
  */
 struct xtensa_irq_base_save_area {
+#if XCHAL_HAVE_THREADPTR
+	uintptr_t threadptr;
+#endif
+
+#if XCHAL_HAVE_S32C1I
+	uintptr_t scompare1;
+#endif
+
+#if XCHAL_HAVE_BOOLEANS
+	uintptr_t br;
+#endif
+
+	uintptr_t exccause;
+	uintptr_t excvaddr;
+
+#if XCHAL_HAVE_LOOPS
+	uintptr_t lcount;
+	uintptr_t lend;
+	uintptr_t lbeg;
+#endif
+
+	uintptr_t sar;
+	uintptr_t ps;
+	uintptr_t pc;
+	uintptr_t a0;
+	uintptr_t scratch;
+	uintptr_t a2;
+	uintptr_t a3;
+
 #if XCHAL_HAVE_FP && defined(CONFIG_CPU_HAS_FPU) && defined(CONFIG_FPU_SHARING)
 	uintptr_t fcr;
 	uintptr_t fsr;
@@ -173,7 +211,7 @@ struct xtensa_irq_base_save_area {
 	uintptr_t fpu15;
 #endif
 
-#if defined(CONFIG_XTENSA_HIFI_SHARING)
+#if defined(CONFIG_XTENSA_EAGER_HIFI_SHARING)
 
 	/*
 	 * Carve space for the registers used by the HiFi audio engine
@@ -184,30 +222,6 @@ struct xtensa_irq_base_save_area {
 
 	uint8_t  hifi[XCHAL_CP1_SA_SIZE + XCHAL_CP1_SA_ALIGN];
 #endif
-
-#if XCHAL_HAVE_THREADPTR
-	uintptr_t threadptr;
-#endif
-
-#if XCHAL_HAVE_S32C1I
-	uintptr_t scompare1;
-#endif
-
-	uintptr_t exccause;
-
-#if XCHAL_HAVE_LOOPS
-	uintptr_t lcount;
-	uintptr_t lend;
-	uintptr_t lbeg;
-#endif
-
-	uintptr_t sar;
-	uintptr_t ps;
-	uintptr_t pc;
-	uintptr_t a0;
-	uintptr_t scratch;
-	uintptr_t a2;
-	uintptr_t a3;
 
 	uintptr_t padding[_BSA_PADDING_NEEDED / sizeof(uintptr_t)];
 

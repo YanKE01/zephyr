@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2020-2025 Gerson Fernando Budke <nandojve@gmail.com>
+ * Copyright (c) 2026 Microchip Technology Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -23,9 +24,11 @@
 	};
 
 	chosen {
+		zephyr,console = &usart1;
+		zephyr,shell-uart = &usart1;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
-		zephyr,code-partition= &code_partition;
+		zephyr,code-partition = &code_partition;
 	};
 
 	leds {
@@ -56,7 +59,7 @@
 		compatible = "gpio-keys";
 
 		sw0_dfu: button_1 {
-			gpios = <&gpiob 3 (GPIO_ACTIVE_LOW)>;
+			gpios = <&gpiob 3 GPIO_ACTIVE_LOW>;
 			label = "SW0_DFU";
 			zephyr,code = <INPUT_KEY_0>;
 		};
@@ -69,16 +72,18 @@
 
 &flash0 {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "sam-ba";
-			reg = <0x000000000 0x00004000>;
+			reg = <0x00000000 0x00004000>;
 		};
 
 		code_partition: partition@4000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image";
 			reg = <0x00004000 0x0003c000>;
 		};
@@ -185,5 +190,3 @@ zephyr_udc0: &usbc {
 	pinctrl-0 = <&usbc_default>;
 	pinctrl-names = "default";
 };
-
-#include <../boards/common/usb/cdc_acm_serial.dtsi>

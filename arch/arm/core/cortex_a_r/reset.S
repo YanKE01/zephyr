@@ -47,8 +47,54 @@ GTEXT(soc_reset_hook)
  * setting up the system for running C code.
  *
  */
+#if defined(CONFIG_AARCH32_ARMV8_R)
+/*
+ * ARMv8-R AArch32 cores use RVBAR (Reset Vector Base Address Register) to
+ * determine the CPU start address on reset.  RVBAR only stores bits [31:5];
+ * bits [4:0] are RES0.  This means the reset
+ * vector address is implicitly rounded down to a 32-byte boundary.
+ *
+ * If __start is not 32-byte aligned, any firmware or boot-loader that
+ * programs RVBAR from the ELF entry point will silently truncate the
+ * address, causing the CPU to begin executing at the wrong location.
+ */
+	.section .text._reset_section, "ax"
+	.align 5
+z_arm_reset:
+__start:
+#else
 SECTION_SUBSEC_FUNC(TEXT, _reset_section, z_arm_reset)
 SECTION_SUBSEC_FUNC(TEXT, _reset_section, __start)
+#endif
+#if defined(CONFIG_AARCH32_ARMV8_A_MONITOR_INIT)
+    /*
+     * ARMv8-A AArch32 Monitor mode (EL3 AArch32) initialization.
+     * Analogous to z_arm64_el3_init() in the arm64 port.
+     *
+     * On bare-metal ARMv8-A AArch32 platforms the core resets into
+     * Secure SVC mode. Registers accessible only from Monitor mode
+     * must be configured before Zephyr starts. Switch to Monitor mode
+     * briefly, configure the required registers, then return to
+     * Secure SVC mode.
+     */
+
+    /* Switch to Monitor mode */
+    cps #MODE_MON
+    isb
+
+#if defined(CONFIG_GIC_V3)
+    /* Configure ICC_MSRE: enable GICv3 system register interface at lower levels */
+    mrc p15, 6, r0, c12, c12, 5    /* Read ICC_MSRE */
+    orr r0, r0, #ICC_MSRE_INIT
+    mcr p15, 6, r0, c12, c12, 5    /* Write ICC_MSRE */
+    isb
+#endif /* CONFIG_GIC_V3 */
+
+    /* Return to Secure SVC mode */
+    cps #MODE_SVC
+    isb
+#endif /* CONFIG_AARCH32_ARMV8_A_MONITOR_INIT */
+
 #if defined(CONFIG_AARCH32_ARMV8_R)
     /* Check if we are starting in HYP mode */
     mrs r0, cpsr

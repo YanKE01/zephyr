@@ -5,15 +5,16 @@
  */
 
 #include <zephyr/logging/log.h>
+#include <zephyr/zvfs/eventfd.h>
 #include <stubs.h>
 
 LOG_MODULE_DECLARE(coap_client_test, LOG_LEVEL_DBG);
 
 DEFINE_FAKE_VALUE_FUNC(uint32_t, z_impl_sys_rand32_get);
-DEFINE_FAKE_VALUE_FUNC(ssize_t, z_impl_zsock_recvfrom, int, void *, size_t, int, struct sockaddr *,
-		       socklen_t *);
+DEFINE_FAKE_VALUE_FUNC(ssize_t, z_impl_zsock_recvfrom, int, void *, size_t, int,
+		       struct net_sockaddr *, net_socklen_t *);
 DEFINE_FAKE_VALUE_FUNC(ssize_t, z_impl_zsock_sendto, int, void *, size_t, int,
-		       const struct sockaddr *, socklen_t);
+		       const struct net_sockaddr *, net_socklen_t);
 
 struct zvfs_pollfd {
 	int fd;
@@ -50,4 +51,33 @@ int z_impl_zvfs_poll(struct zvfs_pollfd *fds, int nfds, int poll_timeout)
 	}
 
 	return events;
+}
+
+/* Mock of the cancel-wakeup eventfd. It is hooked into the same my_events[]
+ * table as the sockets so that a write makes the poll() stub report POLLIN on
+ * its fd (NUM_FD - 1), exercising the real wakeup/ack path in
+ * coap_client_cancel_requests().
+ */
+static zvfs_eventfd_t eventfd_value;
+
+int zvfs_eventfd(unsigned int initval, int flags)
+{
+	ARG_UNUSED(flags);
+	eventfd_value = initval;
+	return NUM_FD - 1;
+}
+
+int zvfs_eventfd_read(int fd, zvfs_eventfd_t *value)
+{
+	*value = eventfd_value;
+	eventfd_value = 0;
+	clear_socket_events(fd, ZSOCK_POLLIN);
+	return 0;
+}
+
+int zvfs_eventfd_write(int fd, zvfs_eventfd_t value)
+{
+	eventfd_value += value;
+	set_socket_events(fd, ZSOCK_POLLIN);
+	return 0;
 }

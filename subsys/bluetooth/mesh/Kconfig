@@ -6,6 +6,7 @@
 menuconfig BT_MESH
 	bool "Bluetooth Mesh support"
 	depends on BT_OBSERVER && BT_BROADCASTER
+	select POLL
 	help
 	  This option enables Bluetooth Mesh support. The specific
 	  features that are available may depend on other features
@@ -45,6 +46,7 @@ config BT_MESH_PB_GATT_COMMON
 # Virtual option enabled whenever Generic Provisioning layer is needed
 config BT_MESH_PROV
 	bool
+	select BT_LONG_WQ
 
 ###################################################################################################
 # Visible options
@@ -72,7 +74,8 @@ if BT_MESH_ADV_LEGACY
 
 config BT_MESH_ADV_STACK_SIZE
 	int "Mesh advertiser thread stack size"
-	default 1024 if BT_HOST_CRYPTO
+	default 1800 if BT_MESH_PROVISIONER
+	default 1536 if BT_MESH_PROXY
 	default 776 if BT_MESH_PRIV_BEACONS
 	default 768
 	help
@@ -142,8 +145,8 @@ if BT_MESH_WORKQ_MESH
 
 config BT_MESH_ADV_STACK_SIZE
 	int "Mesh extended advertiser thread stack size"
+	default 2048 if BT_MESH_PROVISIONER
 	default 1536 if BT_MESH_PROXY
-	default 1024 if BT_HOST_CRYPTO
 	default 776 if BT_MESH_PRIV_BEACONS
 	default 768
 	help
@@ -360,6 +363,18 @@ config BT_MESH_OOB_AUTH_REQUIRED
 	bool "OOB authentication mandates to use HMAC SHA256"
 	depends on BT_MESH_ECDH_P256_HMAC_SHA256_AES_CCM
 
+config BT_MESH_PROV_OOB_API_LEGACY
+	bool "Reduced maximum OOB authentication size support [DEPRECATED]"
+	select DEPRECATED
+	depends on BT_MESH_PROV
+	help
+	  By default, the maximum OOB authentication size is 32 bytes.
+	  Enable this option to use the legacy API which is only compatible with
+	  specification v1.1 and earlier. This limits OOB authentication to 8
+	  bytes maximum.
+	  This option is intended for backward compatibility.
+	  Not recommended for new designs due to reduced security.
+
 config BT_MESH_PROVISIONER
 	bool "Provisioner support"
 	depends on BT_MESH_CDB
@@ -396,6 +411,16 @@ config BT_MESH_CDB_APP_KEY_COUNT
 	help
 	  This option specifies how many application keys that can at most
 	  be saved in the configuration database.
+
+config BT_MESH_CDB_KEY_SYNC
+	bool "Keys synchronization support"
+	default y
+	help
+	  Enable this option to have support for synchronizing keys between
+	  mesh stack and cdb.
+	  When this option is enabled, key operations (add, remove, update)
+	  performed on the mesh stack through Configuration Server messages
+	  are automatically mirrored to the CDB.
 
 endif # BT_MESH_CDB
 
@@ -772,11 +797,11 @@ config BT_MESH_ACCESS_LAYER_MSG
 	  might wear out persistent memory.
 
 config BT_MESH_MODEL_VND_MSG_CID_FORCE
-	bool "Force vendor model to use the corresponding CID field message"
-	default y
+	bool "Force vendor model to use opcodes with matching CID [DEPRECATED]"
+	select DEPRECATED
 	help
-	  This option forces vendor model to use messages for the
-	  corresponding CID field.
+	  This option forces vendor models to only use opcodes with a CID field
+	  matching the models CID. It is deprecated and should no longer be used.
 
 config BT_MESH_MODEL_EXTENSIONS
 	bool "Support for Model extensions"
@@ -1038,31 +1063,39 @@ config BT_MESH_BLOB_IO_FLASH
 	default y
 	depends on BT_MESH_BLOB_SRV || BT_MESH_BLOB_CLI
 	depends on FLASH_MAP
+	depends on FLASH_PAGE_LAYOUT
 	help
 	  Enable the BLOB flash stream for reading and writing BLOBs directly to
 	  and from flash.
 
 if BT_MESH_BLOB_IO_FLASH
 
-config BT_MESH_BLOB_IO_FLASH_WITHOUT_ERASE
-	bool "BLOB flash support for devices without erase"
-	default y if FLASH_HAS_NO_EXPLICIT_ERASE
-	depends on FLASH_HAS_NO_EXPLICIT_ERASE
+config BT_MESH_BLOB_IO_FLASH_WRITE_BLOCK_SIZE_MAX
+	int "Maximum supported write block size"
+	default 4
 	help
-	  Enable path supporting devices without erase. This option appears only
-	  if there are devices without explicit erase requirements in the system
-	  and may be disabled to reduce code size in case when no operations
-	  are intended on such type of devices.
+	  The BLOB IO Flash module will support flash devices with explicit erase
+	  when this value is set to a multiple of the device write block size.
 
-config BT_MESH_BLOB_IO_FLASH_WITH_ERASE
-	bool "BLOB flash support for devices with erase"
-	default y if FLASH_HAS_EXPLICIT_ERASE
-	depends on FLASH_HAS_EXPLICIT_ERASE
+config BT_MESH_BLOB_IO_FLASH_BLOCK_CACHE
+	bool "Cache each BLOB block in RAM and flush write-block-aligned once"
 	help
-	  Enable path supporting devices with erase. This option appears only
-	  if there are devices requiring erase,  before write, in the system
-	  and may be disabled to reduce code size in case when no operations
-	  are intended on such type of devices.
+	  Buffer a whole BLOB block in RAM and program each flash write-block
+	  exactly once per erase, when the block's last chunk arrives, instead of
+	  programming on every received chunk.
+
+	  This is required for explicit-erase flash whose write block is an
+	  ECC-protected phrase that may be programmed only once per erase (for
+	  example the internal flash on some NXP MCXW SoCs). Without it, a BLOB
+	  chunk whose size is not a multiple of the flash write block makes two
+	  adjacent chunks each program the write block they share, and the second
+	  program corrupts the ECC syndrome, which faults on the next read.
+
+	  Enabling this costs one block-sized RAM buffer
+	  (CONFIG_BT_MESH_BLOB_BLOCK_SIZE_MAX) per BLOB flash stream. Leave it
+	  disabled on flash that allows a write block to be programmed more than
+	  once between erases (for example plain NOR or RRAM), where the default
+	  per-chunk write path is already correct and uses no extra RAM.
 
 endif # BT_MESH_BLOB_IO_FLASH
 
@@ -1487,17 +1520,10 @@ config BT_MESH_SECURE_STORAGE
 	bool
 	depends on SECURE_STORAGE
 
-choice BT_MESH_CRYPTO_LIB
-	prompt "Crypto library:"
-	default BT_MESH_USES_TFM_PSA if BUILD_WITH_TFM
-	default BT_MESH_USES_MBEDTLS_PSA
-	help
-	  Crypto library selection for mesh security.
-
-config BT_MESH_USES_MBEDTLS_PSA
-	bool "mbed TLS PSA"
-	select MBEDTLS
-	select MBEDTLS_PSA_CRYPTO_C
+config BT_MESH_CRYPTO_LIB
+	bool
+	default y
+	select PSA_CRYPTO
 	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_IMPORT
 	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_EXPORT
 	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_GENERATE
@@ -1511,19 +1537,10 @@ config BT_MESH_USES_MBEDTLS_PSA
 	select PSA_WANT_ALG_SHA_256
 	select PSA_WANT_ALG_ECDH
 	select PSA_WANT_ECC_SECP_R1_256
-	select BT_MESH_SECURE_STORAGE if BT_SETTINGS
-	imply MBEDTLS_AES_ROM_TABLES
+	select BT_MESH_SECURE_STORAGE if BT_SETTINGS && PSA_CRYPTO_PROVIDER_MBEDTLS
+	imply MBEDTLS_AES_ROM_TABLES if PSA_CRYPTO_PROVIDER_MBEDTLS
 	help
-	  Use Mbed TLS as PSA Crypto API provider.
-
-config BT_MESH_USES_TFM_PSA
-	bool "TF-M PSA"
-	depends on BUILD_WITH_TFM
-	help
-	  Use TF-M as PSA Crypto API provider. This is only possible on platforms
-	  that support TF-M.
-
-endchoice
+	  Crypto library support for mesh security.
 
 menu "Beacons"
 
@@ -1601,6 +1618,19 @@ config BT_MESH_LPN_ESTABLISHMENT
 	  is that the node may miss out on messages intended for it
 	  until it has successfully set up Friendship with a Friend
 	  node.
+
+config BT_MESH_LPN_OFFER_WAIT_TIMEOUT
+	int "Time to wait for Friend Offers after a Friend Request"
+	default 1000
+	range 100 10000
+	help
+	  Time in milliseconds that the Low Power node waits for Friend Offer
+	  messages, starting 100 ms after the Friend Request was sent. The
+	  Bluetooth Mesh Protocol specification recommends listening for up to
+	  1 second. When BT_MESH_LPN_ESTABLISHMENT is enabled, this is also the
+	  duration for which the scanner is kept enabled. If no acceptable
+	  Friend Offer is received, the next Friend Request is sent after
+	  BT_MESH_LPN_RETRY_TIMEOUT.
 
 config BT_MESH_LPN_AUTO
 	bool "Automatically start looking for Friend nodes once provisioned"
@@ -1825,8 +1855,16 @@ config BT_MESH_LABEL_COUNT
 
 endmenu # Capabilities
 
+config BT_MESH_PENDING_STORE
+	bool
+	default y if BT_SETTINGS
+	help
+	  Scheduler for deferred storing of pending mesh data. Enabled with the
+	  settings subsystem, and selected by storage backends that schedule
+	  their stores through it without the settings subsystem.
+
 menu "Persistent storage"
-	visible if BT_SETTINGS
+	visible if BT_MESH_PENDING_STORE
 
 config BT_MESH_STORE_TIMEOUT
 	int "Delay (in seconds) before storing anything persistently"
@@ -1840,8 +1878,8 @@ config BT_MESH_STORE_TIMEOUT
 config BT_MESH_SEQ_STORE_RATE
 	int "How often the sequence number gets updated in storage"
 	range 0 1000000
+	default 1 if !BT_SETTINGS
 	default 128
-	default 1 if !BT_SETTINGS # To keep compiling the code
 	help
 	  This value defines how often the local sequence number gets
 	  updated in persistent storage (i.e. flash). E.g. a value of 100
@@ -1854,32 +1892,31 @@ config BT_MESH_SEQ_STORE_RATE
 	  off with a value that's guaranteed to be larger than the last
 	  one used before power off.
 
-if BT_MESH_RPL_STORAGE_MODE_SETTINGS && BT_SETTINGS
-
 config BT_MESH_RPL_STORE_TIMEOUT
-	int "Minimum interval after which unsaved RPL and SRPL entries are updated in the settings subsystem"
+	int "Minimum interval after which unsaved RPL and SRPL entries are stored"
+	depends on BT_MESH_PENDING_STORE
 	range -1 1000000
 	default 5
 	help
 	  This value defines time in seconds until unsaved RPL and SRPL entries
-	  are written to the persistent storage. Setting this value
+	  are written to the persistent storage. The SRPL is always stored
+	  through the settings subsystem, whereas the RPL is only affected if
+	  its storage mode schedules stores with this timeout. Setting this value
 	  to a large number may lead to security vulnerabilities if a node
 	  gets powered off before the timer is fired. When flash is used
 	  as the persistent storage setting this value to a low number
 	  may wear out flash sooner or later. However, if the RPL gets
 	  updated infrequently a value as low as 0 (write immediately)
 	  may make sense. Setting this value to -1 will disable this timer.
-	  In this case, a user is responsible to store pending RPL entries
-	  using @ref bt_mesh_rpl_pending_store. In the mean time, when
-	  IV Index is updated, the outdated RPL entries will still be
-	  stored by @ref BT_MESH_STORE_TIMEOUT. Finding the right balance
+	  With the settings storage mode, a user is then responsible to store
+	  pending RPL entries using @ref bt_mesh_rpl_pending_store. In the
+	  mean time, the replay list invalidated by an IV Index update or
+	  recovery is still stored immediately. Finding the right balance
 	  between this timeout and calling @ref bt_mesh_rpl_pending_store
 	  may reduce a risk of security vulnerability and flash wear out.
 	  Failure to store the RPL and becoming vulnerable after reboot
 	  will cause the device to not perform the replay protection
 	  required by the spec.
-
-endif # BT_MESH_RPL_STORAGE_MODE_SETTINGS && BT_SETTINGS
 
 config BT_MESH_SETTINGS_WORKQ
 	bool "Store the Bluetooth Mesh settings in a separate work queue"
@@ -1905,7 +1942,7 @@ config BT_MESH_SETTINGS_WORKQ_PRIO
 config BT_MESH_SETTINGS_WORKQ_STACK_SIZE
 	int "Stack size of the settings workq"
 	default 1200 if BT_MESH_RPR_SRV
-	default 880
+	default 900
 	help
 	  Size of the settings workqueue stack.
 
@@ -1934,11 +1971,15 @@ config BT_MESH_SELF_TEST
 	  mesh networking is initialized.
 
 config BT_MESH_STATISTIC
-	bool "The frame handling statistics [EXPERIMENTAL]"
+	bool "Mesh communication statistics [EXPERIMENTAL]"
 	select EXPERIMENTAL
 	help
 	  The module gathers statistics of received, relayed, and transmitted
 	  frames. This helps to estimate the quality of the communication and
 	  the sufficiency of configured advertiser instances.
+
+	  When LPN functionality is enabled, the module also measures
+	  LPN friendship timing parameters (ReceiveDelay, ReceiveWindow) by
+	  timestamping protocol events during each poll cycle.
 
 endif # BT_MESH

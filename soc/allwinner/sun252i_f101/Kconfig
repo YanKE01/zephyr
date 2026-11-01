@@ -18,14 +18,15 @@ config SOC_SUN252I_F101
 	select CPU_HAS_FPU_DOUBLE_PRECISION
 	select RISCV_ISA_EXT_ZICSR
 	select RISCV_ISA_EXT_ZIFENCEI
-	select RISCV_ISA_EXT_XTHEADCMO
+	select RISCV_ISA_EXT_XTHEAD_CMO
 	select CPU_HAS_ICACHE
 	select CPU_HAS_DCACHE
 	select SOC_EARLY_INIT_HOOK
 	select CACHE_MANAGEMENT
 	help
 	  Allwinner sun252i (F101) SoC, single Xuantie C907 (rv32imafdcv) core
-	  with PLIC and CLINT, no MMU, no external DDR (internal SRAM/PSRAM only).
+	  with PLIC, CLINT and Sv32 MMU, using internal SRAM/PSRAM without
+	  external DDR.
 
 config SUN252I_F101_RVV
 	bool "Vector extension (RVV 1.0)"

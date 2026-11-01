@@ -260,19 +260,6 @@ static inline void hal_trigger_crypt_by_bcmatch_ppi_config(void)
 #endif /* CONFIG_BT_CTLR_DF_CONN_CTE_RX */
 
 /*******************************************************************************
- * Trigger automatic address resolution on Bit counter match:
- * wire the RADIO EVENTS_BCMATCH event to the AAR TASKS_START task.
- *
- * PPI channel 23 is pre-programmed with the following fixed settings:
- *   EEP: RADIO->EVENTS_BCMATCH
- *   TEP: AAR->TASKS_START
- */
-static inline void hal_trigger_aar_ppi_config(void)
-{
-	/* No need to configure anything for the pre-programmed channel. */
-}
-
-/*******************************************************************************
  * Trigger Radio Rate override upon Rateboost event.
  */
 #if defined(CONFIG_BT_CTLR_PHY_CODED) && defined(CONFIG_HAS_HW_NRF_RADIO_BLE_CODED)
@@ -286,11 +273,36 @@ static inline void hal_trigger_rateoverride_ppi_config(void)
 }
 #endif /* CONFIG_BT_CTLR_PHY_CODED && CONFIG_HAS_HW_NRF_RADIO_BLE_CODED */
 
+/*******************************************************************************
+ * Trigger automatic address resolution on Bit counter match:
+ * wire the RADIO EVENTS_BCMATCH event to the AAR TASKS_START task.
+ *
+ * PPI channel 23 is pre-programmed with the following fixed settings:
+ *   EEP: RADIO->EVENTS_BCMATCH
+ *   TEP: AAR->TASKS_START
+ */
+static inline void hal_trigger_aar_ppi_config(void)
+{
+	/* No need to configure anything for the pre-programmed channel. */
+}
+
 /******************************************************************************/
 #if !defined(CONFIG_BT_CTLR_TIFS_HW)
 /* PPI setup used for SW-based auto-switching during TIFS. */
 
 #if !defined(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER)
+
+/* Start SW-switch timer setup.
+ */
+static inline void hal_sw_switch_timer_start_ppi_config(void)
+{
+	/* Switch timer is started on first and subsequent Radio IFS-end events
+	 * (END or PHYEND; see HAL_RADIO_IFS_EVENTS_END) which also clear the timer
+	 * value via HAL_SW_SWITCH_TIMER_CLEAR_PPI PPI.
+	 */
+	nrf_ppi_fork_endpoint_setup(NRF_PPI, HAL_SW_SWITCH_TIMER_CLEAR_PPI,
+				    (uint32_t)&(SW_SWITCH_TIMER->TASKS_START));
+}
 
 /* Clear SW-switch timer on packet end:
  * wire the RADIO EVENTS_END event to SW_SWITCH_TIMER TASKS_CLEAR task.
@@ -300,6 +312,7 @@ static inline void hal_trigger_rateoverride_ppi_config(void)
 
 static inline void hal_sw_switch_timer_clear_ppi_config(void)
 {
+	/* Switch timer is cleared (and started via fork) on each Radio IFS-end event. */
 	nrf_ppi_channel_endpoint_setup(
 		NRF_PPI,
 		HAL_SW_SWITCH_TIMER_CLEAR_PPI,
@@ -410,6 +423,15 @@ static inline void hal_radio_txen_on_sw_switch(uint8_t compare_reg_index, uint8_
 
 	nrf_ppi_task_endpoint_setup(NRF_PPI, radio_enable_ppi,
 				    HAL_SW_SWITCH_RADIO_ENABLE_PPI_TASK_TX);
+
+	if (!IS_ENABLED(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER)) {
+		nrf_ppi_fork_endpoint_setup(NRF_PPI, radio_enable_ppi,
+					    (uint32_t)&(SW_SWITCH_TIMER->TASKS_STOP));
+		/* NOTE: HAL_SW_SWITCH_TIMER_CLEAR_PPI is re-enabled by sw_switch(), so the
+		 *       switch timer will be (re)started on the next Radio IFS-end event.
+		 *       No explicit code to enable or set up switch-timer start is required here.
+		 */
+	}
 }
 
 static inline void hal_radio_b2b_txen_on_sw_switch(uint8_t compare_reg_index,
@@ -436,6 +458,15 @@ static inline void hal_radio_rxen_on_sw_switch(uint8_t compare_reg_index, uint8_
 
 	nrf_ppi_task_endpoint_setup(NRF_PPI, radio_enable_ppi,
 				    HAL_SW_SWITCH_RADIO_ENABLE_PPI_TASK_RX);
+
+	if (!IS_ENABLED(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER)) {
+		nrf_ppi_fork_endpoint_setup(NRF_PPI, radio_enable_ppi,
+					    (uint32_t)&(SW_SWITCH_TIMER->TASKS_STOP));
+		/* NOTE: HAL_SW_SWITCH_TIMER_CLEAR_PPI is re-enabled by sw_switch(), so the
+		 *       switch timer will be (re)started on the next Radio IFS-end event.
+		 *       No explicit code to enable or set up switch-timer start is required here.
+		 */
+	}
 }
 
 static inline void hal_radio_b2b_rxen_on_sw_switch(uint8_t compare_reg_index,

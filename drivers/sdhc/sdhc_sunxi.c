@@ -612,7 +612,11 @@ static void *smhc_bounce(struct smhc_data *data, uint32_t len)
 	}
 	if (data->bounce == NULL) {
 		/* the malloc arena first: the kernel heap is small and shared with the network */
-		data->bounce = aligned_alloc(SMHC_DMA_ALIGN, CONFIG_SDHC_SUNXI_BOUNCE_KB * 1024U);
+#if !defined(CONFIG_MINIMAL_LIBC) || \
+	(defined(CONFIG_COMMON_LIBC_MALLOC) && CONFIG_COMMON_LIBC_MALLOC_ARENA_SIZE != 0)
+		data->bounce = aligned_alloc(SMHC_DMA_ALIGN,
+					    CONFIG_SDHC_SUNXI_BOUNCE_KB * 1024U);
+#endif
 		if (data->bounce == NULL) {
 			data->bounce = k_aligned_alloc(SMHC_DMA_ALIGN,
 						       CONFIG_SDHC_SUNXI_BOUNCE_KB * 1024U);
@@ -913,7 +917,7 @@ static int smhc_get_host_props(const struct device *dev, struct sdhc_host_props 
 	props->is_spi = false;
 	props->host_caps.vol_330_support = 1;
 	props->host_caps.high_spd_support = 1;
-	props->host_caps.bus_4_bit_support = cfg->bus_width >= 4;
+	props->bus_4_bit_support = cfg->bus_width >= 4;
 	props->host_caps.bus_8_bit_support = cfg->bus_width >= 8;
 	props->host_caps.sdio_async_interrupt_support = 1;
 	props->max_current_330 = 200;
@@ -1053,7 +1057,7 @@ static int smhc_init(const struct device *dev)
 	return 0;
 }
 
-static const struct sdhc_driver_api smhc_api = {
+static DEVICE_API(sdhc, smhc_api) = {
 	.reset = smhc_hw_reset,
 	.request = smhc_request,
 	.set_io = smhc_set_io,

@@ -10,16 +10,18 @@
 #include <zephyr/drivers/timer/system_timer.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/irq.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 
-#define DT_DRV_COMPAT renesas_rza2m_ostm
+#define DT_DRV_COMPAT renesas_rza2m_ostm_timer
 
-DEVICE_MMIO_TOPLEVEL_STATIC(ostm_base, DT_DRV_INST(0));
+#define RZA2M_OSTM(idx) DT_INST_PARENT(idx)
+
+DEVICE_MMIO_TOPLEVEL_STATIC(ostm_base, RZA2M_OSTM(0));
 
 /* The interrupt numbers in the device tree are interrupt IDs and need to be converted to SPI
  * interrupt numbers
  */
-#define OSTM_IRQ_NUM (DT_INST_IRQN(0) - GIC_SPI_INT_BASE)
+#define OSTM_IRQ_NUM (DT_IRQ_BY_NAME(RZA2M_OSTM(0), overflow, irq) - GIC_SPI_INT_BASE)
 
 #if defined(CONFIG_TEST)
 const int32_t z_sys_timer_irq_for_test = OSTM_IRQ_NUM;
@@ -58,39 +60,23 @@ const int32_t z_sys_timer_irq_for_test = OSTM_IRQ_NUM;
 #define OSTM_CTL_FREERUN           2
 
 /*
- * We have two constraints on the maximum number of cycles we can wait for.
- *
- * 1) sys_clock_announce() accepts at most INT32_MAX ticks.
- *
- * 2) The number of cycles between two reports must fit in a cycle_diff_t
- *    variable before converting it to ticks.
- *
- * Then:
- *
- * 3) Pick the smallest between (1) and (2).
- *
- * 4) Take into account some room for the unavoidable IRQ servicing latency.
- *    Let's use 3/4 of the max range.
- *
- * Finally let's add the LSB value to the result so to clear out a bunch of
- * consecutive set bits coming from the original max values to produce a
- * nicer literal for assembly generation.
+ * Maximum number of cycles to wait between two sys_clock_announce() reports:
+ * the elapsed cycle count must fit in a cycle_diff_t before it is divided down
+ * to ticks. Reserve 1/4 of the range as headroom for the unavoidable IRQ
+ * servicing latency so a late report still fits, then add the LSB so the value
+ * clears a run of low set bits for a nicer literal in the generated assembly.
  */
-#define CYCLES_MAX_1 ((uint64_t)INT32_MAX * (uint64_t)CYC_PER_TICK)
-#define CYCLES_MAX_2 ((uint64_t)CYCLE_DIFF_MAX)
-#define CYCLES_MAX_3 MIN(CYCLES_MAX_1, CYCLES_MAX_2)
-#define CYCLES_MAX_4 (CYCLES_MAX_3 / 2 + CYCLES_MAX_3 / 4)
-#define CYCLES_MAX_5 (CYCLES_MAX_4 + LSB_GET(CYCLES_MAX_4))
+#define CYCLES_MAX_1 ((uint64_t)CYCLE_DIFF_MAX)
+#define CYCLES_MAX_2 (CYCLES_MAX_1 / 2 + CYCLES_MAX_1 / 4)
+#define CYCLES_MAX   (CYCLES_MAX_2 + LSB_GET(CYCLES_MAX_2))
 
-/* Precompute CYCLES_MAX and CYC_PER_TICK at driver init to avoid runtime double divisions */
-static uint64_t cycles_max;
+/* Precompute CYC_PER_TICK at driver init to avoid runtime double divisions */
 static uint32_t cyc_per_tick;
-#define CYCLES_MAX   cycles_max
 #define CYC_PER_TICK cyc_per_tick
 
 static struct k_spinlock lock;
-static uint64_t last_cycle;
-static uint64_t last_tick;
+static uint32_t last_cycle;
+static uint32_t last_tick;
 static uint32_t last_elapsed;
 extern unsigned int z_clock_hw_cycles_per_sec;
 
@@ -117,13 +103,11 @@ static void ostm_irq_handler(const struct device *dev)
 	sys_clock_announce(delta_ticks);
 }
 
-void sys_clock_set_timeout(int32_t ticks, bool idle)
+void sys_clock_set_timeout(uint32_t ticks, bool idle)
 {
-	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
-		return;
-	}
+	ARG_UNUSED(idle);
 
-	if (idle && ticks == K_TICKS_FOREVER) {
+	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		return;
 	}
 
@@ -131,13 +115,9 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 
 	k_spinlock_key_t key = k_spin_lock(&lock);
 
-	if (ticks == K_TICKS_FOREVER) {
+	next_cycle = (last_tick + last_elapsed + ticks) * CYC_PER_TICK;
+	if ((next_cycle - last_cycle) > CYCLES_MAX) {
 		next_cycle = last_cycle + CYCLES_MAX;
-	} else {
-		next_cycle = (last_tick + last_elapsed + ticks) * CYC_PER_TICK;
-		if ((next_cycle - last_cycle) > CYCLES_MAX) {
-			next_cycle = last_cycle + CYCLES_MAX;
-		}
 	}
 
 	sys_write32(next_cycle, OSTM_REG_ADDR(OSTM_CMP_OFFSET));
@@ -185,8 +165,8 @@ uint32_t sys_clock_cycle_get_32(void)
 static int sys_clock_driver_init(void)
 {
 	int ret;
-	const struct device *clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(0));
-	uint32_t clock_subsys = DT_INST_CLOCKS_CELL(0, clk_id);
+	const struct device *clock_dev = DEVICE_DT_GET(DT_CLOCKS_CTLR(RZA2M_OSTM(0)));
+	uint32_t clock_subsys = DT_CLOCKS_CELL(RZA2M_OSTM(0), clk_id);
 
 	if (!device_is_ready(clock_dev)) {
 		return -ENODEV;
@@ -207,12 +187,11 @@ static int sys_clock_driver_init(void)
 	last_tick = 0;
 	last_cycle = 0;
 	cyc_per_tick = sys_clock_hw_cycles_per_sec() / CONFIG_SYS_CLOCK_TICKS_PER_SEC;
-	cycles_max = CYCLES_MAX_5;
 
 	DEVICE_MMIO_TOPLEVEL_MAP(ostm_base, K_MEM_CACHE_NONE);
 
-	IRQ_CONNECT(OSTM_IRQ_NUM, DT_INST_IRQ(0, priority), ostm_irq_handler, NULL,
-		    DT_INST_IRQ(0, flags));
+	IRQ_CONNECT(OSTM_IRQ_NUM, DT_IRQ_BY_NAME(RZA2M_OSTM(0), overflow, priority),
+		    ostm_irq_handler, NULL, DT_IRQ_BY_NAME(RZA2M_OSTM(0), overflow, flags));
 
 	/* Restarting the timer will cause reset of CNT register in free-running mode */
 	sys_clock_disable();

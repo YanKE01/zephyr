@@ -12,9 +12,6 @@
 #include <zephyr/sys/util.h>
 #include <soc.h>
 #include <em_gpio.h>
-#ifdef CONFIG_SOC_GECKO_DEV_INIT
-#include <em_cmu.h>
-#endif
 
 #include <zephyr/drivers/gpio/gpio_utils.h>
 
@@ -26,11 +23,7 @@
 #if DT_NODE_HAS_PROP(id, peripheral_id)
 #define GET_GECKO_GPIO_INDEX(id) DT_INST_PROP(id, peripheral_id)
 #else
-#if defined(CONFIG_SOC_FAMILY_SILABS_S2)
-#define GECKO_GPIO_PORT_ADDR_SPACE_SIZE sizeof(GPIO_PORT_TypeDef)
-#else
 #define GECKO_GPIO_PORT_ADDR_SPACE_SIZE sizeof(GPIO_P_TypeDef)
-#endif
 /* Assumption for calculating gpio index:
  * 1. Address space of the first GPIO port is the address space for GPIO port A
  */
@@ -107,7 +100,9 @@ static int gpio_gecko_configure(const struct device *dev,
 	if (flags & GPIO_OUTPUT) {
 		/* Following modes enable both output and input */
 		if (flags & GPIO_SINGLE_ENDED) {
-			if (flags & GPIO_LINE_OPEN_DRAIN) {
+			if ((flags & GPIO_LINE_OPEN_DRAIN) && (flags & GPIO_PULL_UP)) {
+				mode = gpioModeWiredAndPullUp;
+			} else if (flags & GPIO_LINE_OPEN_DRAIN) {
 				mode = gpioModeWiredAnd;
 			} else {
 				mode = gpioModeWiredOr;
@@ -344,11 +339,7 @@ static void gpio_gecko_common_isr(const struct device *dev)
 		enabled_int = int_status & port_data->int_enabled_mask;
 		if (enabled_int != 0) {
 			int_status &= ~enabled_int;
-#if defined(_SILICON_LABS_32B_SERIES_2)
-			GPIO->IF_CLR = enabled_int;
-#else
 			GPIO->IFC = enabled_int;
-#endif
 			gpio_fire_callbacks(&port_data->callbacks, port_dev,
 					    enabled_int);
 		}
@@ -389,9 +380,6 @@ DEVICE_DT_DEFINE(DT_INST(0, silabs_gecko_gpio),
 
 static int gpio_gecko_common_init(const struct device *dev)
 {
-#ifdef CONFIG_SOC_GECKO_DEV_INIT
-	CMU_ClockEnable(cmuClock_GPIO, true);
-#endif
 	gpio_gecko_common_data.count = 0;
 	IRQ_CONNECT(GPIO_EVEN_IRQn,
 		    DT_IRQ_BY_NAME(DT_INST(0, silabs_gecko_gpio), gpio_even, priority),
@@ -413,9 +401,7 @@ static int gpio_gecko_common_init(const struct device *dev)
 static int gpio_gecko_port##idx##_init(const struct device *dev); \
 \
 static const struct gpio_gecko_config gpio_gecko_port##idx##_config = { \
-	.common = { \
-		.port_pin_mask = (gpio_port_pins_t)(-1), \
-	}, \
+	.common = GPIO_COMMON_CONFIG_FROM_DT_INST(idx), \
 	.gpio_index = GET_GECKO_GPIO_INDEX(idx), \
 }; \
 \

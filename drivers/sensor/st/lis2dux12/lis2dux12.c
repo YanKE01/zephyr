@@ -292,18 +292,18 @@ static DEVICE_API(sensor, lis2dux12_driver_api) = {
  * Instantiation macros used when a device is on a SPI bus.
  */
 #define LIS2DUX12_SPI_OPERATION								\
-	(SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA)
+	(SPI_WORD_SET(8) | SPI_OP_MODE_CONTROLLER | SPI_MODE_CPOL | SPI_MODE_CPHA)
 
 #define LIS2DUX12_SPI_RTIO_DEFINE(inst, name)				\
 	SPI_DT_IODEV_DEFINE(lis2dux12_iodev_##name##_##inst,		\
-		DT_DRV_INST(inst), LIS2DUX12_SPI_OPERATION, 0U);	\
+		DT_DRV_INST(inst), LIS2DUX12_SPI_OPERATION);		\
 	RTIO_DEFINE(lis2dux12_rtio_ctx_##name##_##inst, 4, 4);
 
 #define LIS2DUX12_CONFIG_SPI(inst, name)						\
 	{										\
 		STMEMSC_CTX_SPI(&lis2dux12_config_##name##_##inst.stmemsc_cfg),		\
 		.stmemsc_cfg = {							\
-			.spi = SPI_DT_SPEC_INST_GET(inst, LIS2DUX12_SPI_OPERATION, 0),	\
+			.spi = SPI_DT_SPEC_INST_GET(inst, LIS2DUX12_SPI_OPERATION),	\
 		},									\
 		LIS2DUX12_CONFIG_COMMON(inst, name)					\
 	}

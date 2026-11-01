@@ -3,11 +3,5 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-/ {
-	aliases {
-		dma0 = &dma0;
-	};
-};
-&dma0 {
-	status = "okay";
-};
+
+tst_dma0: &dma0 {};

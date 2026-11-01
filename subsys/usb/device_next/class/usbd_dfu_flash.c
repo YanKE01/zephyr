@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "usbd_msg.h"
+#include <usbd_msg.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/usb/usbd.h>
@@ -95,7 +95,7 @@ static int dfu_flash_write(void *const priv,
 	int ret;
 
 	if (block == 0) {
-		if (flash_img_init(&data->fi_ctx)) {
+		if (flash_img_init_id(&data->fi_ctx, data->id)) {
 			return -EINVAL;
 		}
 
@@ -136,18 +136,18 @@ static bool dfu_flash_next(void *const priv,
 	return true;
 }
 
-#if FIXED_PARTITION_EXISTS(slot0_partition) && defined(CONFIG_USBD_DFU_FLASH_SLOT0)
+#if PARTITION_EXISTS(slot0_partition) && defined(CONFIG_USBD_DFU_FLASH_SLOT0)
 static struct usbd_dfu_flash_data slot0_data = {
-	.id = FIXED_PARTITION_ID(slot0_partition),
+	.id = PARTITION_ID(slot0_partition),
 };
 
 USBD_DFU_DEFINE_IMG(slot0_image, "slot0_image", &slot0_data,
 		    dfu_flash_read, dfu_flash_write, dfu_flash_next);
 #endif
 
-#if FIXED_PARTITION_EXISTS(slot1_partition) && defined(CONFIG_USBD_DFU_FLASH_SLOT1)
+#if PARTITION_EXISTS(slot1_partition) && defined(CONFIG_USBD_DFU_FLASH_SLOT1)
 static struct usbd_dfu_flash_data slot1_data = {
-	.id = FIXED_PARTITION_ID(slot1_partition),
+	.id = PARTITION_ID(slot1_partition),
 };
 
 USBD_DFU_DEFINE_IMG(slot1_image, "slot1_image", &slot1_data,

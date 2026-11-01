@@ -128,7 +128,15 @@ static int bytes_from_str(uint8_t *buf, int buf_len, const char *src)
 }
 #endif /* CONFIG_WIFI_FIXED_MAC_ADDRESS_ENABLED */
 
-int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
+static enum op_band get_nrf_wifi_op_band(void)
+{
+	if (IS_ENABLED(CONFIG_NRF_WIFI_2G_BAND)) {
+		return BAND_24G;
+	}
+	return BAND_ALL;
+}
+
+int nrf_wifi_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 {
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
 	struct nrf_wifi_ctx_zep *rpu_ctx_zep = NULL;
@@ -138,6 +146,7 @@ int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 	struct nrf_wifi_board_params board_params;
 	unsigned int fw_ver = 0;
 	k_spinlock_key_t key;
+	enum op_band op_band = get_nrf_wifi_op_band();
 
 	/* The OSAL layer needs to be initialized before any other initialization
 	 * so that other layers (like FW IF,HW IF etc) have access to OS ops
@@ -149,7 +158,7 @@ int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 	off_raw_tx_drv_priv.fmac_priv = nrf_wifi_off_raw_tx_fmac_init();
 
 	if (off_raw_tx_drv_priv.fmac_priv == NULL) {
-		LOG_ERR("%s: Failed to initialize nRF70 driver",
+		LOG_ERR("%s: Failed to initialize nRF Wi-Fi driver",
 			__func__);
 		goto err;
 	}
@@ -161,7 +170,7 @@ int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 	rpu_ctx = nrf_wifi_off_raw_tx_fmac_dev_add(off_raw_tx_drv_priv.fmac_priv,
 						   rpu_ctx_zep);
 	if (!rpu_ctx) {
-		LOG_ERR("%s: Failed to add nRF70 device", __func__);
+		LOG_ERR("%s: Failed to add nRF Wi-Fi device", __func__);
 		rpu_ctx_zep = NULL;
 		goto err;
 	}
@@ -170,18 +179,18 @@ int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 
 	status = nrf_wifi_fw_load(rpu_ctx);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: Failed to load the nRF70 firmware patch", __func__);
+		LOG_ERR("%s: Failed to load the nRF Wi-Fi firmware patch", __func__);
 		goto err;
 	}
 
 	status = nrf_wifi_fmac_ver_get(rpu_ctx,
 				       &fw_ver);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: Failed to read the nRF70 firmware version", __func__);
+		LOG_ERR("%s: Failed to read the nRF Wi-Fi firmware version", __func__);
 		goto err;
 	}
 
-	LOG_DBG("nRF70 firmware (v%d.%d.%d.%d) booted successfully",
+	LOG_DBG("nRF Wi-Fi firmware (v%d.%d.%d.%d) booted successfully",
 		NRF_WIFI_UMAC_VER(fw_ver),
 		NRF_WIFI_UMAC_VER_MAJ(fw_ver),
 		NRF_WIFI_UMAC_VER_MIN(fw_ver),
@@ -202,14 +211,14 @@ int nrf70_off_raw_tx_init(uint8_t *mac_addr, unsigned char *country_code)
 						   HW_SLEEP_ENABLE,
 #endif /* CONFIG_NRF_WIFI_LOW_POWER */
 						   NRF_WIFI_DEF_PHY_CALIB,
-						   CONFIG_NRF_WIFI_OP_BAND,
+						   op_band,
 						   IS_ENABLED(CONFIG_NRF_WIFI_BEAMFORMING),
 						   &ctrl_params,
 						   &ceil_params,
 						   &board_params,
 						   country_code);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 firmware initialization failed", __func__);
+		LOG_ERR("%s: nRF Wi-Fi firmware initialization failed", __func__);
 		goto err;
 	}
 
@@ -262,12 +271,12 @@ err:
 	}
 
 	k_spin_unlock(&off_raw_tx_drv_priv.lock, key);
-	nrf70_off_raw_tx_deinit();
+	nrf_wifi_off_raw_tx_deinit();
 	return -1;
 }
 
 
-void nrf70_off_raw_tx_deinit(void)
+void nrf_wifi_off_raw_tx_deinit(void)
 {
 	k_spinlock_key_t key;
 
@@ -299,7 +308,40 @@ static bool validate_rate(enum nrf_wifi_off_raw_tx_tput_mode tput_mode,
 	return true;
 }
 
-int nrf70_off_raw_tx_conf_update(struct nrf_wifi_off_raw_tx_conf *conf)
+static bool validate_chan_band(enum nrf_wifi_off_raw_tx_band band, unsigned int chan)
+{
+	switch (band) {
+	case NRF_WIFI_OFF_RAW_TX_BAND_2GHZ:
+		if (chan < 1 || chan > 14) {
+			LOG_ERR("%s: Channel %u is not a valid 2.4 GHz channel",
+				__func__, chan);
+			return false;
+		}
+		break;
+	case NRF_WIFI_OFF_RAW_TX_BAND_5GHZ:
+		if (chan < 32 || chan > 177) {
+			LOG_ERR("%s: Channel %u is not a valid 5 GHz channel",
+				__func__, chan);
+			return false;
+		}
+		break;
+	case NRF_WIFI_OFF_RAW_TX_BAND_6GHZ:
+		LOG_ERR("%s: 6 GHz band is not supported on nRF70", __func__);
+		return false;
+	case NRF_WIFI_OFF_RAW_TX_BAND_AUTO:
+	default:
+		if ((chan >= 1 && chan <= 14) || (chan >= 32 && chan <= 177)) {
+			break;
+		}
+		LOG_ERR("%s: Channel %u is not valid for AUTO band selection",
+			__func__, chan);
+		return false;
+	}
+
+	return true;
+}
+
+int nrf_wifi_off_raw_tx_conf_update(struct nrf_wifi_off_raw_tx_conf *conf)
 {
 	int ret = -1;
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
@@ -340,6 +382,11 @@ int nrf70_off_raw_tx_conf_update(struct nrf_wifi_off_raw_tx_conf *conf)
 		goto out;
 	}
 
+	if (!validate_chan_band(conf->band, conf->chan)) {
+		LOG_ERR("%s: Invalid channel or band", __func__);
+		goto out;
+	}
+
 	off_ctrl_params->channel_no = conf->chan;
 	off_ctrl_params->period_in_us = conf->period_us;
 	off_ctrl_params->tx_pwr = conf->tx_pwr;
@@ -365,7 +412,7 @@ int nrf70_off_raw_tx_conf_update(struct nrf_wifi_off_raw_tx_conf *conf)
 					       off_ctrl_params,
 					       off_tx_params);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 offloaded raw TX configuration failed",
+		LOG_ERR("%s: nRF Wi-Fi offloaded raw TX configuration failed",
 				      __func__);
 		goto out;
 	}
@@ -379,15 +426,15 @@ out:
 }
 
 
-int nrf70_off_raw_tx_start(struct nrf_wifi_off_raw_tx_conf *conf)
+int nrf_wifi_off_raw_tx_start(struct nrf_wifi_off_raw_tx_conf *conf)
 {
 	int ret = -1;
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
 	k_spinlock_key_t key;
 
-	status = nrf70_off_raw_tx_conf_update(conf);
+	status = nrf_wifi_off_raw_tx_conf_update(conf);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 offloaded raw TX configuration failed",
+		LOG_ERR("%s: nRF Wi-Fi offloaded raw TX configuration failed",
 				      __func__);
 		goto out;
 	}
@@ -400,7 +447,7 @@ int nrf70_off_raw_tx_start(struct nrf_wifi_off_raw_tx_conf *conf)
 
 	status = nrf_wifi_off_raw_tx_fmac_start(off_raw_tx_drv_priv.rpu_ctx_zep.rpu_ctx);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 offloaded raw TX start failed",
+		LOG_ERR("%s: nRF Wi-Fi offloaded raw TX start failed",
 				      __func__);
 		goto out;
 	}
@@ -412,7 +459,7 @@ out:
 }
 
 
-int nrf70_off_raw_tx_stop(void)
+int nrf_wifi_off_raw_tx_stop(void)
 {
 	int ret = -1;
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
@@ -427,7 +474,7 @@ int nrf70_off_raw_tx_stop(void)
 
 	status = nrf_wifi_off_raw_tx_fmac_stop(off_raw_tx_drv_priv.rpu_ctx_zep.rpu_ctx);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 offloaded raw TX stop failed",
+		LOG_ERR("%s: nRF Wi-Fi offloaded raw TX stop failed",
 				      __func__);
 		goto out;
 	}
@@ -439,7 +486,7 @@ out:
 }
 
 
-int nrf70_off_raw_tx_mac_addr_get(uint8_t *mac_addr)
+int nrf_wifi_off_raw_tx_mac_addr_get(uint8_t *mac_addr)
 {
 	if (!mac_addr) {
 		LOG_ERR("%s: Invalid param", __func__);
@@ -450,7 +497,7 @@ int nrf70_off_raw_tx_mac_addr_get(uint8_t *mac_addr)
 	return 0;
 }
 
-int nrf70_off_raw_tx_stats(struct nrf_wifi_off_raw_tx_stats *off_raw_tx_stats)
+int nrf_wifi_off_raw_tx_stats(struct nrf_wifi_off_raw_tx_stats *off_raw_tx_stats)
 {
 	int ret = -1;
 	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
@@ -470,7 +517,7 @@ int nrf70_off_raw_tx_stats(struct nrf_wifi_off_raw_tx_stats *off_raw_tx_stats)
 						    0,
 						    &stats);
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
-		LOG_ERR("%s: nRF70 offloaded raw TX stats failed",
+		LOG_ERR("%s: nRF Wi-Fi offloaded raw TX stats failed",
 				      __func__);
 		goto out;
 	}

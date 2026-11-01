@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2019, Linaro Limited
- * Copyright (c) 2024-2025, tinyVision.ai Inc.
- *
+ * SPDX-FileCopyrightText: Copyright tinyVision.ai Inc.
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -10,190 +10,251 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/video.h>
-#include <zephyr/drivers/video-controls.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/video/video.h>
 
 #include "video_common.h"
 
 LOG_MODULE_REGISTER(video_common, CONFIG_VIDEO_LOG_LEVEL);
 
-#if defined(CONFIG_VIDEO_BUFFER_USE_SHARED_MULTI_HEAP)
-#include <zephyr/multi_heap/shared_multi_heap.h>
-
-#define VIDEO_COMMON_HEAP_ALLOC(align, size, timeout)                                              \
-	shared_multi_heap_aligned_alloc(CONFIG_VIDEO_BUFFER_SMH_ATTRIBUTE, align, size)
-#define VIDEO_COMMON_FREE(block) shared_multi_heap_free(block)
-#else
-K_HEAP_DEFINE(video_buffer_pool,
-		CONFIG_VIDEO_BUFFER_POOL_SZ_MAX * CONFIG_VIDEO_BUFFER_POOL_NUM_MAX);
-#define VIDEO_COMMON_HEAP_ALLOC(align, size, timeout)                                              \
-	k_heap_aligned_alloc(&video_buffer_pool, align, size, timeout);
-#define VIDEO_COMMON_FREE(block) k_heap_free(&video_buffer_pool, block)
-#endif
-
-static struct video_buffer video_buf[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX];
-
-struct mem_block {
-	void *data;
-};
-
-static struct mem_block video_block[CONFIG_VIDEO_BUFFER_POOL_NUM_MAX];
-
-struct video_buffer *video_buffer_aligned_alloc(size_t size, size_t align, k_timeout_t timeout)
+struct video_device *video_find_vdev(const struct device *dev)
 {
-	struct video_buffer *vbuf = NULL;
-	struct mem_block *block;
-	int i;
-
-	/* find available video buffer */
-	for (i = 0; i < ARRAY_SIZE(video_buf); i++) {
-		if (video_buf[i].buffer == NULL) {
-			vbuf = &video_buf[i];
-			block = &video_block[i];
-			break;
-		}
-	}
-
-	if (vbuf == NULL) {
+	if (!dev) {
 		return NULL;
 	}
 
-	/* Alloc buffer memory */
-	block->data = VIDEO_COMMON_HEAP_ALLOC(align, size, timeout);
-	if (block->data == NULL) {
-		return NULL;
-	}
-
-	vbuf->buffer = block->data;
-	vbuf->size = size;
-	vbuf->bytesused = 0;
-
-	return vbuf;
-}
-
-struct video_buffer *video_buffer_alloc(size_t size, k_timeout_t timeout)
-{
-	return video_buffer_aligned_alloc(size, sizeof(void *), timeout);
-}
-
-void video_buffer_release(struct video_buffer *vbuf)
-{
-	struct mem_block *block = NULL;
-	int i;
-
-	__ASSERT_NO_MSG(vbuf != NULL);
-
-	/* vbuf to block */
-	for (i = 0; i < ARRAY_SIZE(video_block); i++) {
-		if (video_block[i].data == vbuf->buffer) {
-			block = &video_block[i];
-			break;
+	STRUCT_SECTION_FOREACH(video_device, vdev) {
+		if (vdev->dev == dev) {
+			return vdev;
 		}
 	}
 
-	vbuf->buffer = NULL;
-	if (block) {
-		VIDEO_COMMON_FREE(block->data);
+	return NULL;
+}
+
+const char *const *video_get_std_menu_ctrl(uint32_t id)
+{
+	static char const *const power_line_frequency[] = {
+		"Disabled", "50 Hz", "60 Hz", "Auto", NULL,
+	};
+	static char const *const exposure_auto[] = {
+		"Auto Mode", "Manual Mode", "Shutter Priority Mode", "Aperture Priority Mode", NULL,
+	};
+	static char const *const colorfx[] = {
+		"None", "Black & White", "Sepia", "Negative", "Emboss", "Sketch", "Sky Blue",
+		"Grass Green", "Skin Whiten", "Vivid", "Aqua", "Art Freeze", "Silhouette",
+		"Solarization", "Antique", "Set Cb/Cr", NULL,
+	};
+	static char const *const camera_orientation[] = {
+		"Front", "Back", "External", NULL,
+	};
+
+	switch (id) {
+	/* User control menus */
+	case VIDEO_CID_POWER_LINE_FREQUENCY:
+		return power_line_frequency;
+
+	/* Camera control menus */
+	case VIDEO_CID_EXPOSURE_AUTO:
+		return exposure_auto;
+	case VIDEO_CID_COLORFX:
+		return colorfx;
+	case VIDEO_CID_CAMERA_ORIENTATION:
+		return camera_orientation;
+	default:
+		return NULL;
 	}
 }
 
-int video_format_caps_index(const struct video_format_cap *fmts, const struct video_format *fmt,
-			    size_t *idx)
+static inline int check_range(enum video_ctrl_type type, struct video_ctrl_range range)
 {
-	__ASSERT_NO_MSG(fmts != NULL);
-	__ASSERT_NO_MSG(fmt != NULL);
-	__ASSERT_NO_MSG(idx != NULL);
+	switch (type) {
+	case VIDEO_CTRL_TYPE_BOOLEAN:
+		if (range.step != 1 || range.max > 1 || range.min < 0) {
+			return -ERANGE;
+		}
+		return 0;
+	case VIDEO_CTRL_TYPE_INTEGER:
+		if (range.step == 0 || range.min > range.max ||
+		    !IN_RANGE(range.def, range.min, range.max)) {
+			return -ERANGE;
+		}
+		return 0;
+	case VIDEO_CTRL_TYPE_INTEGER64:
+		if (range.step64 == 0 || range.min64 > range.max64 ||
+		    !IN_RANGE(range.def64, range.min64, range.max64)) {
+			return -ERANGE;
+		}
+		return 0;
+	case VIDEO_CTRL_TYPE_MENU:
+	case VIDEO_CTRL_TYPE_INTEGER_MENU:
+		if (!IN_RANGE(range.min, 0, range.max) ||
+		    !IN_RANGE(range.def, range.min, range.max)) {
+			return -ERANGE;
+		}
+		return 0;
+	default:
+		return 0;
+	}
+}
 
-	for (int i = 0; fmts[i].pixelformat != 0; i++) {
-		if (fmts[i].pixelformat == fmt->pixelformat &&
-		    IN_RANGE(fmt->width, fmts[i].width_min, fmts[i].width_max) &&
-		    IN_RANGE(fmt->height, fmts[i].height_min, fmts[i].height_max)) {
-			*idx = i;
+static inline void set_type_flag(uint32_t id, enum video_ctrl_type *type, uint32_t *flags)
+{
+	*flags = 0;
+
+	switch (id) {
+	case VIDEO_CID_AUTO_WHITE_BALANCE:
+	case VIDEO_CID_AUTOGAIN:
+	case VIDEO_CID_HFLIP:
+	case VIDEO_CID_VFLIP:
+	case VIDEO_CID_HUE_AUTO:
+	case VIDEO_CID_AUTOBRIGHTNESS:
+	case VIDEO_CID_EXPOSURE_AUTO_PRIORITY:
+	case VIDEO_CID_FOCUS_AUTO:
+	case VIDEO_CID_WIDE_DYNAMIC_RANGE:
+		*type = VIDEO_CTRL_TYPE_BOOLEAN;
+		break;
+	case VIDEO_CID_POWER_LINE_FREQUENCY:
+	case VIDEO_CID_EXPOSURE_AUTO:
+	case VIDEO_CID_COLORFX:
+	case VIDEO_CID_TEST_PATTERN:
+	case VIDEO_CID_CAMERA_ORIENTATION:
+		*type = VIDEO_CTRL_TYPE_MENU;
+		break;
+	case VIDEO_CID_PIXEL_RATE:
+		*type = VIDEO_CTRL_TYPE_INTEGER64;
+		*flags |= VIDEO_CTRL_FLAG_READ_ONLY;
+		break;
+	case VIDEO_CID_LINK_FREQ:
+		*type = VIDEO_CTRL_TYPE_INTEGER_MENU;
+		break;
+	default:
+		*type = VIDEO_CTRL_TYPE_INTEGER;
+		break;
+	}
+}
+
+int video_init_ctrl(struct video_ctrl *ctrl, const struct device *dev, uint32_t id,
+		    struct video_ctrl_range range)
+{
+	int ret;
+	uint32_t flags;
+	enum video_ctrl_type type;
+	struct video_ctrl *vc;
+	struct video_device *vdev;
+
+	if (ctrl == NULL) {
+		return -EINVAL;
+	}
+
+	vdev = video_find_vdev(dev);
+	if (!vdev) {
+		return -EINVAL;
+	}
+
+	/* Sanity checks */
+	if (id < VIDEO_CID_BASE) {
+		return -EINVAL;
+	}
+
+	vdev = video_find_vdev(dev);
+	if (!vdev) {
+		return -EINVAL;
+	}
+
+	/* Sanity checks */
+	if (id < VIDEO_CID_BASE) {
+		return -EINVAL;
+	}
+
+	set_type_flag(id, &type, &flags);
+
+	ret = check_range(type, range);
+	if (ret) {
+		return ret;
+	}
+
+	ctrl->cluster_sz = 0;
+	ctrl->cluster = NULL;
+	ctrl->is_auto = false;
+	ctrl->has_volatiles = false;
+	ctrl->menu = NULL;
+	ctrl->vdev = vdev;
+	ctrl->id = id;
+	ctrl->type = type;
+	ctrl->flags = flags;
+	ctrl->range = range;
+
+	if (type == VIDEO_CTRL_TYPE_INTEGER64) {
+		ctrl->val64 = range.def64;
+	} else {
+		ctrl->val = range.def;
+	}
+
+	/* Insert in an ascending order of ctrl's id */
+	SYS_DLIST_FOR_EACH_CONTAINER(&vdev->ctrls, vc, node) {
+		if (vc->id > ctrl->id) {
+			sys_dlist_insert(&vc->node, &ctrl->node);
 			return 0;
 		}
 	}
-	return -ENOENT;
+
+	sys_dlist_append(&vdev->ctrls, &ctrl->node);
+
+	return 0;
 }
 
-void video_closest_frmival_stepwise(const struct video_frmival_stepwise *stepwise,
-				    const struct video_frmival *desired,
-				    struct video_frmival *match)
+int video_init_menu_ctrl(struct video_ctrl *ctrl, const struct device *dev, uint32_t id,
+			 uint8_t def, const char *const menu[])
 {
-	__ASSERT_NO_MSG(stepwise != NULL);
-	__ASSERT_NO_MSG(desired != NULL);
-	__ASSERT_NO_MSG(match != NULL);
+	int ret;
+	uint8_t sz = 0;
+	const char *const *_menu = menu ? menu : video_get_std_menu_ctrl(id);
 
-	uint64_t min = stepwise->min.numerator;
-	uint64_t max = stepwise->max.numerator;
-	uint64_t step = stepwise->step.numerator;
-	uint64_t goal = desired->numerator;
-
-	/* Set a common denominator to all values */
-	min *= stepwise->max.denominator * stepwise->step.denominator * desired->denominator;
-	max *= stepwise->min.denominator * stepwise->step.denominator * desired->denominator;
-	step *= stepwise->min.denominator * stepwise->max.denominator * desired->denominator;
-	goal *= stepwise->min.denominator * stepwise->max.denominator * stepwise->step.denominator;
-
-	__ASSERT_NO_MSG(step != 0U);
-	/* Prevent division by zero */
-	if (step == 0U) {
-		return;
+	if (!_menu) {
+		return -EINVAL;
 	}
-	/* Saturate the desired value to the min/max supported */
-	goal = CLAMP(goal, min, max);
 
-	/* Compute a numerator and denominator */
-	match->numerator = min + DIV_ROUND_CLOSEST(goal - min, step) * step;
-	match->denominator = stepwise->min.denominator * stepwise->max.denominator *
-			     stepwise->step.denominator * desired->denominator;
+	while (_menu[sz]) {
+		sz++;
+	}
+
+	ret = video_init_ctrl(
+		ctrl, dev, id,
+		(struct video_ctrl_range){.min = 0, .max = sz - 1, .step = 1, .def = def});
+
+	if (ret) {
+		return ret;
+	}
+
+	ctrl->menu = _menu;
+
+	return 0;
 }
 
-void video_closest_frmival(const struct device *dev, struct video_frmival_enum *match)
+int video_init_int_menu_ctrl(struct video_ctrl *ctrl, const struct device *dev, uint32_t id,
+			     uint8_t def, const int64_t menu[], size_t menu_len)
 {
-	__ASSERT_NO_MSG(dev != NULL);
-	__ASSERT_NO_MSG(match != NULL);
+	int ret;
 
-	struct video_frmival desired = match->discrete;
-	struct video_frmival_enum fie = {.format = match->format};
-	uint64_t best_diff_nsec = INT32_MAX;
-	uint64_t goal_nsec = video_frmival_nsec(&desired);
-
-	__ASSERT(match->type != VIDEO_FRMIVAL_TYPE_STEPWISE,
-		 "cannot find range matching the range, only a value matching the range");
-
-	for (fie.index = 0; video_enum_frmival(dev, &fie) == 0; fie.index++) {
-		struct video_frmival tmp = {0};
-		uint64_t diff_nsec = 0;
-		uint64_t tmp_nsec;
-
-		switch (fie.type) {
-		case VIDEO_FRMIVAL_TYPE_DISCRETE:
-			tmp = fie.discrete;
-			break;
-		case VIDEO_FRMIVAL_TYPE_STEPWISE:
-			video_closest_frmival_stepwise(&fie.stepwise, &desired, &tmp);
-			break;
-		default:
-			CODE_UNREACHABLE;
-		}
-
-		tmp_nsec = video_frmival_nsec(&tmp);
-		diff_nsec = tmp_nsec > goal_nsec ? tmp_nsec - goal_nsec : goal_nsec - tmp_nsec;
-
-		if (diff_nsec < best_diff_nsec) {
-			best_diff_nsec = diff_nsec;
-			match->index = fie.index;
-			match->discrete = tmp;
-		}
-
-		if (diff_nsec == 0) {
-			/* Exact match, stop searching a better match */
-			break;
-		}
+	if (!menu) {
+		return -EINVAL;
 	}
+
+	ret = video_init_ctrl(
+		ctrl, dev, id,
+		(struct video_ctrl_range){.min = 0, .max = menu_len - 1, .step = 1, .def = def});
+
+	if (ret) {
+		return ret;
+	}
+
+	ctrl->int_menu = menu;
+
+	return 0;
 }
 
 static int video_read_reg_retry(const struct i2c_dt_spec *i2c, uint8_t *buf_w, size_t size_w,
@@ -228,10 +289,9 @@ int video_read_cci_reg(const struct i2c_dt_spec *i2c, uint32_t reg_addr, uint32_
 	uint8_t *data_ptr;
 	int ret;
 
-	__ASSERT_NO_MSG(i2c != NULL);
-	__ASSERT_NO_MSG(reg_data != NULL);
-	__ASSERT(addr_size > 0, "The address must have a address size flag");
-	__ASSERT(data_size > 0, "The address must have a data size flag");
+	if (i2c == NULL || reg_data == NULL || addr_size == 0 || data_size == 0) {
+		return -EINVAL;
+	}
 
 	*reg_data = 0;
 
@@ -269,8 +329,9 @@ static int video_write_reg_retry(const struct i2c_dt_spec *i2c, uint8_t *buf_w, 
 {
 	int ret;
 
-	__ASSERT_NO_MSG(i2c != NULL);
-	__ASSERT_NO_MSG(buf_w != NULL);
+	if (i2c == NULL || buf_w == NULL) {
+		return -EINVAL;
+	}
 
 	for (int i = 0;; i++) {
 		ret = i2c_write_dt(i2c, buf_w, size);
@@ -299,9 +360,9 @@ int video_write_cci_reg(const struct i2c_dt_spec *i2c, uint32_t reg_addr, uint32
 	uint8_t *data_ptr;
 	int ret;
 
-	__ASSERT_NO_MSG(i2c != NULL);
-	__ASSERT(addr_size > 0, "The address must have a address size flag");
-	__ASSERT(data_size > 0, "The address must have a data size flag");
+	if (i2c == NULL || addr_size == 0 || data_size == 0) {
+		return -EINVAL;
+	}
 
 	if (big_endian) {
 		/* Casting between data sizes in big-endian requires re-aligning */
@@ -354,7 +415,9 @@ int video_write_cci_multiregs(const struct i2c_dt_spec *i2c, const struct video_
 {
 	int ret;
 
-	__ASSERT_NO_MSG(regs != NULL);
+	if (regs == NULL) {
+		return -EINVAL;
+	}
 
 	for (int i = 0; i < num_regs; i++) {
 		ret = video_write_cci_reg(i2c, regs[i].addr, regs[i].data);
@@ -371,7 +434,9 @@ int video_write_cci_multiregs8(const struct i2c_dt_spec *i2c, const struct video
 {
 	int ret;
 
-	__ASSERT_NO_MSG(regs != NULL);
+	if (regs == NULL) {
+		return -EINVAL;
+	}
 
 	for (int i = 0; i < num_regs; i++) {
 		ret = video_write_cci_reg(i2c, regs[i].addr | VIDEO_REG_ADDR8_DATA8, regs[i].data);
@@ -388,7 +453,9 @@ int video_write_cci_multiregs16(const struct i2c_dt_spec *i2c, const struct vide
 {
 	int ret;
 
-	__ASSERT_NO_MSG(regs != NULL);
+	if (regs == NULL) {
+		return -EINVAL;
+	}
 
 	for (int i = 0; i < num_regs; i++) {
 		ret = video_write_cci_reg(i2c, regs[i].addr | VIDEO_REG_ADDR16_DATA8, regs[i].data);
@@ -398,48 +465,4 @@ int video_write_cci_multiregs16(const struct i2c_dt_spec *i2c, const struct vide
 	}
 
 	return 0;
-}
-
-int64_t video_get_csi_link_freq(const struct device *dev, uint8_t bpp, uint8_t lane_nb)
-{
-	struct video_control ctrl = {
-		.id = VIDEO_CID_LINK_FREQ,
-	};
-	struct video_ctrl_query ctrl_query = {
-		.dev = dev,
-		.id = VIDEO_CID_LINK_FREQ,
-	};
-	int ret;
-
-	/* Try to get the LINK_FREQ value from the source device */
-	ret = video_get_ctrl(dev, &ctrl);
-	if (ret < 0) {
-		goto fallback;
-	}
-
-	ret = video_query_ctrl(&ctrl_query);
-	if (ret < 0) {
-		return ret;
-	}
-
-	if (!IN_RANGE(ctrl.val, ctrl_query.range.min, ctrl_query.range.max)) {
-		return -ERANGE;
-	}
-
-	if (ctrl_query.int_menu == NULL) {
-		return -EINVAL;
-	}
-
-	return (int64_t)ctrl_query.int_menu[ctrl.val];
-
-fallback:
-	/* If VIDEO_CID_LINK_FREQ is not available, approximate from VIDEO_CID_PIXEL_RATE */
-	ctrl.id = VIDEO_CID_PIXEL_RATE;
-	ret = video_get_ctrl(dev, &ctrl);
-	if (ret < 0) {
-		return ret;
-	}
-
-	/* CSI D-PHY is using a DDR data bus so bitrate is twice the frequency */
-	return ctrl.val64 * bpp / (2 * lane_nb);
 }

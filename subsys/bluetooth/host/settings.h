@@ -32,13 +32,15 @@ void bt_testing_settings_store_hook(const char *key, const void *value, size_t v
 void bt_testing_settings_delete_hook(const char *key);
 
 /* Helpers for keys containing a bdaddr */
-void bt_settings_encode_key(char *path, size_t path_size, const char *subsys,
+int bt_settings_encode_key(char *path, size_t path_size, const char *subsys,
 			    const bt_addr_le_t *addr, const char *key);
 int bt_settings_decode_key(const char *key, bt_addr_le_t *addr);
 
 void bt_settings_save_id(void);
 
 int bt_settings_init(void);
+
+void bt_settings_flush(void);
 
 int bt_settings_store_sc(uint8_t id, const bt_addr_le_t *addr, const void *value, size_t val_len);
 int bt_settings_delete_sc(uint8_t id, const bt_addr_le_t *addr);

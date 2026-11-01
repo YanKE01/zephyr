@@ -119,13 +119,14 @@ LOG_MODULE_REGISTER(adc_ad7124, CONFIG_ADC_LOG_LEVEL);
 #define AD7124_ADC_CTRL_REG_MODE_MSK GENMASK(5, 2)
 
 /* IO Control 1 register bits */
+#define AD7124_IO_CONTROL_1_REG_PDSW_EN BIT(15)
 #define AD7124_IOUT1_CURRENT_MSK GENMASK(13, 11)
 #define AD7124_IOUT0_CURRENT_MSK GENMASK(10, 8)
 #define AD7124_IOUT1_CHANNEL_MSK GENMASK(7, 4)
 #define AD7124_IOUT0_CHANNEL_MSK GENMASK(3, 0)
 #define AD7124_IOUT_MSK                                                                            \
-	(AD7124_IOUT1_CURRENT_MSK | AD7124_IOUT0_CURRENT_MSK | AD7124_IOUT1_CHANNEL_MSK |          \
-	 AD7124_IOUT0_CHANNEL_MSK)
+	(AD7124_IO_CONTROL_1_REG_PDSW_EN | AD7124_IOUT1_CURRENT_MSK | AD7124_IOUT0_CURRENT_MSK |   \
+	 AD7124_IOUT1_CHANNEL_MSK | AD7124_IOUT0_CHANNEL_MSK)
 
 /* Current source configuration bits */
 #define AD7124_CURRENT_SOURCE_IOUT_MSK    BIT(3)
@@ -140,7 +141,7 @@ enum ad7124_register_lengths {
 	AD7124_STATUS_REG_LEN = 1,
 	AD7124_ADC_CONTROL_REG_LEN = 2,
 	AD7124_DATA_REG_LEN = 3,
-	AD7124_IO_CONTROL_1_REG_LEN = 2,
+	AD7124_IO_CONTROL_1_REG_LEN = 3,
 	AD7124_ID_REG_LEN = 1,
 	AD7124_ERROR_REG_LEN = 3,
 	AD7124_ERROR_EN_REG_LEN = 3,
@@ -251,6 +252,9 @@ struct ad7124_channel_config {
 	struct ad7124_config_props props;
 	uint8_t cfg_slot;
 	bool live_cfg;
+	struct ad7124_current_source_config current_source_pin[2];
+	bool current_source_pin_set;
+	uint8_t iout_idx;
 };
 
 struct adc_ad7124_config {
@@ -264,6 +268,7 @@ struct adc_ad7124_config {
 	enum ad7124_device_type active_device;
 	uint8_t resolution;
 	bool ref_en;
+	bool pdsw_en;
 };
 
 struct adc_ad7124_data {
@@ -271,7 +276,6 @@ struct adc_ad7124_data {
 	struct adc_context ctx;
 	struct ad7124_control_status adc_control_status;
 	struct ad7124_channel_config channel_setup_cfg[AD7124_MAX_CHANNELS];
-	struct ad7124_current_source_config current_sources[2];
 	uint8_t setup_cfg_slots;
 	struct k_sem acquire_signal;
 	uint16_t channels;
@@ -710,6 +714,7 @@ static int adc_ad7124_setup_cfg(const struct device *dev, const struct ad7124_ch
 	int configuration_setup = 0;
 	int configuration_mask = 0;
 	int ref_internal = 0;
+	int pd_switch = 0;
 
 	if (cfg->props.bipolar) {
 		configuration_setup |= AD7124_CFG_REG_BIPOLAR;
@@ -737,12 +742,22 @@ static int adc_ad7124_setup_cfg(const struct device *dev, const struct ad7124_ch
 		ref_internal = AD7124_ADC_CTRL_REG_REF_EN;
 	}
 
+	if (config->pdsw_en) {
+		pd_switch = AD7124_IO_CONTROL_1_REG_PDSW_EN;
+	}
+
 	if (cfg->props.refsel == INTERNAL_REF) {
 		ret = adc_ad7124_reg_write_msk(dev, AD7124_ADC_CONTROL, AD7124_ADC_CONTROL_REG_LEN,
 					       ref_internal, AD7124_ADC_CTRL_REG_REF_EN);
 		if (ret) {
 			return ret;
 		}
+	}
+
+	ret = adc_ad7124_reg_write_msk(dev, AD7124_IO_CONTROL_1, AD7124_IO_CONTROL_1_REG_LEN,
+				       pd_switch, AD7124_IO_CONTROL_1_REG_PDSW_EN);
+	if (ret) {
+		return ret;
 	}
 
 	return 0;
@@ -841,9 +856,9 @@ static int adc_ad7124_channel_cfg(const struct device *dev, const struct adc_cha
 }
 
 static int adc_ad7124_enable_current_sources(const struct device *dev,
-					     const struct adc_channel_cfg *cfg)
+					     const struct adc_channel_cfg *cfg,
+					     struct ad7124_current_source_config *cs_config)
 {
-	struct adc_ad7124_data *data = dev->data;
 	uint8_t iout_idx;
 
 	if (cfg->current_source_pin[0] > AD7124_CURRENT_SOURCE_MASK) {
@@ -852,23 +867,24 @@ static int adc_ad7124_enable_current_sources(const struct device *dev,
 	}
 
 	iout_idx = FIELD_GET(AD7124_CURRENT_SOURCE_IOUT_MSK, cfg->current_source_pin[0]);
-	data->current_sources[iout_idx].current = (enum ad7124_iout_current)FIELD_GET(
+	cs_config[iout_idx].current = (enum ad7124_iout_current)FIELD_GET(
 		AD7124_CURRENT_SOURCE_CURRENT_MSK, cfg->current_source_pin[0]);
-	data->current_sources[iout_idx].channel = cfg->current_source_pin[1];
+	cs_config[iout_idx].channel = cfg->current_source_pin[1];
 
-	uint32_t value = FIELD_PREP(AD7124_IOUT0_CURRENT_MSK, data->current_sources[0].current) |
-			 FIELD_PREP(AD7124_IOUT0_CHANNEL_MSK, data->current_sources[0].channel) |
-			 FIELD_PREP(AD7124_IOUT1_CURRENT_MSK, data->current_sources[1].current) |
-			 FIELD_PREP(AD7124_IOUT1_CHANNEL_MSK, data->current_sources[1].channel);
+	uint32_t value = FIELD_PREP(AD7124_IOUT0_CURRENT_MSK, cs_config[0].current) |
+			 FIELD_PREP(AD7124_IOUT0_CHANNEL_MSK, cs_config[0].channel) |
+			 FIELD_PREP(AD7124_IOUT1_CURRENT_MSK, cs_config[1].current) |
+			 FIELD_PREP(AD7124_IOUT1_CHANNEL_MSK, cs_config[1].channel);
 
 	return adc_ad7124_reg_write_msk(dev, AD7124_IO_CONTROL_1, AD7124_IO_CONTROL_1_REG_LEN,
-					FIELD_PREP(AD7124_IOUT_MSK, value), AD7124_IOUT_MSK);
+					value, AD7124_IOUT_MSK);
 }
 
 static int adc_ad7124_channel_setup(const struct device *dev, const struct adc_channel_cfg *cfg)
 {
 	struct adc_ad7124_data *data = dev->data;
-	struct ad7124_channel_config new_cfg;
+	struct ad7124_current_source_config cs_config[2] = {0};
+	struct ad7124_channel_config new_cfg = {0};
 	int new_slot;
 	int ret;
 	int similar_channel_index;
@@ -880,19 +896,21 @@ static int adc_ad7124_channel_setup(const struct device *dev, const struct adc_c
 		return ret;
 	}
 
-	/* AD7124 supports only 8 different configurations for 16 channels*/
-	new_slot = adc_ad7124_find_new_slot(dev);
+	/* AD7124 supports only 8 different configurations for 16 channels.
+	 * Reuse identical configurations instead of trying to assign a new one each time.
+	 */
+	similar_channel_index =
+		adc_ad7124_find_similar_configuration(dev, &new_cfg, cfg->channel_id);
 
-	if (new_slot == -1) {
-		similar_channel_index =
-			adc_ad7124_find_similar_configuration(dev, &new_cfg, cfg->channel_id);
-		if (similar_channel_index == -1) {
+	if (similar_channel_index == -1) {
+		new_slot = adc_ad7124_find_new_slot(dev);
+		if (new_slot == -1) {
 			return -EINVAL;
 		}
-		new_cfg.cfg_slot = data->channel_setup_cfg[similar_channel_index].cfg_slot;
-	} else {
 		new_cfg.cfg_slot = new_slot;
 		WRITE_BIT(data->setup_cfg_slots, new_slot, true);
+	} else {
+		new_cfg.cfg_slot = data->channel_setup_cfg[similar_channel_index].cfg_slot;
 	}
 
 	new_cfg.live_cfg = true;
@@ -915,11 +933,16 @@ static int adc_ad7124_channel_setup(const struct device *dev, const struct adc_c
 	}
 
 	if (cfg->current_source_pin_set) {
-		ret = adc_ad7124_enable_current_sources(dev, cfg);
+		ret = adc_ad7124_enable_current_sources(dev, cfg, cs_config);
 		if (ret) {
 			LOG_ERR("Error setting up current sources");
 			return ret;
 		}
+		data->channel_setup_cfg[cfg->channel_id].current_source_pin_set = true;
+		data->channel_setup_cfg[cfg->channel_id].iout_idx =
+			FIELD_GET(AD7124_CURRENT_SOURCE_IOUT_MSK, cfg->current_source_pin[0]);
+		memcpy(data->channel_setup_cfg[cfg->channel_id].current_source_pin, cs_config,
+		       sizeof(cs_config));
 	}
 
 	/* Setup the channel */
@@ -1200,6 +1223,34 @@ static int adc_ad7124_get_read_chan_id(const struct device *dev, uint16_t *chan_
 	return 0;
 }
 
+static int adc_ad7124_apply_channel_current_source(const struct device *dev, uint8_t ch_idx)
+{
+	struct adc_ad7124_data *data = dev->data;
+	struct ad7124_channel_config *ch_cfg = &data->channel_setup_cfg[ch_idx];
+	struct ad7124_current_source_config *cs;
+	uint32_t value;
+	uint32_t mask;
+
+	if (!ch_cfg->current_source_pin_set) {
+		return 0;
+	}
+
+	cs = &ch_cfg->current_source_pin[ch_cfg->iout_idx];
+
+	if (ch_cfg->iout_idx == 0) {
+		value = FIELD_PREP(AD7124_IOUT0_CURRENT_MSK, cs->current) |
+			FIELD_PREP(AD7124_IOUT0_CHANNEL_MSK, cs->channel);
+		mask = AD7124_IOUT0_CURRENT_MSK | AD7124_IOUT0_CHANNEL_MSK;
+	} else {
+		value = FIELD_PREP(AD7124_IOUT1_CURRENT_MSK, cs->current) |
+			FIELD_PREP(AD7124_IOUT1_CHANNEL_MSK, cs->channel);
+		mask = AD7124_IOUT1_CURRENT_MSK | AD7124_IOUT1_CHANNEL_MSK;
+	}
+
+	return adc_ad7124_reg_write_msk(dev, AD7124_IO_CONTROL_1, AD7124_IO_CONTROL_1_REG_LEN,
+					value, mask);
+}
+
 static int adc_ad7124_perform_read(const struct device *dev)
 {
 	int ret = 0;
@@ -1217,6 +1268,13 @@ static int adc_ad7124_perform_read(const struct device *dev)
 		status = get_next_ch_idx(data->ctx.sequence.channels, ch_idx, &ch_idx);
 		if (!status) {
 			break;
+		}
+
+		ret = adc_ad7124_apply_channel_current_source(dev, ch_idx);
+		if (ret) {
+			LOG_ERR("applying current source for channel %d failed", ch_idx);
+			adc_context_complete(&data->ctx, ret);
+			return ret;
 		}
 
 		ret = adc_ad7124_wait_for_conv_ready(dev);
@@ -1437,7 +1495,7 @@ static DEVICE_API(adc, adc_ad7124_api) = {
 	static const struct adc_ad7124_config adc_ad7124_config##inst = {                          \
 		.bus = SPI_DT_SPEC_INST_GET(                                                       \
 			inst,                                                                      \
-			SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8), 0),  \
+			SPI_OP_MODE_CONTROLLER | SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8)), \
 		.resolution = AD7124_RESOLUTION,                                                   \
 		.filter_type_mask = DT_INST_PROP(inst, filter_type_mask),                          \
 		.bipolar_mask = DT_INST_PROP(inst, bipolar_mask),                                  \
@@ -1447,6 +1505,7 @@ static DEVICE_API(adc, adc_ad7124_api) = {
 		.power_mode = DT_INST_PROP(inst, power_mode),                                      \
 		.active_device = DT_INST_PROP(inst, active_device),                                \
 		.ref_en = DT_INST_PROP(inst, reference_enable),                                    \
+		.pdsw_en = DT_INST_PROP(inst, pd_switch_enable),                                   \
 	};                                                                                         \
 	static struct adc_ad7124_data adc_ad7124_data##inst = {                                    \
 		ADC_CONTEXT_INIT_LOCK(adc_ad7124_data##inst, ctx),                                 \

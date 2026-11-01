@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2024-2025 Renesas Electronics Corporation
+ * Copyright (c) 2024-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /dts-v1/;
 
 #include <renesas/ra/ra8/r7fa8t1ahecbd.dtsi>
-#include <dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 #include "mck_ra8t1-pinctrl.dtsi"
 
@@ -16,28 +16,33 @@
 
 	chosen {
 		zephyr,sram = &sram0;
-		zephyr,flash = &flash0;
+		zephyr,flash = &code_flash;
 		zephyr,console = &uart3;
 		zephyr,shell-uart = &uart3;
 		zephyr,entropy = &trng;
-		zephyr,flash-controller = &flash1;
+		zephyr,flash-controller = &code_flash_ctrl;
 		zephyr,canbus = &canfd1;
+		zephyr,crc = &crc;
 	};
 
 	leds {
 		compatible = "gpio-leds";
+
 		led1: led1 {
 			gpios = <&ioporta 12 GPIO_ACTIVE_HIGH>;
 			label = "LED1";
 		};
+
 		led2: led2 {
 			gpios = <&ioporta 14 GPIO_ACTIVE_HIGH>;
 			label = "LED2";
 		};
+
 		led3: led3 {
 			gpios = <&ioport6 6 GPIO_ACTIVE_HIGH>;
 			label = "LED3";
 		};
+
 		led4: led4 {
 			gpios = <&ioporta 6 GPIO_ACTIVE_HIGH>;
 			label = "LED4";
@@ -48,6 +53,7 @@
 		led0 = &led1;
 		sdhc0 = &sdhc0;
 		watchdog0 = &wdt;
+		i2c-0 = &iic1;
 	};
 };
 
@@ -58,12 +64,9 @@
 	status = "okay";
 };
 
-&subclk {
-	status = "okay";
-};
-
 &pll {
 	status = "okay";
+
 	pllp {
 		status = "okay";
 	};
@@ -119,6 +122,7 @@
 	pinctrl-0 = <&sci3_default>;
 	pinctrl-names = "default";
 	status = "okay";
+
 	uart3: uart {
 		current-speed = <115200>;
 		status = "okay";
@@ -156,15 +160,16 @@
 	status = "okay";
 };
 
-&flash1 {
+&data_flash {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		storage_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
-			reg = <0X0 DT_SIZE_K(12)>;
+			reg = <0x0 DT_SIZE_K(12)>;
 		};
 	};
 };
@@ -179,6 +184,7 @@
 
 &canfd_global {
 	status = "okay";
+
 	canfd1 {
 		pinctrl-0 = <&canfd1_default>;
 		pinctrl-names = "default";
@@ -190,19 +196,22 @@
 &iic1 {
 	#address-cells = <1>;
 	#size-cells = <0>;
-	clock-frequency = <DT_FREQ_M(1)>;
+	clock-frequency = <I2C_BITRATE_FAST_PLUS>;
 	pinctrl-0 = <&iic1_default>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &eth {
-	local-mac-address = [74 90 50 6D 81 75];
+	local-mac-address = [74 90 50 6d 81 75];
 	status = "okay";
 	phy-handle = <&phy>;
+	pinctrl-0 = <&ether_default>;
+	pinctrl-names = "default";
 };
 
 &mdio {
-	pinctrl-0 = <&ether_default>;
+	pinctrl-0 = <&mdio_default>;
 	pinctrl-names = "default";
 	status = "okay";
 
@@ -232,6 +241,7 @@
 	enable-gpios = <&ioport3 11 GPIO_ACTIVE_HIGH>;
 	pinctrl-names = "default";
 	status = "okay";
+
 	sdmmc {
 		compatible = "zephyr,sdmmc-disk";
 		disk-name = "SD";
@@ -244,6 +254,7 @@
 	pinctrl-names = "default";
 	maximum-speed = "full-speed";
 	status = "okay";
+
 	zephyr_udc0: udc {
 		status = "okay";
 	};
@@ -267,4 +278,8 @@
 	timer {
 		status = "okay";
 	};
+};
+
+&crc {
+	status = "okay";
 };

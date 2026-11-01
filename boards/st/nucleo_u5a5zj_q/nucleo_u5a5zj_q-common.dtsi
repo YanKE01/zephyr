@@ -41,6 +41,7 @@
 
 	pwmleds: pwmleds {
 		compatible = "pwm-leds";
+		/* NOTE: disabled by default, PWM reuses LED pins */
 		status = "disabled";
 
 		pwm_led_1: green_led_1 {
@@ -105,6 +106,8 @@
 &i2c1 {
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
 };
@@ -112,6 +115,8 @@
 &i2c2 {
 	pinctrl-0 = <&i2c2_scl_pf1 &i2c2_sda_pf0>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiof 1 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiof 0 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
 };
@@ -119,7 +124,7 @@
 &spi1 {
 	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pa7>;
 	pinctrl-names = "default";
-	cs-gpios = <&gpiod 14 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpiod 14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 	status = "okay";
 };
 
@@ -129,19 +134,27 @@
 	status = "okay";
 };
 
+&adc12_common {
+	st,adc-prescaler = <4>;
+	st,adc-clock-source = "ASYNC";
+	status = "okay";
+};
+
 &adc1 {
 	pinctrl-0 = <&adc1_in1_pc0>;
 	pinctrl-names = "default";
-	st,adc-clock-source = "ASYNC";
+	status = "okay";
+};
+
+&adc4_common {
 	st,adc-prescaler = <4>;
+	st,adc-clock-source = "ASYNC";
 	status = "okay";
 };
 
 &adc4 {
 	pinctrl-0 = <&adc4_in18_pb0>;
 	pinctrl-names = "default";
-	st,adc-clock-source = "ASYNC";
-	st,adc-prescaler = <4>;
 	status = "okay";
 };
 
@@ -176,7 +189,7 @@
 };
 
 &fdcan1 {
-	clocks = <&rcc STM32_CLOCK_BUS_APB1_2 0x00000200>,
+	clocks = <&rcc STM32_CLOCK(APB1_2, 9)>,
 		 <&rcc STM32_SRC_PLL1_Q FDCAN1_SEL(1)>;
 	pinctrl-0 = <&fdcan1_rx_pd0 &fdcan1_tx_pd1>;
 	pinctrl-names = "default";
@@ -184,7 +197,7 @@
 };
 
 &rtc {
-	clocks = <&rcc STM32_CLOCK_BUS_APB3 0x00200000>,
+	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
 		 <&rcc STM32_SRC_LSE RTC_SEL(1)>;
 	status = "okay";
 };

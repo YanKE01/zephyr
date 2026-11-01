@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import functools
 import json
 import logging
 import os
@@ -16,29 +17,25 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 import zephyr_module
-from twisterlib.constants import SUPPORTED_SIMS
+from twisterlib.constants import SUPPORTED_SIMS, ZEPHYR_BASE
 from twisterlib.coverage import supported_coverage_formats
-from twisterlib.error import TwisterRuntimeError
+from twisterlib.hardwaremap import HardwareMap
 from twisterlib.log_helper import log_command
 
 logger = logging.getLogger('twister')
 
-ZEPHYR_BASE = os.getenv("ZEPHYR_BASE")
-if not ZEPHYR_BASE:
-    sys.exit("$ZEPHYR_BASE environment variable undefined")
-
-# Use this for internal comparisons; that's what canonicalization is
-# for. Don't use it when invoking other components of the build system
-# to avoid confusing and hard to trace inconsistencies in error messages
-# and logs, generated Makefiles, etc. compared to when users invoke these
-# components directly.
-# Note "normalization" is different from canonicalization, see os.path.
-canonical_zephyr_base = os.path.realpath(ZEPHYR_BASE)
+# Cache the results of the git/cmake queries below so that repeated
+# twister_main() calls inside a single process (as the blackbox tests do) do not
+# re-run the same slow subprocesses. Both are keyed on nothing but ZEPHYR_BASE,
+# which is fixed for the lifetime of the process.
+_VERSION_CACHE: dict = {}
+_TOOLCHAIN_CACHE: dict = {}
 
 
 def _get_installed_packages() -> Generator[str, None, None]:
@@ -65,6 +62,17 @@ PYTEST_PLUGIN_INSTALLED = 'pytest-twister-harness' in installed_packages
 def norm_path(astring):
     newstring = os.path.normpath(astring).replace(os.sep, '/')
     return newstring
+
+
+@functools.cache
+def _parse_modules(zephyr_base: str = ZEPHYR_BASE):
+    """Cached wrapper around zephyr_module.parse_modules.
+
+    parse_modules() walks the workspace for module manifests. Twister needs the
+    result both when building the --board-root default and when TwisterEnv
+    computes its *_roots, so cache the read-only result to avoid scanning twice.
+    """
+    return zephyr_module.parse_modules(zephyr_base)
 
 
 def add_parse_arguments(parser = None) -> argparse.ArgumentParser:
@@ -173,27 +181,29 @@ Artificially long but functional example:
         help="Only build and run emulation platforms")
 
     run_group_option.add_argument(
-        "--device-testing", action="store_true",
-        help="Test on device directly. Specify the serial device to "
-             "use with the --device-serial option.")
-
-    run_group_option.add_argument("--generate-hardware-map",
-                        help="""Probe serial devices connected to this platform
-                        and create a hardware map file to be used with
-                        --device-testing
-                        """)
-
-    run_group_option.add_argument(
         "--simulation", dest="sim_name", choices=SUPPORTED_SIMS,
         help="Selects which simulation to use. Must match one of the names defined in the board's "
              "manifest. If multiple simulator are specified in the selected board and this "
              "argument is not passed, then the first simulator is selected.")
 
+    run_group_option.add_argument(
+        "--device-testing", action="store_true",
+        help="Test on device directly. Specify the serial device to "
+             "use with the --device-serial option.")
 
-    device.add_argument("--device-serial",
+    parser.add_argument("--pre-script",
+                        help="""specify a pre script. This will be executed
+                        before device handler open serial port and invoke runner.
+                        """)
+
+    device.add_argument("--device-serial", action="append", default=[],
                         help="""Serial device for accessing the board
                         (e.g., /dev/ttyACM0)
                         """)
+
+    parser.add_argument(
+        "--device-serial-baud", action="store", default=None,
+        help="Serial device baud rate (default 115200)")
 
     device.add_argument("--device-serial-pty",
                         help="""Script for controlling pseudoterminal.
@@ -204,18 +214,30 @@ Artificially long but functional example:
                         --device-serial-pty <script>
                         """)
 
+    run_group_option.add_argument("--generate-hardware-map",
+                        help="""Probe serial devices connected to this platform
+                        and create a hardware map file to be used with
+                        --device-testing
+                        """)
+
     device.add_argument("--hardware-map",
                         help="""Load hardware map from a file. This will be used
                         for testing on hardware that is listed in the file.
                         """)
 
-    parser.add_argument("--device-flash-timeout", type=int, default=60,
-                        help="""Set timeout for the device flash operation in seconds.
+    parser.add_argument("--persistent-hardware-map", action='store_true',
+                        help="""With --generate-hardware-map, tries to use
+                        persistent names for serial devices on platforms
+                        that support this feature (currently only Linux).
                         """)
 
     parser.add_argument("--device-flash-with-test", action="store_true",
                         help="""Add a test case timeout to the flash operation timeout
                         when flash operation also executes test case on the platform.
+                        """)
+
+    parser.add_argument("--device-flash-timeout", type=int, default=60,
+                        help="""Set timeout for the device flash operation in seconds.
                         """)
 
     parser.add_argument("--flash-before", action="store_true", default=False,
@@ -224,6 +246,139 @@ Artificially long but functional example:
                         and serial console, or use soft-USB, where flash must come first.
                         Also, it skips reading remaining logs from the old image run.
                         """)
+
+    parser.add_argument(
+        "--flash-command",
+        help="""Instead of 'west flash', uses a custom flash command to flash
+            when running with --device-testing. Supports comma-separated
+            argument list, the script is also passed a --build-dir flag with
+            the build directory as an argument, and a --board-id flag with the
+            board or probe id if available.
+        """
+    )
+
+    parser.add_argument(
+        "--west-flash", nargs='?', const=[],
+        help="""Comma separated list of additional flags passed to west when
+            running with --device-testing.
+
+        E.g "twister --device-testing --device-serial /dev/ttyACM0
+                         --west-flash="--board-id=foobar,--erase"
+        will translate to "west flash -- --board-id=foobar --erase"
+        """
+    )
+
+    parser.add_argument(
+        "--west-runner",
+        help="""Uses the specified west runner instead of default when running
+             with --west-flash.
+
+        E.g "twister --device-testing --device-serial /dev/ttyACM0
+                         --west-flash --west-runner=pyocd"
+        will translate to "west flash --runner pyocd"
+        """
+    )
+
+    parser.add_argument(
+        "--west-flash-cmd", choices=['flash', 'debug'],
+        help="""Uses the specified west command. twister will use flash if not set
+
+        E.g "twister --device-testing --device-serial /dev/ttyACM0
+                         --west-flash-cmd="flash"
+        will translate to "west flash ..."
+        """
+    )
+
+    parser.add_argument(
+        "-a", "--arch", action="append",
+        help="Arch filter for testing. Takes precedence over --platform. "
+             "If unspecified, test all arches. Multiple invocations "
+             "are treated as a logical 'or' relationship")
+
+    parser.add_argument(
+            "--vendor", action="append", default=[],
+            help="Vendor filter for testing")
+
+    parser.add_argument(
+        "-p", "--platform", action="append", default=[],
+        help="Platform filter for testing. This option may be used multiple "
+             "times. Test suites will only be built/run on the platforms "
+             "specified. If this option is not used, then platforms marked "
+             "as default in the platform metadata file will be chosen "
+             "to build and test. ")
+
+    parser.add_argument("-P", "--exclude-platform", action="append", default=[],
+            help="""Exclude platforms and do not build or run any tests
+            on those platforms. This option can be called multiple times.
+            """
+            )
+
+    parser.add_argument(
+        "--platform-pattern", action="append", default=[],
+        help="""Platform regular expression filter for testing. This option may be used multiple
+        times. Test suites will only be built/run on the platforms
+        matching the specified patterns. If this option is not used, then platforms marked
+        as default in the platform metadata file will be chosen
+        to build and test.
+        """)
+
+    parser.add_argument(
+        "--test-pattern", action="append",
+        help="""Run only the tests matching the specified pattern. The pattern
+        can include regular expressions.
+        """)
+
+    parser.add_argument(
+        "--filter", choices=['buildable', 'runnable'],
+        default='runnable' if "--device-testing" in sys.argv else 'buildable',
+        help="""Filter tests to be built and executed. By default everything is
+        built and if a test is runnable (emulation or a connected device), it
+        is run. This option allows for example to only build tests that can
+        actually be run. Runnable is a subset of buildable.""")
+
+    parser.add_argument(
+        "-t", "--tag", action="append",
+        help="Specify tags to restrict which tests to run by tag value. "
+             "Default is to not do any tag filtering. Multiple invocations "
+             "are treated as a logical 'or' relationship.")
+
+    parser.add_argument("-e", "--exclude-tag", action="append",
+                        help="Specify tags of tests that should not run. "
+                             "Default is to run all tests with all tags.")
+
+    test_xor_subtest.add_argument(
+        "-s", "--test", "--scenario", action="append", type = norm_path,
+        help="""Run only the specified test suite scenario. These are named by
+        'path/relative/to/Zephyr/base/section.subsection_in_testcase_yaml',
+        or just 'section.subsection' identifier. With '--testsuite-root' option
+        the scenario will be found faster.
+        """)
+
+    test_xor_subtest.add_argument(
+        "--sub-test", action="append",
+        help="""Recursively find sub-test functions (test cases) and run the entire
+        test scenario (section.subsection) where they were found, including all sibling test
+        functions. Sub-tests are named by:
+        'section.subsection_in_testcase_yaml.ztest_suite.ztest_without_test_prefix'.
+        Example_1: 'kernel.fifo.fifo_api_1cpu.fifo_loop' where 'kernel.fifo' is a test scenario
+        name (section.subsection) and 'fifo_api_1cpu.fifo_loop' is a Ztest 'suite_name.test_name'.
+        Example_2: 'debug.coredump.logging_backend' is a standalone test scenario name.
+        Note: This selection mechanism works only for Ztest suite and test function names in
+        the source files which are not generated by macro-substitutions.
+        """)
+
+    parser.add_argument(
+        "-K", "--force-platform", action="store_true",
+        help="""Force testing on selected platforms,
+        even if they are excluded in the test configuration (testcase.yaml)."""
+    )
+
+    parser.add_argument("--ignore-platform-key", action="store_true",
+                        help="Do not filter based on platform key")
+
+    parser.add_argument("--level", action="store",
+        help="Test level to be used. By default, no levels are used for filtering "
+             "and do the selection based on existing filters.")
 
     test_or_build.add_argument(
         "-b",
@@ -248,32 +403,17 @@ Artificially long but functional example:
         help="""Only run device tests with current artifacts, do not build
              the code""")
 
+    parser.add_argument(
+        "--post-build-checks", action="store_true",
+        help="""Run post-build checks on each build directory once a build
+             completes, for example detecting git repositories accidentally
+             cloned into a build directory. Disabled by default; intended to
+             be enabled in CI.""")
+
     parser.add_argument("--timeout-multiplier", type=float, default=1,
         help="""Globally adjust tests timeouts by specified multiplier. The resulting test
         timeout would be multiplication of test timeout value, board-level timeout multiplier
         and global timeout multiplier (this parameter)""")
-
-    test_xor_subtest.add_argument(
-        "-s", "--test", "--scenario", action="append", type = norm_path,
-        help="""Run only the specified test suite scenario. These are named by
-        'path/relative/to/Zephyr/base/section.subsection_in_testcase_yaml',
-        or just 'section.subsection' identifier. With '--testsuite-root' option
-        the scenario will be found faster.
-        """)
-
-    test_xor_subtest.add_argument(
-        "--sub-test", action="append",
-        help="""Recursively find sub-test functions (test cases) and run the entire
-        test scenario (section.subsection) where they were found, including all sibling test
-        functions. Sub-tests are named by:
-        'section.subsection_in_testcase_yaml.ztest_suite.ztest_without_test_prefix'.
-        Example_1: 'kernel.fifo.fifo_api_1cpu.fifo_loop' where 'kernel.fifo' is a test scenario
-        name (section.subsection) and 'fifo_api_1cpu.fifo_loop' is a Ztest 'suite_name.test_name'.
-        Example_2: 'debug.coredump.logging_backend' is a standalone test scenario name.
-        Note: This selection mechanism works only for Ztest suite and test function names in
-        the source files which are not generated by macro-substitutions.
-        Note: With --no-detailed-test-id use only Ztest names without scenario name.
-        """)
 
     parser.add_argument(
         "--pytest-args", action="append",
@@ -307,7 +447,7 @@ Artificially long but functional example:
 
     board_root_list = [f"{ZEPHYR_BASE}/boards", f"{ZEPHYR_BASE}/subsys/testsuite/boards"]
 
-    modules = zephyr_module.parse_modules(ZEPHYR_BASE)
+    modules = _parse_modules()
     for module in modules:
         board_root = module.meta.get("build", {}).get("settings", {}).get("board_root")
         if board_root:
@@ -325,12 +465,6 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
     )
 
     parser.add_argument(
-        "-a", "--arch", action="append",
-        help="Arch filter for testing. Takes precedence over --platform. "
-             "If unspecified, test all arches. Multiple invocations "
-             "are treated as a logical 'or' relationship")
-
-    parser.add_argument(
         "-B", "--subset",
         help="Only run a subset of the tests, 1/4 for running the first 25%%, "
              "3/5 means run the 3rd fifth of the total. "
@@ -339,8 +473,7 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
 
     parser.add_argument(
         "--shuffle-tests", action="store_true", default=None,
-        help="""Shuffle test execution order to get randomly distributed tests across subsets.
-                Used only when --subset is provided.""")
+        help="Shuffle test execution order to get randomly distributed tests.")
 
     parser.add_argument(
         "--shuffle-tests-seed", action="store", default=None,
@@ -403,6 +536,14 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
                         active (`--coverage-per-instance`) to have at least one of these reporting
                         modes. Default: %(default)s""")
 
+    coverage_group.add_argument("--coverage-per-test", action="store_true", default=False,
+                help="""Collect a separate coverage artifact for every individual Ztest
+                        test case, enabling a per-test to source-code coverage matrix.
+                        Requires the 'lcov' coverage tool. Implies --coverage. On platforms
+                        that support semihosting (e.g. mps2/*) the per-test data is written
+                        straight to the host filesystem, avoiding console traffic.
+                        Default: %(default)s""")
+
     parser.add_argument(
         "--test-config",
         action="store",
@@ -410,23 +551,11 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
         help="Path to file with plans and test configurations."
     )
 
-    parser.add_argument("--level", action="store",
-        help="Test level to be used. By default, no levels are used for filtering "
-             "and do the selection based on existing filters.")
-
-    parser.add_argument(
-        "--device-serial-baud", action="store", default=None,
-        help="Serial device baud rate (default 115200)")
-
     parser.add_argument(
         "--disable-suite-name-check", action="store_true", default=False,
         help="Disable extended test suite name verification at the beginning "
              "of Ztest test. This option could be useful for tests or "
              "platforms, which from some reasons cannot print early logs.")
-
-    parser.add_argument("-e", "--exclude-tag", action="append",
-                        help="Specify tags of tests that should not run. "
-                             "Default is to run all tests with all tags.")
 
     parser.add_argument(
         "--enable-lsan", action="store_true",
@@ -443,14 +572,6 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
         to provide better error diagnostics. This option only works with host
         binaries such as those generated for the native_sim configuration.
         """)
-
-    parser.add_argument(
-        "--filter", choices=['buildable', 'runnable'],
-        default='runnable' if "--device-testing" in sys.argv else 'buildable',
-        help="""Filter tests to be built and executed. By default everything is
-        built and if a test is runnable (emulation or a connected device), it
-        is run. This option allows for example to only build tests that can
-        actually be run. Runnable is a subset of buildable.""")
 
     parser.add_argument("--force-color", action="store_true",
                         help="Always output ANSI color escape sequences "
@@ -540,19 +661,10 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
         help="Upon test failure, print relevant log data to stdout "
              "instead of just a path to it.")
 
-    parser.add_argument("--ignore-platform-key", action="store_true",
-                        help="Do not filter based on platform key")
-
     parser.add_argument(
         "-j", "--jobs", type=int,
         help="Number of jobs for building, defaults to number of CPU threads, "
              "overcommitted by factor 2 when --build-only.")
-
-    parser.add_argument(
-        "-K", "--force-platform", action="store_true",
-        help="""Force testing on selected platforms,
-        even if they are excluded in the test configuration (testcase.yaml)."""
-    )
 
     parser.add_argument(
         "-l", "--all", action="store_true",
@@ -579,7 +691,6 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
     )
     test_xor_generator.add_argument(
         "-N", "--ninja", action="store_true",
-        default=not any(a in sys.argv for a in ("-k", "--make")),
         help="Use the Ninja generator with CMake. (This is the default)")
 
     test_xor_generator.add_argument(
@@ -603,23 +714,15 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
     parser.add_argument(
         '--detailed-test-id', action='store_true',
         help="Compose each test Suite name from its configuration path (relative to root) and "
-             "the appropriate Scenario name using PATH_TO_TEST_CONFIG/SCENARIO_NAME schema. "
-             "Also (for Ztest only), prefix each test Case name with its Scenario name. "
-             "For example: 'kernel.common.timing' Scenario with test Suite name "
-             "'tests/kernel/sleep/kernel.common.timing' and 'kernel.common.timing.sleep.usleep' "
-             "test Case (where 'sleep' is its Ztest suite name and 'usleep' is Ztest test name.")
+             "the appropriate Scenario name using PATH_TO_TEST_CONFIG/SCENARIO_NAME schema.")
 
     parser.add_argument(
         "--no-detailed-test-id", dest='detailed_test_id', action="store_false",
         help="Don't prefix each test Suite name with its configuration path, "
-             "so it is the same as the appropriate Scenario name. "
-             "Also (for Ztest only), don't prefix each Ztest Case name with its Scenario name. "
-             "For example: 'kernel.common.timing' Scenario name, the same Suite name, "
-             "and 'sleep.usleep' test Case (where 'sleep' is its Ztest suite name "
-             "and 'usleep' is Ztest test name.")
+             "so it is the same as the appropriate Scenario name.")
 
-    # Include paths in names by default.
-    parser.set_defaults(detailed_test_id=True)
+    # Do not include paths in names by default.
+    parser.set_defaults(detailed_test_id=False)
 
     parser.add_argument(
         "--detailed-skipped-report", action="store_true",
@@ -630,6 +733,7 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
     parser.add_argument(
         "-O", "--outdir",
         default=os.path.join(os.getcwd(), "twister-out"),
+        type=os.path.normpath,
         help="Output directory for logs and binaries. "
              "Default is 'twister-out' in the current directory. "
              "This directory will be cleaned unless '--no-clean' is set. "
@@ -649,39 +753,10 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
     parser.add_argument("--report-filtered", action="store_true",
                         help="Include filtered tests in the reports.")
 
-    parser.add_argument("-P", "--exclude-platform", action="append", default=[],
-            help="""Exclude platforms and do not build or run any tests
-            on those platforms. This option can be called multiple times.
-            """
-            )
-
-    parser.add_argument("--persistent-hardware-map", action='store_true',
-                        help="""With --generate-hardware-map, tries to use
-                        persistent names for serial devices on platforms
-                        that support this feature (currently only Linux).
-                        """)
-
-    parser.add_argument(
-            "--vendor", action="append", default=[],
-            help="Vendor filter for testing")
-
-    parser.add_argument(
-        "-p", "--platform", action="append", default=[],
-        help="Platform filter for testing. This option may be used multiple "
-             "times. Test suites will only be built/run on the platforms "
-             "specified. If this option is not used, then platforms marked "
-             "as default in the platform metadata file will be chosen "
-             "to build and test. ")
-
     parser.add_argument(
         "--platform-reports", action="store_true",
         help="""Create individual reports for each platform.
         """)
-
-    parser.add_argument("--pre-script",
-                        help="""specify a pre script. This will be executed
-                        before device handler open serial port and invoke runner.
-                        """)
 
     parser.add_argument(
         "--quarantine-list",
@@ -764,12 +839,6 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
              "example on Windows OS. This option can be used only with "
              "'--ninja' argument (to use Ninja build generator).")
 
-    parser.add_argument(
-        "-t", "--tag", action="append",
-        help="Specify tags to restrict which tests to run by tag value. "
-             "Default is to not do any tag filtering. Multiple invocations "
-             "are treated as a logical 'or' relationship.")
-
     parser.add_argument("--timestamps",
                         action="store_true",
                         help="Print all messages with time stamps.")
@@ -791,6 +860,18 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
         help="Call multiple times to increase verbosity.")
 
     parser.add_argument(
+        "--console-monitor", action="store_true",
+        help="Show a live full-screen dashboard for the run in this terminal "
+             "instead of the normal scrolling output: progress, in-flight "
+             "jobs with their pipeline stage, and a filterable instance "
+             "table with per-instance details and logs. Requires an "
+             "interactive terminal (ignored otherwise). Press q to leave "
+             "the dashboard; while the run is still going, normal console "
+             "output resumes, and after it finishes, reports are written as "
+             "usual. Normal log output goes to twister.log while the "
+             "dashboard is shown.")
+
+    parser.add_argument(
         "-ll",
         "--log-level",
         type=str.upper,
@@ -801,31 +882,6 @@ structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
 
     parser.add_argument("-W", "--disable-warnings-as-errors", action="store_true",
                         help="Do not treat warning conditions as errors.")
-
-    parser.add_argument(
-        "--west-flash", nargs='?', const=[],
-        help="""Uses west instead of ninja or make to flash when running with
-             --device-testing. Supports comma-separated argument list.
-
-        E.g "twister --device-testing --device-serial /dev/ttyACM0
-                         --west-flash="--board-id=foobar,--erase"
-        will translate to "west flash -- --board-id=foobar --erase"
-
-        NOTE: device-testing must be enabled to use this option.
-        """
-    )
-    parser.add_argument(
-        "--west-runner",
-        help="""Uses the specified west runner instead of default when running
-             with --west-flash.
-
-        E.g "twister --device-testing --device-serial /dev/ttyACM0
-                         --west-flash --west-runner=pyocd"
-        will translate to "west flash --runner pyocd"
-
-        NOTE: west-flash must be enabled to use this option.
-        """
-    )
 
     parser.add_argument(
         "-X", "--fixture", action="append", default=[],
@@ -874,6 +930,11 @@ def parse_arguments(
     if options is None:
         options = parser.parse_args(args)
 
+    # Ninja is the default generator; --make is the only way to opt out. Derive
+    # this from the parsed arguments rather than from sys.argv, which is not the
+    # caller's argument list when twister_main() is invoked in-process.
+    options.ninja = not options.make
+
     # Very early error handling
     if options.short_build_path and not options.ninja:
         logger.error("--short-build-path requires Ninja to be enabled")
@@ -881,14 +942,6 @@ def parse_arguments(
 
     if options.device_serial_pty and os.name == "nt":  # OS is Windows
         logger.error("--device-serial-pty is not supported on Windows OS")
-        sys.exit(1)
-
-    if options.west_runner and options.west_flash is None:
-        logger.error("west-runner requires west-flash to be enabled")
-        sys.exit(1)
-
-    if options.west_flash and not options.device_testing:
-        logger.error("west-flash requires device-testing to be enabled")
         sys.exit(1)
 
     if not options.testsuite_root:
@@ -913,6 +966,12 @@ def parse_arguments(
 
     if options.aggressive_no_clean:
         options.no_clean = True
+
+    if options.coverage_per_test:
+        options.coverage = True
+        if options.coverage_tool != "lcov":
+            logger.error("--coverage-per-test requires the 'lcov' coverage tool.")
+            sys.exit(1)
 
     if options.coverage:
         options.enable_coverage = True
@@ -972,10 +1031,6 @@ def parse_arguments(
         logger.error("--device-flash-with-test does not apply when --flash-before is used")
         sys.exit(1)
 
-    if options.shuffle_tests and options.subset is None:
-        logger.error("--shuffle-tests requires --subset")
-        sys.exit(1)
-
     if options.shuffle_tests_seed and options.shuffle_tests is None:
         logger.error("--shuffle-tests-seed requires --shuffle-tests")
         sys.exit(1)
@@ -1030,9 +1085,11 @@ def parse_arguments(
 
     return options
 
+
 def strip_ansi_sequences(s: str) -> str:
     """Remove ANSI escape sequences from a string."""
     return re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', "", s)
+
 
 class TwisterEnv:
 
@@ -1059,35 +1116,58 @@ class TwisterEnv:
         else:
             self.board_roots = options.board_root
         self.outdir = os.path.abspath(options.outdir)
+        self._setup_ccache()
 
         self.snippet_roots = [Path(ZEPHYR_BASE)]
-        modules = zephyr_module.parse_modules(ZEPHYR_BASE)
-        for module in modules:
-            snippet_root = module.meta.get("build", {}).get("settings", {}).get("snippet_root")
-            if snippet_root:
-                self.snippet_roots.append(Path(module.project) / snippet_root)
-
-
         self.soc_roots = [Path(ZEPHYR_BASE), Path(ZEPHYR_BASE) / 'subsys' / 'testsuite']
         self.dts_roots = [Path(ZEPHYR_BASE)]
         self.arch_roots = [Path(ZEPHYR_BASE)]
 
+        # module build.settings key -> the *_roots list it extends
+        root_settings = {
+            "snippet_root": self.snippet_roots,
+            "soc_root": self.soc_roots,
+            "dts_root": self.dts_roots,
+            "arch_root": self.arch_roots,
+        }
+        modules = _parse_modules()
         for module in modules:
-            soc_root = module.meta.get("build", {}).get("settings", {}).get("soc_root")
-            if soc_root:
-                self.soc_roots.append(Path(module.project) / Path(soc_root))
-            dts_root = module.meta.get("build", {}).get("settings", {}).get("dts_root")
-            if dts_root:
-                self.dts_roots.append(Path(module.project) / Path(dts_root))
-            arch_root = module.meta.get("build", {}).get("settings", {}).get("arch_root")
-            if arch_root:
-                self.arch_roots.append(Path(module.project) / Path(arch_root))
+            settings = module.meta.get("build", {}).get("settings", {})
+            project = Path(module.project)
+            for setting_key, roots in root_settings.items():
+                root = settings.get(setting_key)
+                if root:
+                    roots.append(project / Path(root))
 
-        self.hwm = None
+        self.modules = [m.meta for m in modules]
+        self.hwm: HardwareMap | None = None
 
         self.test_config = options.test_config
 
         self.alt_config_root = options.alt_config_root
+
+    def _setup_ccache(self) -> None:
+        """Let ccache reuse objects between the per-test build directories.
+
+        The build directory otherwise appears in the compiler command line and,
+        because Zephyr builds with -g, in the hash that separates debug info.
+        The trade-off is that a reused object carries the debug info of the
+        build directory it came from. That is of little consequence for test
+        builds, and is limited to files generated into the build directory, as
+        Zephyr refers to the rest by absolute path. Settings already in the
+        environment win.
+
+        Coverage builds are left alone: ccache hashes the working directory
+        whenever it generates a .gcno file, so there is nothing to reuse, while
+        rewriting the paths would leave gcov unable to find the generated
+        headers.
+        """
+        if self.options.enable_coverage:
+            return
+
+        os.environ.setdefault("CCACHE_BASEDIR", self.outdir)
+        if not {"CCACHE_HASHDIR", "CCACHE_NOHASHDIR"} & os.environ.keys():
+            os.environ["CCACHE_NOHASHDIR"] = "true"
 
     def non_default_options(self) -> dict:
         """Returns current command line options which are set to non-default values."""
@@ -1104,9 +1184,16 @@ class TwisterEnv:
     def discover(self):
         self.check_zephyr_version()
         self.get_toolchain()
-        self.run_date = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        self.run_date = datetime.now(UTC).isoformat(timespec='seconds')
 
     def check_zephyr_version(self):
+        if _VERSION_CACHE:
+            self.version = _VERSION_CACHE['version']
+            self.commit_date = _VERSION_CACHE['commit_date']
+            if self.version != "Unknown":
+                logger.info(f"Zephyr version: {self.version}")
+            return
+
         try:
             subproc = subprocess.run(["git", "describe", "--abbrev=12", "--always"],
                                      stdout=subprocess.PIPE,
@@ -1133,10 +1220,13 @@ class TwisterEnv:
         except OSError:
             logger.exception("Failure while reading head commit date.")
 
+        # Populate in one step so the cache is never partially filled.
+        _VERSION_CACHE.update(version=self.version, commit_date=self.commit_date)
+
     @staticmethod
-    def run_cmake_script(args=None):
-        if args is None:
-            args = []
+    def run_cmake_script(args: list[str]) -> dict[str, Any]:
+        if not args:
+            raise ValueError("args list cannot be empty")
         script = os.fspath(args[0])
 
         logger.debug(f"Running cmake script {script}")
@@ -1178,14 +1268,25 @@ class TwisterEnv:
         return results
 
     def get_toolchain(self):
+        if _TOOLCHAIN_CACHE:
+            self.toolchain = _TOOLCHAIN_CACHE['toolchain']
+            self.compiler = _TOOLCHAIN_CACHE['compiler']
+            logger.info(f"Using '{self.toolchain}' toolchain variant.")
+            return
+
         toolchain_script = Path(ZEPHYR_BASE) / Path('cmake/verify-toolchain.cmake')
         result = self.run_cmake_script([toolchain_script, "FORMAT=json"])
 
-        try:
-            if result['returncode']:
-                raise TwisterRuntimeError(f"E: {result['returnmsg']}")
-        except Exception as e:
-            print(str(e))
+        if result['returncode'] != 0:
+            print(f"E: {result['returnmsg']}")
             sys.exit(2)
-        self.toolchain = json.loads(result['stdout'])['ZEPHYR_TOOLCHAIN_VARIANT']
-        logger.info(f"Using '{self.toolchain}' toolchain.")
+        _variant = json.loads(result['stdout'])['ZEPHYR_TOOLCHAIN_VARIANT']
+        self.compiler = json.loads(result['stdout'])['TOOLCHAIN_VARIANT_COMPILER']
+        self.toolchain = f"{_variant}"
+        if self.compiler:
+            # Only add "/..." if TOOLCHAIN_VARIANT_COMPILER is not empty
+            self.toolchain += f"/{self.compiler}"
+        logger.info(f"Using '{self.toolchain}' toolchain variant.")
+
+        # Populate in one step so the cache is never partially filled.
+        _TOOLCHAIN_CACHE.update(toolchain=self.toolchain, compiler=self.compiler)

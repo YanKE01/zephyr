@@ -245,7 +245,7 @@ struct lwm2m_engine_obj {
 #define _INIT_OBJ_RES_INST(_ri_ptr, _ri_idx, _ri_count, _ri_create, \
 			   _data_ptr, _data_sz, _data_len) \
 	do { \
-		if (_ri_ptr != NULL && _ri_count > 0) { \
+		if (_ri_count > 0) { \
 			for (int _i = 0; _i < _ri_count; _i++) { \
 				_ri_ptr[_ri_idx + _i].data_ptr = \
 						((uint8_t *) _data_ptr + (_i * _data_sz)); \
@@ -525,7 +525,7 @@ struct lwm2m_message {
 	bool block_send : 1;
 };
 
-/* LWM2M format writer for the various formats supported */
+/* LwM2M format writer for the various formats supported */
 struct lwm2m_writer {
 	int (*put_begin)(struct lwm2m_output_context *out,
 			 struct lwm2m_obj_path *path);

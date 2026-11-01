@@ -26,7 +26,7 @@
 		compatible = "gpio-leds";
 
 		led1: led_1 {
-			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
 			label = "Red LED";
 		};
 	};
@@ -35,7 +35,6 @@
 	aliases {
 		led0 = &led1;
 	};
-
 };
 
 &uart1 {

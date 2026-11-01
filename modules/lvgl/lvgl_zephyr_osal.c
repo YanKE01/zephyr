@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/debug/cpu_load.h>
+#include <zephyr/sys/cpu_load.h>
 #include <lvgl.h>
+#include <lvgl_private.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(lvgl, CONFIG_LV_Z_LOG_LEVEL);
@@ -18,7 +19,7 @@ typedef void (*lv_thread_entry)(void *);
 static void thread_entry(void *thread, void *cb, void *user_data);
 
 lv_result_t lv_thread_init(lv_thread_t *thread, const char *const name, lv_thread_prio_t prio,
-			   void (*callback)(void *), size_t stack_size, void *user_data)
+			   void (*callback)(void *user_data), size_t stack_size, void *user_data)
 {
 	int thread_priority;
 
@@ -42,10 +43,20 @@ lv_result_t lv_thread_delete(lv_thread_t *thread)
 {
 	int ret;
 
-	k_thread_abort(thread->tid);
+	if (thread == NULL || thread->tid == NULL) {
+		LOG_ERR("Invalid thread pointer");
+		return LV_RESULT_INVALID;
+	}
+
+	ret = k_thread_join(&thread->thread, K_MSEC(100));
+	if (ret != 0) {
+		LOG_WRN("Thread join failed or timed out: %d, aborting thread", ret);
+		k_thread_abort(thread->tid);
+	}
+
 	ret = k_thread_stack_free(thread->stack);
 	if (ret < 0) {
-		LOG_ERR("Failled to delete thread: %d", ret);
+		LOG_ERR("Failed to delete thread: %d", ret);
 		return LV_RESULT_INVALID;
 	}
 
@@ -153,7 +164,11 @@ void thread_entry(void *thread, void *cb, void *user_data)
 	lv_thread_entry entry_cb = (lv_thread_entry)cb;
 
 	entry_cb(user_data);
-	lv_thread_delete((lv_thread_t *)thread);
+}
+
+void lv_sleep_ms(uint32_t ms)
+{
+	k_msleep(ms);
 }
 
 #endif /* CONFIG_LV_Z_USE_OSAL */

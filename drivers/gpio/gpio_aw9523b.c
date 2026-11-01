@@ -34,9 +34,6 @@ struct gpio_aw9523b_config {
 	const struct device *mfd_dev;
 	struct i2c_dt_spec i2c;
 	bool port0_push_pull;
-#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(reset_gpios)
-	struct gpio_dt_spec reset_gpio;
-#endif
 #if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
 	struct gpio_dt_spec int_gpio;
 	gpio_callback_handler_t int_cb;
@@ -89,7 +86,7 @@ static int gpio_aw9523b_pin_configure(const struct device *dev, gpio_pin_t pin, 
 		}
 	}
 
-	if ((flags & GPIO_INPUT) && ((flags & GPIO_PULL_UP) || (flags & GPIO_PULL_DOWN))) {
+	if ((flags & GPIO_INPUT) && (flags & (GPIO_PULL_UP | GPIO_PULL_DOWN))) {
 		return -ENOTSUP;
 	}
 
@@ -151,7 +148,7 @@ static int gpio_aw9523b_port_read_write_toggle(const struct device *dev, gpio_po
 					       enum read_write_toggle_t mode)
 {
 	const struct gpio_aw9523b_config *const config = dev->config;
-	uint8_t buf[2];
+	uint8_t buf[3];
 	gpio_port_value_t old_value;
 	gpio_port_value_t new_value;
 	int err;
@@ -194,8 +191,10 @@ static int gpio_aw9523b_port_read_write_toggle(const struct device *dev, gpio_po
 		goto end;
 	}
 
-	*(uint16_t *)buf = sys_get_le16((uint8_t *)&new_value);
-	err = i2c_burst_write_dt(&config->i2c, AW9523B_REG_OUTPUT0, buf, sizeof(buf));
+	buf[0] = AW9523B_REG_OUTPUT0;
+
+	*(uint16_t *)(&buf[1]) = sys_get_le16((uint8_t *)&new_value);
+	err = i2c_write_dt(&config->i2c, buf, sizeof(buf));
 	if (err) {
 		LOG_ERR("%s: Failed to set port (%d)", dev->name, err);
 	}
@@ -239,6 +238,7 @@ static int gpio_aw9523b_port_toggle_bits(const struct device *dev, gpio_port_pin
 	return gpio_aw9523b_port_read_write_toggle(dev, pins, NULL, TOGGLE);
 }
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
 static __maybe_unused void gpio_aw9523b_interrupt_worker(struct k_work *work)
 {
 	struct gpio_aw9523b_data *const data =
@@ -355,6 +355,7 @@ static __maybe_unused void gpio_aw9523b_int_handler(const struct device *gpio_de
 
 	k_work_submit(&data->intr_worker);
 }
+#endif
 
 static DEVICE_API(gpio, gpio_aw9523b_api) = {
 	.pin_configure = gpio_aw9523b_pin_configure,
@@ -372,7 +373,7 @@ static DEVICE_API(gpio, gpio_aw9523b_api) = {
 static int gpio_aw9523b_init(const struct device *dev)
 {
 	const struct gpio_aw9523b_config *const config = dev->config;
-	const uint8_t int_init_data[] = {0xFF, 0xFF};
+	const uint8_t int_init_data[] = {AW9523B_REG_INT0, 0xFF, 0xFF};
 	uint8_t buf[2];
 	int err;
 #if DT_ANY_INST_HAS_PROP_STATUS_OKAY(int_gpios)
@@ -418,35 +419,6 @@ static int gpio_aw9523b_init(const struct device *dev)
 end_init_int_gpio:
 #endif
 
-#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(reset_gpios)
-	if (!config->reset_gpio.port) {
-		goto end_hw_reset;
-	}
-
-	if (!gpio_is_ready_dt(&config->reset_gpio)) {
-		LOG_ERR("%s: Reset GPIO not ready", dev->name);
-		return -ENODEV;
-	}
-
-	err = gpio_pin_configure_dt(&config->reset_gpio, GPIO_OUTPUT_ACTIVE);
-	if (err) {
-		LOG_ERR("%s: Failed to configure reset pin %d (%d)", dev->name,
-			config->reset_gpio.pin, err);
-		return err;
-	}
-
-	k_busy_wait(AW9523B_RESET_PULSE_WIDTH);
-
-	err = gpio_pin_set_dt(&config->reset_gpio, 0);
-	if (err) {
-		LOG_ERR("%s: Failed to set 0 reset pin %d (%d)", dev->name, config->reset_gpio.pin,
-			err);
-		return err;
-	}
-
-end_hw_reset:
-#endif
-
 	if (!device_is_ready(config->i2c.bus)) {
 		return -ENODEV;
 	}
@@ -461,13 +433,13 @@ end_hw_reset:
 	}
 
 	/* Disabling all interrupts */
-	err = i2c_burst_write_dt(&config->i2c, AW9523B_REG_INT0, int_init_data, sizeof(buf));
+	err = i2c_write_dt(&config->i2c, int_init_data, sizeof(int_init_data));
 	if (err) {
 		LOG_ERR("%s: Failed to disable all interrupts (%d)", dev->name, err);
 		return err;
 	}
 
-	if (!config->port0_push_pull) {
+	if (config->port0_push_pull) {
 		/* Configure port0 to push-pull mode */
 		err = i2c_reg_update_byte_dt(&config->i2c, AW9523B_REG_CTL, AW9523B_GPOMD, 0xFF);
 		if (err) {
@@ -483,18 +455,13 @@ end_hw_reset:
 	static struct gpio_aw9523b_data gpio_aw9523b_data##inst;                                   \
                                                                                                    \
 	static const struct gpio_aw9523b_config gpio_aw9523b_config##inst = {                      \
-		.common = {                                                                        \
-			.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(inst),                    \
-		},                                                                                 \
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(inst),                                   \
 		.mfd_dev = DEVICE_DT_GET(DT_INST_PARENT(inst)),                                    \
 		.i2c = I2C_DT_SPEC_GET(DT_INST_PARENT(inst)),                                      \
 		.port0_push_pull = DT_INST_PROP_OR(inst, port0_push_pull, false),                  \
 		IF_ENABLED(DT_INST_PROP_HAS_IDX(inst, int_gpios, 0), (                             \
 			   .int_gpio = GPIO_DT_SPEC_INST_GET(inst, int_gpios),                     \
 			   .int_cb = gpio_aw9523b_int_handler,                                     \
-		))                                                                                 \
-		IF_ENABLED(DT_INST_PROP_HAS_IDX(inst, reset_gpios, 0), (                           \
-			   .reset_gpio = GPIO_DT_SPEC_INST_GET(inst, reset_gpios),                 \
 		))                                                                                 \
 	};                                                                                         \
 												   \

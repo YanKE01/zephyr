@@ -55,6 +55,7 @@ System Clock
 
 The MCX-A153 SoC is configured to use FRO running at 96MHz as a source for
 the system clock.
+The MCX-A153 uses OS timer as the kernel timer.
 
 Serial Port
 ===========
@@ -153,17 +154,15 @@ should see the following message in the terminal:
 Troubleshooting
 ===============
 
-.. include:: ../../common/segger-ecc-systemview.rst
-   :start-after: segger-ecc-systemview
+.. include:: ../../common/segger-ecc-systemview.rst.inc
 
-.. include:: ../../common/board-footer.rst
-   :start-after: nxp-board-footer
+.. include:: ../../common/board-footer.rst.inc
 
 .. _MCX-A153 SoC Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/mcx-arm-cortex-m/mcx-a-series-microcontrollers/mcx-a13x-14x-15x-mcus-with-arm-cortex-m33-scalable-device-options-low-power-and-intelligent-peripherals:MCX-A13X-A14X-A15X
 
 .. _MCX-A153 Datasheet:
-   https://www.nxp.com/docs/en/data-sheet/MCXAP64M96FS3.pdf
+   https://www.nxp.com/docs/en/data-sheet/MCXAP064M096F30.pdf
 
 .. _MCX-A153 Reference Manual:
    https://www.nxp.com/webapp/Download?colCode=MCXAP64M96FS3RM
@@ -175,7 +174,7 @@ Troubleshooting
    https://www.nxp.com/document/guide/getting-started-with-frdm-mcxa153:GS-FRDM-MCXAXX
 
 .. _FRDM-MCXA153 Board User Manual:
-   https://www.nxp.com/docs/en/user-manual/UM12012.pdf
+   https://www.nxp.com/webapp/Download?colCode=UM12012
 
 .. _FRDM-MCXA153 Schematics:
    https://www.nxp.com/webapp/Download?colCode=SPF-90829_A1

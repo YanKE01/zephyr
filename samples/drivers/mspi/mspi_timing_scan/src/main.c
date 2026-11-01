@@ -41,20 +41,20 @@ int main(void)
 	const struct device *tar_dev = DEVICE_DT_GET(TARGET_DEVICE);
 	struct mspi_dev_id dev_id = MSPI_DEVICE_ID_DT(TARGET_DEVICE);
 #if CONFIG_MEMC_MSPI
-	struct mspi_xip_cfg tar_xip_cfg = MSPI_XIP_CONFIG_DT(TARGET_DEVICE);
+	struct mspi_memmap_cfg tar_memmap_cfg = MSPI_MEMMAP_CONFIG_DT(TARGET_DEVICE);
 #endif
 	struct mspi_ambiq_timing_cfg tar_timing_cfg = MSPI_AMBIQ_TIMING_CONFIG_DT(TARGET_DEVICE);
 	uint32_t timing_cfg_mask = MSPI_AMBIQ_TIMING_CONFIG_MASK_DT(TARGET_DEVICE);
 	struct mspi_ambiq_timing_scan scan;
 
 	if (!device_is_ready(tar_dev)) {
-		printk("%s: device not ready.\n", tar_dev->name);
+		printf("%s: device not ready.\n", tar_dev->name);
 		return 1;
 	}
 
 #if CONFIG_MEMC_MSPI
-	if (!tar_xip_cfg.enable) {
-		printk("Need to enable XIP for timing scan.\n");
+	if (!tar_memmap_cfg.enable) {
+		printf("Need to enable XIP for timing scan.\n");
 		return 1;
 	}
 #endif
@@ -69,17 +69,17 @@ int main(void)
 
 	scan.scan_type        = MSPI_AMBIQ_TIMING_SCAN_MEMC;
 	scan.device_addr      = base_addr +
-				tar_xip_cfg.address_offset +
-				tar_xip_cfg.size / 2;
+				tar_memmap_cfg.address_offset +
+				tar_memmap_cfg.size / 2;
 #endif
 	scan.min_window       = 6;
-
+	printf("Starting MSPI Timing Scan.\n");
 	if (mspi_ambiq_timing_scan(tar_dev, tar_bus, &dev_id, timing_cfg_mask,
 				   (void *)&tar_timing_cfg, &scan)) {
-		printk("Failed to timing scan\n");
+		printf("Failed to timing scan\n");
 		return 1;
 	}
-
+	printf("MSPI Timing Scan is successful.\n");
 	printf("==========================\n");
 	return 0;
 }

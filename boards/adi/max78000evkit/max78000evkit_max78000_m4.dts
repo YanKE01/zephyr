@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2025 Analog Devices, Inc.
+ * Copyright (c) 2025-2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /dts-v1/;
 
-#include <adi/max32/max78000.dtsi>
+#include <adi/max32/max78000-m4.dtsi>
 #include <adi/max32/max78000-pinctrl.dtsi>
 #include <zephyr/dt-bindings/gpio/adi-max32-gpio.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
@@ -16,6 +16,7 @@
 	compatible = "adi,max78000evkit";
 
 	chosen {
+		zephyr,code-partition = &code_partition;
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &sram2;
@@ -52,8 +53,8 @@
 		};
 
 		pb_wakeup: pb_wakeup {
-			gpios = <&gpio3 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW
-				| MAX32_GPIO_VSEL_VDDIOH)>;
+			gpios = <&gpio3 1
+				 (GPIO_PULL_UP | GPIO_ACTIVE_LOW | MAX32_GPIO_VSEL_VDDIOH)>;
 			label = "Wakeup";
 			zephyr,code = <INPUT_KEY_WAKEUP>;
 		};
@@ -83,6 +84,10 @@
 };
 
 &clk_ibro {
+	status = "okay";
+};
+
+&clk_ertco {
 	status = "okay";
 };
 
@@ -129,4 +134,28 @@
 &w1 {
 	pinctrl-0 = <&owm_io_p0_18 &owm_pe_p0_19>;
 	pinctrl-names = "default";
+};
+
+&rtc_counter {
+	status = "okay";
+};
+
+&flash0 {
+	partitions {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		code_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-m4";
+			reg = <0x0 DT_SIZE_K(448)>;
+		};
+
+		storage_partition: partition@70000 {
+			compatible = "zephyr,mapped-partition";
+			label = "storage-m4";
+			reg = <0x70000 DT_SIZE_K(64)>;
+		};
+	};
 };

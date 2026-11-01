@@ -465,9 +465,9 @@ int adxl367_set_fifo_sample_sets_nb(const struct device *dev,
 {
 	struct adxl367_data *data = dev->data;
 	int ret;
-	uint8_t fifo_samples_msb = sets_nb & BIT(9) ? 1U : 0U;
+	uint8_t fifo_samples_msb = sets_nb & BIT(8) ? 1U : 0U;
 
-	/* bit 9 goes to FIFO_SAMPLES from ADXL367_FIFO_CONTROL */
+	/* bit 8 goes to FIFO_SAMPLES from ADXL367_FIFO_CONTROL */
 	ret = data->hw_tf->write_reg_mask(dev, ADXL367_FIFO_CONTROL,
 					  ADXL367_FIFO_CONTROL_FIFO_SAMPLES_MSK,
 					  FIELD_PREP(ADXL367_FIFO_CONTROL_FIFO_SAMPLES_MSK,
@@ -743,29 +743,38 @@ int adxl367_get_accel_data(const struct device *dev,
 }
 
 /**
- * @brief Reads the raw temperature of the device. If ADXL367_TEMP_EN is not
- *        set, use adxl367_temp_read_en() first to enable temperature reading.
+ * @brief Reads the raw temperature of the device.
  *
- * @param dev      - The device structure.
- * @param raw_temp - Raw value of temperature.
+ * If ADXL367_TEMP_EN is not set, use adxl367_temp_read_en() first to enable temperature reading.
+ * Optionally checks the data ready status before reading temperature.
+ *
+ * @param dev            - The device structure.
+ * @param raw_temp       - Raw value of temperature.
+ * @param check_data_rdy - If true, waits for data ready status before reading temperature.
+ *                         If false, reads temperature directly. Note: The DATA_READY bit is
+ *                         cleared when data is read; set this flag to false if temperature from
+ *                         the same sample frame is needed after performing an axis(x,y,z) read.
  *
  * @return 0 in case of success, negative error code otherwise.
  */
-int adxl367_get_temp_data(const struct device *dev, int16_t *raw_temp)
+int adxl367_get_temp_data(const struct device *dev, int16_t *raw_temp, bool check_data_rdy)
 {
 	int ret;
 	uint8_t temp[2] = { 0 };
-	uint8_t reg_data, nready = 1U;
 	struct adxl367_data *data = dev->data;
 
-	while (nready != 0) {
-		ret = data->hw_tf->read_reg(dev, ADXL367_STATUS, &reg_data);
-		if (ret != 0) {
-			return ret;
-		}
+	if (check_data_rdy) {
+		uint8_t reg_data, nready = 1U;
 
-		if ((reg_data & ADXL367_STATUS_DATA_RDY) != 0) {
-			nready = 0U;
+		while (nready != 0) {
+			ret = data->hw_tf->read_reg(dev, ADXL367_STATUS, &reg_data);
+			if (ret != 0) {
+				return ret;
+			}
+
+			if ((reg_data & ADXL367_STATUS_DATA_RDY) != 0) {
+				nready = 0U;
+			}
 		}
 	}
 
@@ -799,8 +808,13 @@ static int adxl367_attr_set_thresh(const struct device *dev,
 	value = (int32_t) llvalue;
 
 	threshold.value = value;
-	threshold.enable = cfg->activity_th.enable;
-	threshold.referenced = cfg->activity_th.referenced;
+	if (attr == SENSOR_ATTR_UPPER_THRESH) {
+		threshold.enable = cfg->activity_th.enable;
+		threshold.referenced = cfg->activity_th.referenced;
+	} else {
+		threshold.enable = cfg->inactivity_th.enable;
+		threshold.referenced = cfg->inactivity_th.referenced;
+	}
 
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_X:
@@ -879,8 +893,14 @@ static int adxl367_sample_fetch(const struct device *dev,
 	if (ret != 0) {
 		return ret;
 	}
+	const struct adxl367_dev_config *cfg = dev->config;
+	bool check_temp_data_ready = false;
 
-	return adxl367_get_temp_data(dev, &data->temp_val);
+	if (cfg->temp_en) {
+		ret = adxl367_get_temp_data(dev, &data->temp_val, check_temp_data_ready);
+	}
+
+	return ret;
 }
 #ifdef CONFIG_SENSOR_ASYNC_API
 void adxl367_accel_convert(struct sensor_value *val, int16_t value,
@@ -903,10 +923,11 @@ void adxl367_temp_convert(struct sensor_value *val, int16_t value)
 static void adxl367_temp_convert(struct sensor_value *val, int16_t value)
 #endif /*CONFIG_SENSOR_ASYNC_API*/
 {
-	int64_t temp_data = (value - ADXL367_TEMP_25C);
+	int32_t temp_from_25 = value - ADXL367_TEMP_25C;
+	int32_t temp_data = temp_from_25 * ADXL367_TEMP_SCALE;
 
-	val->val1 = temp_data / 54 /*temp sensitivity LSB/C*/ + 25/*bias test conditions*/;
-	val->val2 = temp_data % 54 * 10000;
+	val->val1 = temp_data / 1000000 + 25;
+	val->val2 = temp_data % 1000000;
 }
 
 static int adxl367_channel_get(const struct device *dev,
@@ -987,9 +1008,16 @@ static int adxl367_probe(const struct device *dev)
 	data->act_proc_mode = ADXL367_LOOPED;
 #endif
 
-	ret = adxl367_self_test(dev);
+	ret = adxl367_set_output_rate(dev, cfg->odr);
 	if (ret != 0) {
 		return ret;
+	}
+
+	if (cfg->self_test_enable) {
+		ret = adxl367_self_test(dev);
+		if (ret != 0) {
+			return ret;
+		}
 	}
 
 	ret = adxl367_temp_read_en(dev, cfg->temp_en);
@@ -1023,11 +1051,6 @@ static int adxl367_probe(const struct device *dev)
 	}
 
 	ret = adxl367_set_inactivity_time(dev, cfg->inactivity_time);
-	if (ret != 0) {
-		return ret;
-	}
-
-	ret = adxl367_set_output_rate(dev, cfg->odr);
 	if (ret != 0) {
 		return ret;
 	}
@@ -1092,7 +1115,15 @@ static int adxl367_init(const struct device *dev)
 
 #ifdef CONFIG_ADXL367_TRIGGER
 #define ADXL367_CFG_IRQ(inst) \
-		.interrupt = GPIO_DT_SPEC_INST_GET(inst, int1_gpios),
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, int1_gpios),		\
+		(							\
+			.interrupt = GPIO_DT_SPEC_INST_GET(inst, int1_gpios),	\
+			.int_map_reg = ADXL367_INTMAP1_LOWER,		\
+		),							\
+		(							\
+			.interrupt = GPIO_DT_SPEC_INST_GET(inst, int2_gpios),	\
+			.int_map_reg = ADXL367_INTMAP2_LOWER,		\
+		))
 #else
 #define ADXL367_CFG_IRQ(inst)
 #endif /* CONFIG_ADXL367_TRIGGER */
@@ -1121,7 +1152,8 @@ static int adxl367_init(const struct device *dev)
 		.fifo_config.fifo_samples = 128,					\
 		.fifo_config.fifo_read_mode = ADXL367_14B_CHID,				\
 		.op_mode = ADXL367_MEASURE,						\
-		.chip_id = chipid,
+		.chip_id = chipid,							\
+		.self_test_enable = DT_INST_PROP(inst, self_test_enable),
 
 /*
  * Instantiation macros used when a device is on a SPI bus.
@@ -1130,15 +1162,16 @@ static int adxl367_init(const struct device *dev)
 
 #define ADXL367_RTIO_DEFINE(inst, chipid)                                    \
 	SPI_DT_IODEV_DEFINE(adxl367_iodev_##inst##chipid, DT_DRV_INST(inst),     \
-						ADXL367_SPI_CFG, 0U);                        \
+						ADXL367_SPI_CFG);                        \
 	RTIO_DEFINE(adxl367_rtio_ctx_##inst##chipid, 8, 8);
 
 #define ADXL367_CONFIG_SPI(inst, chipid)					\
 	{								\
 		.bus_init = adxl367_spi_init,				\
-		.spi = SPI_DT_SPEC_INST_GET(inst, ADXL367_SPI_CFG, 0),		\
+		.spi = SPI_DT_SPEC_INST_GET(inst, ADXL367_SPI_CFG),		\
 		ADXL367_CONFIG(inst, chipid)					\
-		COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, int1_gpios),	\
+		COND_CODE_1(UTIL_OR(DT_INST_NODE_HAS_PROP(inst, int1_gpios),	\
+				    DT_INST_NODE_HAS_PROP(inst, int2_gpios)),	\
 		(ADXL367_CFG_IRQ(inst)), ())				\
 	}
 
@@ -1161,7 +1194,8 @@ static int adxl367_init(const struct device *dev)
 		.bus_init = adxl367_i2c_init,				\
 		.i2c = I2C_DT_SPEC_INST_GET(inst),			\
 		ADXL367_CONFIG(inst, chipid)					\
-		COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, int1_gpios),	\
+		COND_CODE_1(UTIL_OR(DT_INST_NODE_HAS_PROP(inst, int1_gpios),	\
+				    DT_INST_NODE_HAS_PROP(inst, int2_gpios)),	\
 		(ADXL367_CFG_IRQ(inst)), ())				\
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Renesas Electronics Corporation
+ * Copyright (c) 2024-2025 Renesas Electronics Corporation
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -12,14 +12,17 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/pinctrl.h>
 #include "r_rspi.h"
-#ifdef CONFIG_SPI_RENESAS_RZ_RSPI_DMAC
+#ifdef CONFIG_USE_RZ_FSP_DMAC_B
 #include "r_dmac_b.h"
-#endif
+#elif defined(CONFIG_USE_RZ_FSP_DMAC)
+#include "r_dmac.h"
+#endif /* CONFIG_USE_RZ_FSP_DMAC_B */
 #ifdef CONFIG_SPI_RTIO
-#include <zephyr/drivers/spi/rtio.h>
+#include "spi_rtio.h"
 #include <zephyr/rtio/rtio.h>
-#endif
+#endif /* CONFIG_SPI_RTIO */
 #include <zephyr/logging/log.h>
+#include <zephyr/cache.h>
 
 LOG_MODULE_REGISTER(rz_spi);
 
@@ -39,19 +42,29 @@ struct spi_rz_rspi_data {
 	spi_cfg_t *fsp_config;
 	rspi_instance_ctrl_t *fsp_ctrl;
 	rspi_extended_cfg_t fsp_extend_config;
+	rspi_delay_count_t spck_delay;
+	rspi_delay_count_t ssl_negation_delay;
+	rspi_delay_count_t next_access_delay;
+	rspi_rx_trigger_level_t rx_trigger_level;
+	rspi_tx_trigger_level_t tx_trigger_level;
 #ifdef CONFIG_SPI_RTIO
 	struct spi_rtio *rtio_ctx;
-	int rtio_buf_remain;
 	int rtio_tiny_buf_idx;
 #endif /* CONFIG_SPI_RTIO */
 };
 
 #ifdef CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT
-void rspi_rxi_isr(void);
-void rspi_txi_isr(void);
-void rspi_eri_isr(void);
-#elif defined(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC)
-void dmac_b_int_isr(void);
+void rspi_rxi_isr(void *irq);
+void rspi_txi_isr(void *irq);
+void rspi_eri_isr(void *irq);
+#else
+#if defined(CONFIG_USE_RZ_FSP_DMAC_B)
+void dmac_b_int_isr(void *irq);
+#define RZ_RSPI_DMA_INT_ISR dmac_b_int_isr
+#else
+void dmac_int_isr(void *irq);
+#define RZ_RSPI_DMA_INT_ISR dmac_int_isr
+#endif /* CONFIG_USE_RZ_FSP_DMAC_B */
 void rspi_tx_dmac_callback(rspi_instance_ctrl_t *p_ctrl);
 void rspi_rx_dmac_callback(rspi_instance_ctrl_t *p_ctrl);
 #endif /* CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT */
@@ -64,76 +77,67 @@ static bool spi_rz_rspi_transfer_ongoing(struct spi_rz_rspi_data *data)
 #if defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT)
 	return (spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx));
 #else
-	if (spi_context_total_tx_len(&data->ctx) < spi_context_total_rx_len(&data->ctx)) {
-		return (spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx));
-	} else {
+	if (spi_context_total_tx_len(&data->ctx) == spi_context_total_rx_len(&data->ctx)) {
 		return (spi_context_tx_on(&data->ctx) && spi_context_rx_on(&data->ctx));
+	} else {
+		return (spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx));
 	}
-#endif
+#endif /* CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT */
+}
+
+static void spi_rz_rspi_retransmit(const struct device *dev)
+{
+	struct spi_rz_rspi_data *data = dev->data;
+	const struct spi_rz_rspi_config *config = dev->config;
+
+	data->data_len = spi_context_max_continuous_chunk(&data->ctx);
+
+#ifdef CONFIG_CACHE_MANAGEMENT
+	if (data->ctx.tx_buf == NULL) { /* If there is only the rx buffer */
+		sys_cache_data_flush_range((void *)data->ctx.rx_buf, data->data_len * data->dfs);
+	} else if (data->ctx.rx_buf == NULL) { /* If there is only the tx buffer */
+		sys_cache_data_flush_range((void *)data->ctx.tx_buf, data->data_len * data->dfs);
+	} else {
+		sys_cache_data_flush_range((void *)data->ctx.tx_buf, data->data_len * data->dfs);
+		sys_cache_data_flush_range((void *)data->ctx.rx_buf, data->data_len * data->dfs);
+	}
+#endif /* CONFIG_CACHE_MANAGEMENT */
+
+	if (data->ctx.tx_buf == NULL) { /* If there is only the rx buffer */
+		config->fsp_api->read(data->fsp_ctrl, data->ctx.rx_buf, data->data_len,
+				      data->fsp_ctrl->bit_width);
+	} else if (data->ctx.rx_buf == NULL) { /* If there is only the tx buffer */
+		config->fsp_api->write(data->fsp_ctrl, data->ctx.tx_buf, data->data_len,
+				       data->fsp_ctrl->bit_width);
+	} else {
+		config->fsp_api->writeRead(data->fsp_ctrl, data->ctx.tx_buf, data->ctx.rx_buf,
+					   data->data_len, data->fsp_ctrl->bit_width);
+	}
 }
 #endif /* CONFIG_SPI_RTIO */
 
 #ifdef CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT
 static void spi_rz_rspi_rxi_isr(const struct device *dev)
 {
-	ARG_UNUSED(dev);
-	rspi_rxi_isr();
+	struct spi_rz_rspi_data *data = dev->data;
+
+	rspi_rxi_isr((void *)data->fsp_config->rxi_irq);
 }
 
 static void spi_rz_rspi_txi_isr(const struct device *dev)
 {
-	ARG_UNUSED(dev);
-	rspi_txi_isr();
+	struct spi_rz_rspi_data *data = dev->data;
+
+	rspi_txi_isr((void *)data->fsp_config->txi_irq);
 }
 
 static void spi_rz_rspi_eri_isr(const struct device *dev)
 {
-	ARG_UNUSED(dev);
-	rspi_eri_isr();
+	struct spi_rz_rspi_data *data = dev->data;
+
+	rspi_eri_isr((void *)data->fsp_config->eri_irq);
 }
 #endif /* CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT */
-
-static void spi_rz_rspi_retransmit(struct spi_rz_rspi_data *data)
-{
-	const uint8_t *tx = NULL;
-	uint8_t *rx = NULL;
-
-#ifdef CONFIG_SPI_RTIO
-	struct spi_rtio *rtio_ctx = data->rtio_ctx;
-	struct rtio_sqe *sqe = &rtio_ctx->txn_curr->sqe;
-
-	switch (sqe->op) {
-	case RTIO_OP_RX:
-		rx = sqe->rx.buf++;
-		break;
-	case RTIO_OP_TX:
-		tx = sqe->tx.buf++;
-		break;
-	case RTIO_OP_TINY_TX:
-		data->rtio_tiny_buf_idx++;
-		tx = &sqe->tiny_tx.buf[data->rtio_tiny_buf_idx];
-		break;
-	case RTIO_OP_TXRX:
-		rx = sqe->txrx.rx_buf++;
-		tx = sqe->txrx.tx_buf++;
-		break;
-	default:
-		LOG_ERR("Invalid op %d for sqe %p\n", sqe->op, (void *)sqe);
-		return;
-	}
-#else
-	tx = data->ctx.tx_buf;
-	rx = data->ctx.rx_buf;
-#endif
-
-	if (tx == NULL) { /* If there is only the rx buffer */
-		R_RSPI_Read(data->fsp_ctrl, rx, 1, data->fsp_ctrl->bit_width);
-	} else if (rx == NULL) { /* If there is only the tx buffer */
-		R_RSPI_Write(data->fsp_ctrl, tx, 1, data->fsp_ctrl->bit_width);
-	} else {
-		R_RSPI_WriteRead(data->fsp_ctrl, tx, rx, 1, data->fsp_ctrl->bit_width);
-	}
-}
 
 static void spi_callbacks(spi_callback_args_t *p_args)
 {
@@ -143,24 +147,40 @@ static void spi_callbacks(spi_callback_args_t *p_args)
 	switch (p_args->event) {
 	case SPI_EVENT_TRANSFER_COMPLETE:
 
+#ifdef CONFIG_CACHE_MANAGEMENT
+		rspi_instance_ctrl_t *p_ctrl = (rspi_instance_ctrl_t *)(data->fsp_ctrl);
+
+		if (p_ctrl->p_rx_data && data->data_len) {
+			sys_cache_data_invd_range((void *)p_ctrl->p_rx_data,
+						  data->data_len * data->dfs);
+		}
+#endif /* CONFIG_CACHE_MANAGEMENT */
+
 #ifndef CONFIG_SPI_RTIO
-		spi_context_update_tx(&data->ctx, data->dfs, 1);
-		spi_context_update_rx(&data->ctx, data->dfs, 1);
-		if (spi_rz_rspi_transfer_ongoing(data)) {
-			spi_rz_rspi_retransmit(data);
+		if (data->ctx.tx_len < data->data_len) {
+			data->ctx.tx_len = 0;
+			spi_context_update_tx(&data->ctx, data->dfs,
+					      spi_context_total_tx_len(&data->ctx));
 		} else {
-			spi_context_complete(&data->ctx, dev, 0);
+			spi_context_update_tx(&data->ctx, data->dfs, data->data_len);
+		}
+
+		if (data->ctx.rx_len < data->data_len) {
+			data->ctx.rx_len = 0;
+			spi_context_update_rx(&data->ctx, data->dfs,
+					      spi_context_total_rx_len(&data->ctx));
+		} else {
+			spi_context_update_rx(&data->ctx, data->dfs, data->data_len);
+		}
+		if (spi_rz_rspi_transfer_ongoing(data)) {
+			spi_rz_rspi_retransmit(dev);
 			return;
 		}
-#else
-		if (data->rtio_buf_remain-- > 0) {
-			spi_rz_rspi_retransmit(data);
-		} else {
-			struct spi_rtio *rtio_ctx = data->rtio_ctx;
+#else  /* CONFIG_SPI_RTIO */
+		struct spi_rtio *rtio_ctx = data->rtio_ctx;
 
-			if (rtio_ctx->txn_head != NULL) {
-				spi_rz_rspi_iodev_complete(dev, 0);
-			}
+		if (rtio_ctx->txn_head != NULL) {
+			spi_rz_rspi_iodev_complete(dev, 0);
 		}
 #endif /* CONFIG_SPI_RTIO */
 		spi_context_complete(&data->ctx, dev, 0);
@@ -178,62 +198,63 @@ static void spi_callbacks(spi_callback_args_t *p_args)
 	}
 }
 
-static int spi_rz_rspi_configure(const struct device *dev, const struct spi_config *config)
+static int spi_rz_rspi_configure(const struct device *dev, const struct spi_config *spi_cfg)
 {
 	struct spi_rz_rspi_data *data = dev->data;
+	const struct spi_rz_rspi_config *config = dev->config;
 	spi_bit_width_t spi_width;
 	fsp_err_t err;
 
-	if (spi_context_configured(&data->ctx, config)) {
+	if (spi_context_configured(&data->ctx, spi_cfg)) {
 		/* This configuration is already in use */
 		return 0;
 	}
 
 	if (data->fsp_ctrl->open != 0) {
-		R_RSPI_Close(data->fsp_ctrl);
+		config->fsp_api->close(data->fsp_ctrl);
 	}
 
-	if (config->operation & SPI_FRAME_FORMAT_TI) {
+	if (spi_cfg->operation & SPI_FRAME_FORMAT_TI) {
 		LOG_ERR("TI frame not supported");
 		return -ENOTSUP;
 	}
 
 	if (IS_ENABLED(CONFIG_SPI_EXTENDED_MODES) &&
-	    (config->operation & SPI_LINES_MASK) != SPI_LINES_SINGLE) {
+	    (spi_cfg->operation & SPI_LINES_MASK) != SPI_LINES_SINGLE) {
 		LOG_DEV_ERR(dev, "Only single line mode is supported");
 		return -ENOTSUP;
 	}
 
 	/* SPI mode */
-	if (config->operation & SPI_OP_MODE_SLAVE) {
+	if (spi_cfg->operation & SPI_OP_MODE_PERIPHERAL) {
 		data->fsp_config->operating_mode = SPI_MODE_SLAVE;
 	} else {
 		data->fsp_config->operating_mode = SPI_MODE_MASTER;
 	}
 
 	/* SPI POLARITY */
-	if (SPI_MODE_GET(config->operation) & SPI_MODE_CPOL) {
+	if (SPI_MODE_GET(spi_cfg->operation) & SPI_MODE_CPOL) {
 		data->fsp_config->clk_polarity = SPI_CLK_POLARITY_HIGH;
 	} else {
 		data->fsp_config->clk_polarity = SPI_CLK_POLARITY_LOW;
 	}
 
 	/* SPI PHASE */
-	if (SPI_MODE_GET(config->operation) & SPI_MODE_CPHA) {
+	if (SPI_MODE_GET(spi_cfg->operation) & SPI_MODE_CPHA) {
 		data->fsp_config->clk_phase = SPI_CLK_PHASE_EDGE_EVEN;
 	} else {
 		data->fsp_config->clk_phase = SPI_CLK_PHASE_EDGE_ODD;
 	}
 
 	/* SPI bit order */
-	if (config->operation & SPI_TRANSFER_LSB) {
+	if (spi_cfg->operation & SPI_TRANSFER_LSB) {
 		data->fsp_config->bit_order = SPI_BIT_ORDER_LSB_FIRST;
 	} else {
 		data->fsp_config->bit_order = SPI_BIT_ORDER_MSB_FIRST;
 	}
 
 	/* SPI bit width */
-	spi_width = (spi_bit_width_t)(SPI_WORD_SIZE_GET(config->operation) - 1);
+	spi_width = (spi_bit_width_t)(SPI_WORD_SIZE_GET(spi_cfg->operation) - 1);
 	if (spi_width > SPI_BIT_WIDTH_16_BITS) {
 		data->dfs = 4;
 		data->fsp_ctrl->bit_width = SPI_BIT_WIDTH_32_BITS;
@@ -245,37 +266,50 @@ static int spi_rz_rspi_configure(const struct device *dev, const struct spi_conf
 		data->fsp_ctrl->bit_width = SPI_BIT_WIDTH_8_BITS;
 	}
 
-	/* SPI slave select polarity */
-	if (config->operation & SPI_CS_ACTIVE_HIGH) {
+	/* SPI chip select polarity */
+	if (spi_cfg->operation & SPI_CS_ACTIVE_HIGH) {
 		data->fsp_extend_config.ssl_polarity = RSPI_SSLP_HIGH;
 	} else {
 		data->fsp_extend_config.ssl_polarity = RSPI_SSLP_LOW;
 	}
 
+	/* SPI SSL signal level keep mode */
+	if (spi_cfg->operation & SPI_HOLD_ON_CS) {
+		data->fsp_extend_config.ssl_level_keep = RSPI_SSL_LEVEL_KEEP_ENABLE;
+	} else {
+		data->fsp_extend_config.ssl_level_keep = RSPI_SSL_LEVEL_KEEP_DISABLE;
+	}
+
 	/* Calculate bitrate */
-	if (config->frequency > 0) {
-		err = R_RSPI_CalculateBitrate(config->frequency, &data->fsp_extend_config.spck_div);
+	if (spi_cfg->frequency > 0) {
+		err = R_RSPI_CalculateBitrate(spi_cfg->frequency,
+					      &data->fsp_extend_config.spck_div);
 		if (err != FSP_SUCCESS) {
 			LOG_DEV_ERR(dev, "rspi: bitrate calculate error: %d", err);
 			return -ENOSYS;
 		}
 	}
 
-	data->fsp_extend_config.tx_trigger_level = RSPI_TX_TRIGGER_0;
-	data->fsp_extend_config.rx_trigger_level = RSPI_RX_TRIGGER_1;
+	if (!(spi_cfg->operation & SPI_OP_MODE_PERIPHERAL)) {
+		data->fsp_extend_config.spck_delay = data->spck_delay;
+		data->fsp_extend_config.ssl_negation_delay = data->ssl_negation_delay;
+		data->fsp_extend_config.next_access_delay = data->next_access_delay;
+	}
+	data->fsp_extend_config.rx_trigger_level = data->rx_trigger_level;
+	data->fsp_extend_config.tx_trigger_level = data->tx_trigger_level;
 	data->fsp_config->p_extend = &data->fsp_extend_config;
 	/* Add callback, which will be called when transfer completed or error occur. */
 	data->fsp_config->p_callback = spi_callbacks;
 	/* Data is passed into spi_callbacks. */
-	data->fsp_config->p_context = dev;
+	data->fsp_config->p_context = (void *)dev;
 	/* Open module RSPI. */
-	err = R_RSPI_Open(data->fsp_ctrl, data->fsp_config);
+	err = config->fsp_api->open(data->fsp_ctrl, data->fsp_config);
 	if (err != FSP_SUCCESS) {
 		LOG_ERR("R_RSPI_Open error: %d", err);
 		return -EINVAL;
 	}
 
-	data->ctx.config = config;
+	data->ctx.config = spi_cfg;
 
 	return 0;
 }
@@ -285,6 +319,7 @@ static int spi_rz_rspi_transceive_data(struct spi_rz_rspi_data *data)
 {
 	R_RSPI0_Type *p_spi_reg = (R_RSPI0_Type *)data->fsp_ctrl->p_regs;
 	uint32_t data_count = (p_spi_reg->SPBFDR & R_RSPI0_SPBFDR_T_Msk) >> R_RSPI0_SPBFDR_T_Pos;
+	uint32_t rx;
 
 	data_count = 8 - data_count;
 
@@ -295,9 +330,9 @@ static int spi_rz_rspi_transceive_data(struct spi_rz_rspi_data *data)
 	if (data_count) {
 		if (data->dfs > 2) {
 			if (spi_context_tx_buf_on(&data->ctx)) {
-				p_spi_reg->SPDR = *(uint32_t *)(data->ctx.tx_buf);
+				p_spi_reg->SPDR_b.SPD = *(uint32_t *)(data->ctx.tx_buf);
 			} else {
-				p_spi_reg->SPDR = 0;
+				p_spi_reg->SPDR_b.SPD = 0;
 			}
 		} else if (data->dfs > 1) {
 			if (spi_context_tx_buf_on(&data->ctx)) {
@@ -314,34 +349,37 @@ static int spi_rz_rspi_transceive_data(struct spi_rz_rspi_data *data)
 		}
 	}
 
-	/* Clear Transmit Buffer Empty Flags */
-	p_spi_reg->SPBFCR = R_RSPI0_SPBFCR_TXRST_Msk;
 	spi_context_update_tx(&data->ctx, data->dfs, 1);
 
 	/* RX transfer */
-	if (spi_context_rx_on(&data->ctx)) {
+	while (!p_spi_reg->SPSR_b.SPRF) {
+	}
 
-		while (!p_spi_reg->SPSR_b.SPRF) {
-		}
+	if (data->dfs > 2) {
+		rx = (uint32_t)p_spi_reg->SPDR_b.SPD;
+	} else if (data->dfs > 1) {
+		rx = (uint16_t)p_spi_reg->SPDR_hword.L;
+	} else {
+		rx = (uint8_t)p_spi_reg->SPDR_byte.LL;
+	}
 
+	if (spi_context_rx_buf_on(&data->ctx)) {
 		/* Read data from Data Register */
 		if (data->dfs > 2) {
-			UNALIGNED_PUT(p_spi_reg->SPDR, (uint32_t *)data->ctx.rx_buf);
+			UNALIGNED_PUT(rx, (uint32_t *)data->ctx.rx_buf);
 		} else if (data->dfs > 1) {
-			UNALIGNED_PUT(p_spi_reg->SPDR_hword.L, (uint16_t *)data->ctx.rx_buf);
+			UNALIGNED_PUT(rx, (uint16_t *)data->ctx.rx_buf);
 		} else {
-			UNALIGNED_PUT(p_spi_reg->SPDR_byte.LL, (uint8_t *)data->ctx.rx_buf);
+			UNALIGNED_PUT(rx, (uint8_t *)data->ctx.rx_buf);
 		}
-		/* Clear Receive Buffer Full Flag */
-		p_spi_reg->SPBFCR = R_RSPI0_SPBFCR_RXRST_Msk;
-		spi_context_update_rx(&data->ctx, data->dfs, 1);
 	}
+	spi_context_update_rx(&data->ctx, data->dfs, 1);
 	return 0;
 }
 #endif /* #if !defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT) */
        /* && !defined(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC) */
 
-static int transceive(const struct device *dev, const struct spi_config *config,
+static int transceive(const struct device *dev, const struct spi_config *spi_cfg,
 		      const struct spi_buf_set *tx_bufs, const struct spi_buf_set *rx_bufs,
 		      bool asynchronous, spi_callback_t cb, void *userdata)
 {
@@ -353,56 +391,92 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 		return 0;
 	}
 
-#ifndef CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT
+#if !defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT) && !defined(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC)
 	if (asynchronous) {
 		return -ENOTSUP;
 	}
 #endif
-	spi_context_lock(spi_ctx, asynchronous, cb, userdata, config);
+	spi_context_lock(spi_ctx, asynchronous, cb, userdata, spi_cfg);
 
-#ifndef CONFIG_SPI_RTIO
 	/* Configure module RSPI. */
-	ret = spi_rz_rspi_configure(dev, config);
-	if (ret) {
+	ret = spi_rz_rspi_configure(dev, spi_cfg);
+	if (ret < 0) {
 		spi_context_release(spi_ctx, ret);
 		return -EIO;
 	}
+#ifndef CONFIG_SPI_RTIO
 	/* Setup tx buffer and rx buffer info. */
 	spi_context_buffers_setup(spi_ctx, tx_bufs, rx_bufs, data->dfs);
 	spi_context_cs_control(spi_ctx, true);
 
 #if (defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT) || defined(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC))
-	if (data->ctx.tx_buf == NULL) { /* If there is only the rx buffer */
-		ret = R_RSPI_Read(data->fsp_ctrl, data->ctx.rx_buf, 1, data->fsp_ctrl->bit_width);
-	} else if (data->ctx.rx_buf == NULL) { /* If there is only the tx buffer */
-		ret = R_RSPI_Write(data->fsp_ctrl, data->ctx.tx_buf, 1, data->fsp_ctrl->bit_width);
-	} else {
-		ret = R_RSPI_WriteRead(data->fsp_ctrl, data->ctx.tx_buf, data->ctx.rx_buf, 1,
-				       data->fsp_ctrl->bit_width);
+	const struct spi_rz_rspi_config *config = dev->config;
+
+	if (!spi_context_total_tx_len(&data->ctx) && !spi_context_total_rx_len(&data->ctx)) {
+		goto end_transceive;
 	}
-	if (ret) {
-		LOG_ERR("Async transmit fail: %d", ret);
-		return -EIO;
+	if (data->ctx.rx_len == 0) {
+		data->data_len = spi_context_is_peripheral(&data->ctx)
+					 ? spi_context_total_tx_len(&data->ctx)
+					 : data->ctx.tx_len;
+	} else if (data->ctx.tx_len == 0) {
+		data->data_len = spi_context_is_peripheral(&data->ctx)
+					 ? spi_context_total_rx_len(&data->ctx)
+					 : data->ctx.rx_len;
+	} else {
+		data->data_len = spi_context_is_peripheral(&data->ctx)
+					 ? MAX(spi_context_total_tx_len(&data->ctx),
+					       spi_context_total_rx_len(&data->ctx))
+					 : MIN(data->ctx.tx_len, data->ctx.rx_len);
+	}
+
+#ifdef CONFIG_CACHE_MANAGEMENT
+	if (data->ctx.tx_buf == NULL) { /* If there is only the rx buffer */
+		sys_cache_data_flush_range((void *)data->ctx.rx_buf, data->data_len * data->dfs);
+	} else if (data->ctx.rx_buf == NULL) { /* If there is only the tx buffer */
+		sys_cache_data_flush_range((void *)data->ctx.tx_buf, data->data_len * data->dfs);
+	} else {
+		sys_cache_data_flush_range((void *)data->ctx.tx_buf, data->data_len * data->dfs);
+		sys_cache_data_flush_range((void *)data->ctx.rx_buf, data->data_len * data->dfs);
+	}
+#endif /* CONFIG_CACHE_MANAGEMENT */
+	fsp_err_t err;
+
+	if (data->ctx.tx_buf == NULL) { /* If there is only the rx buffer */
+		err = config->fsp_api->read(data->fsp_ctrl, data->ctx.rx_buf, data->data_len,
+					    data->fsp_ctrl->bit_width);
+	} else if (data->ctx.rx_buf == NULL) { /* If there is only the tx buffer */
+		err = config->fsp_api->write(data->fsp_ctrl, data->ctx.tx_buf, data->data_len,
+					     data->fsp_ctrl->bit_width);
+	} else {
+		err = config->fsp_api->writeRead(data->fsp_ctrl, data->ctx.tx_buf, data->ctx.rx_buf,
+						 data->data_len, data->fsp_ctrl->bit_width);
+	}
+	if (err != FSP_SUCCESS) {
+		LOG_ERR("Async transmit fail: %d", err);
+		ret = -EIO;
+		goto end_transceive;
 	}
 	ret = spi_context_wait_for_completion(spi_ctx);
+end_transceive:
 #else
-	spi_bit_width_t spi_width =
-		(spi_bit_width_t)(SPI_WORD_SIZE_GET(data->ctx.config->operation) - 1);
-
 	/* Enable the SPI transfer */
-	data->fsp_ctrl->p_regs->SPCR_b.SPE = 1;
-	data->fsp_ctrl->p_regs->SPBFCR = (3 << R_RSPI0_SPBFCR_TXTRG_Pos);
-	data->fsp_ctrl->p_regs->SPBFCR |= R_RSPI0_SPBFCR_TXRST_Msk | R_RSPI0_SPBFCR_RXRST_Msk;
-	if (spi_width > SPI_BIT_WIDTH_16_BITS) {
-		data->fsp_ctrl->p_regs->SPDCR |= (3 << R_RSPI0_SPDCR_SPLW_Pos);
-		data->fsp_ctrl->p_regs->SPCMD0 |= (3 << R_RSPI0_SPCMD0_SPB_Pos);
-	} else if (spi_width > SPI_BIT_WIDTH_8_BITS) {
-		data->fsp_ctrl->p_regs->SPDCR |= (2 << R_RSPI0_SPDCR_SPLW_Pos);
-		data->fsp_ctrl->p_regs->SPCMD0 |= (15 << R_RSPI0_SPCMD0_SPB_Pos);
+	data->fsp_ctrl->p_regs->SPBFCR_b.TXTRG = 0x3; /* Trigger when TX FIFO is empty */
+	data->fsp_ctrl->p_regs->SPBFCR_b.RXRST = 0x1; /* Reset the receive buffer to empty state */
+	data->fsp_ctrl->p_regs->SPCMD0 &= ~R_RSPI0_SPCMD0_SPB_Msk; /* Reset data length setting */
+	if (data->fsp_ctrl->bit_width > SPI_BIT_WIDTH_16_BITS) {
+		data->fsp_ctrl->p_regs->SPDCR_b.SPLW = 0x3; /* Set access width 32 bit */
+		data->fsp_ctrl->p_regs->SPCMD0_b.SPB = 0x3; /* Set data length 32 bit */
+	} else if (data->fsp_ctrl->bit_width > SPI_BIT_WIDTH_8_BITS) {
+		data->fsp_ctrl->p_regs->SPDCR_b.SPLW = 0x2; /* Set access width 16 bit */
+		data->fsp_ctrl->p_regs->SPCMD0_b.SPB = 0xF; /* Set data length 16 bit */
 	} else {
-		data->fsp_ctrl->p_regs->SPDCR |= (1 << R_RSPI0_SPDCR_SPLW_Pos);
-		data->fsp_ctrl->p_regs->SPCMD0 |= (7 << R_RSPI0_SPCMD0_SPB_Pos);
+		data->fsp_ctrl->p_regs->SPDCR_b.SPLW = 0x1; /* Set access width 8 bit */
+		data->fsp_ctrl->p_regs->SPCMD0_b.SPB = 0x7; /* Set data length 8 bit */
 	}
+	data->fsp_ctrl->p_regs->SPBFCR &= ~(R_RSPI0_SPBFCR_RXRST_Msk | R_RSPI0_SPBFCR_TXRST_Msk);
+	/* Enable the SPI Transfer */
+	data->fsp_ctrl->p_regs->SPCR_b.SPE = 0x1;
 
 	do {
 		spi_rz_rspi_transceive_data(data);
@@ -412,23 +486,23 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 	while (!data->fsp_ctrl->p_regs->SPSR_b.TEND) {
 	}
 
-	/* Disable the SPI Transfer. */
-	data->fsp_ctrl->p_regs->SPCR_b.SPE = 0;
+	/* Disable the SPI Transfer */
+	data->fsp_ctrl->p_regs->SPCR_b.SPE = 0x0;
 #endif  /* #if (defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT) */
 	/* || defined(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC)) */
 
-#ifdef CONFIG_SPI_SLAVE
-	if (spi_context_is_slave(spi_ctx) && !ret) {
+#ifdef CONFIG_SPI_PERIPHERAL
+	if (spi_context_is_peripheral(spi_ctx) && !ret) {
 		ret = spi_ctx->recv_frames;
 	}
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 	spi_context_cs_control(spi_ctx, false);
 
-#else
+#else  /* CONFIG_SPI_RTIO */
 	struct spi_rtio *rtio_ctx = data->rtio_ctx;
 
-	ret = spi_rtio_transceive(rtio_ctx, config, tx_bufs, rx_bufs);
+	ret = spi_rtio_transceive(rtio_ctx, spi_cfg, tx_bufs, rx_bufs);
 #endif /* CONFIG_SPI_RTIO */
 
 	spi_context_release(spi_ctx, ret);
@@ -436,14 +510,14 @@ static int transceive(const struct device *dev, const struct spi_config *config,
 	return ret;
 }
 
-static int spi_rz_rspi_transceive_sync(const struct device *dev, const struct spi_config *config,
+static int spi_rz_rspi_transceive_sync(const struct device *dev, const struct spi_config *spi_cfg,
 				       const struct spi_buf_set *tx_bufs,
 				       const struct spi_buf_set *rx_bufs)
 {
-	return transceive(dev, config, tx_bufs, rx_bufs, false, NULL, NULL);
+	return transceive(dev, spi_cfg, tx_bufs, rx_bufs, false, NULL, NULL);
 }
 
-static int spi_rz_rspi_release(const struct device *dev, const struct spi_config *config)
+static int spi_rz_rspi_release(const struct device *dev, const struct spi_config *spi_cfg)
 {
 	struct spi_rz_rspi_data *data = dev->data;
 
@@ -453,12 +527,12 @@ static int spi_rz_rspi_release(const struct device *dev, const struct spi_config
 }
 
 #ifdef CONFIG_SPI_ASYNC
-static int spi_rz_rspi_transceive_async(const struct device *dev, const struct spi_config *config,
+static int spi_rz_rspi_transceive_async(const struct device *dev, const struct spi_config *spi_cfg,
 					const struct spi_buf_set *tx_bufs,
 					const struct spi_buf_set *rx_bufs, spi_callback_t cb,
 					void *userdata)
 {
-	return transceive(dev, config, tx_bufs, rx_bufs, true, cb, userdata);
+	return transceive(dev, spi_cfg, tx_bufs, rx_bufs, true, cb, userdata);
 }
 #endif /* CONFIG_SPI_ASYNC */
 
@@ -469,12 +543,12 @@ static inline void spi_rz_rspi_iodev_prepare_start(const struct device *dev)
 	struct spi_rz_rspi_data *data = dev->data;
 	struct spi_rtio *rtio_ctx = data->rtio_ctx;
 	struct spi_dt_spec *spi_dt_spec = rtio_ctx->txn_curr->sqe.iodev->data;
-	struct spi_config *config = &spi_dt_spec->config;
-	int err;
+	struct spi_config *spi_config = &spi_dt_spec->config;
+	int ret;
 
-	err = spi_rz_rspi_configure(dev, config);
-	if (err != 0) {
-		LOG_ERR("RTIO config spi error: %d", err);
+	ret = spi_rz_rspi_configure(dev, spi_config);
+	if (ret < 0) {
+		LOG_ERR("RTIO config spi error: %d", ret);
 	}
 	spi_context_cs_control(&data->ctx, true);
 }
@@ -482,36 +556,70 @@ static inline void spi_rz_rspi_iodev_prepare_start(const struct device *dev)
 static void spi_rz_rspi_iodev_start(const struct device *dev)
 {
 	struct spi_rz_rspi_data *data = dev->data;
+	const struct spi_rz_rspi_config *config = dev->config;
 	struct spi_rtio *rtio_ctx = data->rtio_ctx;
 	struct rtio_sqe *sqe = &rtio_ctx->txn_curr->sqe;
-	int ret = 0;
+	fsp_err_t err = FSP_SUCCESS;
+
+#ifdef CONFIG_CACHE_MANAGEMENT
+	switch (sqe->op) {
+	case RTIO_OP_RX:
+		sys_cache_data_flush_range((void *)sqe->rx.buf, sqe->rx.buf_len * data->dfs);
+		break;
+	case RTIO_OP_TX:
+		sys_cache_data_flush_range((void *)sqe->tx.buf, sqe->tx.buf_len * data->dfs);
+		break;
+	case RTIO_OP_TINY_TX:
+		sys_cache_data_flush_range((void *)sqe->tiny_tx.buf,
+					   sqe->tiny_tx.buf_len * data->dfs);
+		break;
+	case RTIO_OP_TXRX:
+		if (sqe->txrx.tx_buf == NULL) { /* If there is only the rx buffer */
+			sys_cache_data_flush_range((void *)sqe->txrx.rx_buf,
+						   sqe->txrx.buf_len * data->dfs);
+		} else if (sqe->txrx.rx_buf == NULL) { /* If there is only the tx buffer */
+			sys_cache_data_flush_range((void *)sqe->txrx.tx_buf,
+						   sqe->txrx.buf_len * data->dfs);
+		} else {
+			sys_cache_data_flush_range((void *)sqe->txrx.tx_buf,
+						   sqe->txrx.buf_len * data->dfs);
+			sys_cache_data_flush_range((void *)sqe->txrx.rx_buf,
+						   sqe->txrx.buf_len * data->dfs);
+		}
+		break;
+	default:
+		break;
+	}
+#endif /* CONFIG_CACHE_MANAGEMENT */
 
 	switch (sqe->op) {
 	case RTIO_OP_RX:
-		data->rtio_buf_remain = sqe->rx.buf_len;
-		ret = R_RSPI_Read(data->fsp_ctrl, sqe->rx.buf, 1, data->fsp_ctrl->bit_width);
+		data->data_len = sqe->rx.buf_len / data->dfs;
+		err = config->fsp_api->read(data->fsp_ctrl, sqe->rx.buf, data->data_len,
+					    data->fsp_ctrl->bit_width);
 		break;
 	case RTIO_OP_TX:
-		data->rtio_buf_remain = sqe->tx.buf_len;
-		ret = R_RSPI_Write(data->fsp_ctrl, sqe->tx.buf, 1, data->fsp_ctrl->bit_width);
+		data->data_len = sqe->tx.buf_len / data->dfs;
+		err = config->fsp_api->write(data->fsp_ctrl, sqe->tx.buf, data->data_len,
+					     data->fsp_ctrl->bit_width);
 		break;
 	case RTIO_OP_TINY_TX:
-		data->rtio_buf_remain = sqe->tiny_tx.buf_len;
-		data->rtio_tiny_buf_idx = 0;
-		ret = R_RSPI_Write(data->fsp_ctrl, sqe->tiny_tx.buf, 1, data->fsp_ctrl->bit_width);
+		data->data_len = sqe->tiny_tx.buf_len / data->dfs;
+		err = config->fsp_api->write(data->fsp_ctrl, sqe->tiny_tx.buf, data->data_len,
+					     data->fsp_ctrl->bit_width);
 		break;
 	case RTIO_OP_TXRX:
-		data->rtio_buf_remain = sqe->txrx.buf_len;
-		ret = R_RSPI_WriteRead(data->fsp_ctrl, sqe->txrx.tx_buf, sqe->txrx.rx_buf, 1,
-				       data->fsp_ctrl->bit_width);
+		data->data_len = sqe->txrx.buf_len / data->dfs;
+		err = config->fsp_api->writeRead(data->fsp_ctrl, sqe->txrx.tx_buf, sqe->txrx.rx_buf,
+						 data->data_len, data->fsp_ctrl->bit_width);
 		break;
 	default:
 		spi_rz_rspi_iodev_complete(dev, -EINVAL);
 		break;
 	}
 
-	if (ret != 0) {
-		spi_rz_rspi_iodev_complete(dev, ret);
+	if (err != FSP_SUCCESS) {
+		spi_rz_rspi_iodev_complete(dev, -EIO);
 	}
 }
 
@@ -594,6 +702,12 @@ static int spi_rz_rspi_init(const struct device *dev)
 }
 
 #ifdef CONFIG_SPI_RENESAS_RZ_RSPI_DMAC
+
+static void rz_dma_int_isr(void *irq)
+{
+	RZ_RSPI_DMA_INT_ISR((void *)irq);
+}
+
 #define RZ_DMA_CHANNEL_CONFIG(id, dir) DT_INST_DMAS_CELL_BY_NAME(id, dir, config)
 
 #define RZ_DMA_MODE(config)           ((config) & 0x1)
@@ -602,6 +716,7 @@ static int spi_rz_rspi_init(const struct device *dev)
 #define RZ_DMA_SRC_ADDR_MODE(config)  ((config >> 7) & 0x1)
 #define RZ_DMA_DEST_ADDR_MODE(config) ((config >> 8) & 0x1)
 
+#if defined(CONFIG_USE_RZ_FSP_DMAC_B)
 #define RSPI_DMA_RZG_DEFINE(n, dir, TRIG, spi_channel)                                             \
 	static dmac_b_instance_ctrl_t g_transfer##n##_##dir##_ctrl;                                \
 	static void g_spi##n##_##dir##_transfer_callback(dmac_b_callback_args_t *p_args)           \
@@ -642,6 +757,7 @@ static int spi_rz_rspi_init(const struct device *dev)
 		.channel_scheduling = DMAC_B_CHANNEL_SCHEDULING_FIXED,                             \
 		.p_callback = g_spi##n##_##dir##_transfer_callback,                                \
 		.p_context = NULL,                                                                 \
+		.p_reg = (void *)DT_REG_ADDR(DT_INST_DMAS_CTLR_BY_NAME(n, dir)),                   \
 	};                                                                                         \
 	const transfer_cfg_t g_transfer##n##_##dir##_cfg = {                                       \
 		.p_info = &g_transfer##n##_##dir##_info,                                           \
@@ -652,6 +768,73 @@ static int spi_rz_rspi_init(const struct device *dev)
 		.p_cfg = &g_transfer##n##_##dir##_cfg,                                             \
 		.p_api = &g_transfer_on_dmac_b,                                                    \
 	};
+#else /* CONFIG_USE_RZ_FSP_DMAC */
+#define RZ_DMA_CH_REG_OFFSET(ch) ((((ch) / 8U) * 0x400U) + (((ch) % 8U) * 0x40U))
+#define RZ_DMA_CH_REG_ADDR(n, dir)                                                                 \
+	(DT_REG_ADDR(DT_INST_DMAS_CTLR_BY_NAME(n, dir)) +                                          \
+	 RZ_DMA_CH_REG_OFFSET(DT_INST_DMAS_CELL_BY_NAME(n, dir, channel)))
+
+#define RSPI_DMA_RZG_DEFINE(n, dir, TRIG, spi_channel)                                             \
+	static dmac_instance_ctrl_t g_transfer##n##_##dir##_ctrl;                                  \
+	static void g_spi##n##_##dir##_transfer_callback(dmac_callback_args_t *p_args)             \
+	{                                                                                          \
+		FSP_PARAMETER_NOT_USED(p_args);                                                    \
+		rspi_##dir##_dmac_callback(&g_spi##n##_ctrl);                                      \
+	}                                                                                          \
+	dmac_extended_info_t g_transfer##n##_##dir##_exended_info = {                              \
+		.src_size = DMAC_TRANSFER_SIZE_1_BYTE,                                             \
+		.dest_size = DMAC_TRANSFER_SIZE_1_BYTE,                                            \
+		.p_next1_register_setting = NULL,                                                  \
+	};                                                                                         \
+	transfer_info_t g_transfer##n##_##dir##_info = {                                           \
+		.transfer_settings_word_b.dest_addr_mode =                                         \
+			RZ_DMA_DEST_ADDR_MODE(RZ_DMA_CHANNEL_CONFIG(n, dir)),                      \
+		.transfer_settings_word_b.src_addr_mode =                                          \
+			RZ_DMA_SRC_ADDR_MODE(RZ_DMA_CHANNEL_CONFIG(n, dir)),                       \
+		.transfer_settings_word_b.mode = RZ_DMA_MODE(RZ_DMA_CHANNEL_CONFIG(n, dir)),       \
+		.p_dest = (void *)NULL,                                                            \
+		.p_src = (void const *)NULL,                                                       \
+		.length = 0,                                                                       \
+		.p_extend_info = &g_transfer##n##_##dir##_exended_info,                            \
+	};                                                                                         \
+	const dmac_extended_cfg_t g_transfer##n##_##dir##_extend = {                               \
+		.channel = DT_INST_DMAS_CELL_BY_NAME(n, dir, channel),                             \
+		.dmac_int_irq = DT_IRQ_BY_NAME(                                                    \
+			DT_INST_DMAS_CTLR_BY_NAME(n, dir),                                         \
+			UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, dir, channel)), irq),            \
+		.dmac_int_ipl = DT_IRQ_BY_NAME(                                                    \
+			DT_INST_DMAS_CTLR_BY_NAME(n, dir),                                         \
+			UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, dir, channel)), priority),       \
+		.activation_source = UTIL_CAT(DMAC_TRIGGER_EVENT_RSPI_SP##TRIG, spi_channel),      \
+		.ack_mode = DMAC_ACK_MODE_BUS_CYCLE_MODE,                                          \
+		.detection_mode = DMAC_DETECTION_HIGH_LEVEL,                                       \
+		.activation_request_source_select = DMAC_REQUEST_DIRECTION_SOURCE_MODULE,          \
+		.dmac_mode = DMAC_MODE_SELECT_REGISTER,                                            \
+		.continuous_setting = DMAC_CONTINUOUS_SETTING_TRANSFER_NEXT0_ONCE,                 \
+		.transfer_interval = 0,                                                            \
+		.channel_scheduling = DMAC_CHANNEL_SCHEDULING_FIXED,                               \
+		.p_callback = g_spi##n##_##dir##_transfer_callback,                                \
+		.p_context = NULL,                                                                 \
+		.p_reg = (void *)RZ_DMA_CH_REG_ADDR(n, dir),                                       \
+	};                                                                                         \
+	const transfer_cfg_t g_transfer##n##_##dir##_cfg = {                                       \
+		.p_info = &g_transfer##n##_##dir##_info,                                           \
+		.p_extend = &g_transfer##n##_##dir##_extend,                                       \
+	};                                                                                         \
+	const transfer_instance_t g_transfer##n##_##dir = {                                        \
+		.p_ctrl = &g_transfer##n##_##dir##_ctrl,                                           \
+		.p_cfg = &g_transfer##n##_##dir##_cfg,                                             \
+		.p_api = &g_transfer_on_dmac,                                                      \
+	};
+#endif /* CONFIG_USE_RZ_FSP_DMAC_B */
+
+#ifdef CONFIG_CPU_CORTEX_M
+#define GET_IRQ_FLAGS(n, dir) 0
+#else /* Cortex-A/R */
+#define GET_IRQ_FLAGS(n, dir)                                                                      \
+	DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, dir),                                          \
+		       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, dir, channel)), flags)
+#endif /* CONFIG_CPU_CORTEX_M */
 
 #define RZ_RSPI_IRQ_INIT(n)                                                                        \
 	do {                                                                                       \
@@ -662,7 +845,11 @@ static int spi_rz_rspi_init(const struct device *dev)
 			DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, rx),                           \
 				       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, rx, channel)),    \
 				       priority),                                                  \
-			dmac_b_int_isr, DEVICE_DT_INST_GET(n), 0);                                 \
+			rz_dma_int_isr,                                                            \
+			DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, rx),                           \
+				       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, rx, channel)),    \
+				       irq),                                                       \
+			GET_IRQ_FLAGS(n, rx));                                                     \
 		IRQ_CONNECT(                                                                       \
 			DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, tx),                           \
 				       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, tx, channel)),    \
@@ -670,7 +857,11 @@ static int spi_rz_rspi_init(const struct device *dev)
 			DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, tx),                           \
 				       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, tx, channel)),    \
 				       priority),                                                  \
-			dmac_b_int_isr, DEVICE_DT_INST_GET(n), 0);                                 \
+			rz_dma_int_isr,                                                            \
+			DT_IRQ_BY_NAME(DT_INST_DMAS_CTLR_BY_NAME(n, tx),                           \
+				       UTIL_CAT(ch, DT_INST_DMAS_CELL_BY_NAME(n, tx, channel)),    \
+				       irq),                                                       \
+			GET_IRQ_FLAGS(n, tx));                                                     \
 	} while (0)
 
 #elif defined(CONFIG_SPI_RENESAS_RZ_RSPI_INTERRUPT)
@@ -713,6 +904,7 @@ static int spi_rz_rspi_init(const struct device *dev)
 		.ssl_level_keep = RSPI_SSL_LEVEL_KEEP_DISABLE,                                     \
 		.rx_trigger_level = RSPI_RX_TRIGGER_24,                                            \
 		.tx_trigger_level = RSPI_TX_TRIGGER_4,                                             \
+		.p_reg = (void *)DT_INST_REG_ADDR(n),                                              \
 	};                                                                                         \
 	IF_ENABLED(CONFIG_SPI_RENESAS_RZ_RSPI_DMAC,                                           \
 				    (RSPI_DMA_RZG_DEFINE(n, tx, TI, DT_INST_PROP(n, channel))))    \
@@ -752,13 +944,24 @@ static int spi_rz_rspi_init(const struct device *dev)
 		SPI_CONTEXT_INIT_SYNC(spi_rz_rspi_data_##n, ctx),                                  \
 		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(n), ctx).fsp_ctrl = &g_spi##n##_ctrl,  \
 		.fsp_config = &g_spi_##n##_config,                                                 \
+		.fsp_extend_config =                                                               \
+			{                                                                          \
+				.p_reg = (void *)DT_INST_REG_ADDR(n),                              \
+			},                                                                         \
+		.spck_delay = (rspi_delay_count_t)DT_INST_ENUM_IDX(n, renesas_spck_delay),         \
+		.ssl_negation_delay = (rspi_delay_count_t)DT_INST_ENUM_IDX(n, renesas_ssln_delay), \
+		.next_access_delay = (rspi_delay_count_t)DT_INST_ENUM_IDX(n, renesas_spn_delay),   \
+		.rx_trigger_level =                                                                \
+			(rspi_rx_trigger_level_t)DT_INST_ENUM_IDX(n, renesas_rx_trigger),          \
+		.tx_trigger_level =                                                                \
+			(rspi_tx_trigger_level_t)DT_INST_ENUM_IDX(n, renesas_tx_trigger),          \
 		IF_ENABLED(CONFIG_SPI_RTIO, \
 					 (.rtio_ctx = &spi_rz_rspi_rtio_##n,)) };                  \
 	static int spi_rz_rspi_init_##n(const struct device *dev)                                  \
 	{                                                                                          \
-		int err = spi_rz_rspi_init(dev);                                                   \
-		if (err != 0) {                                                                    \
-			return err;                                                                \
+		int ret = spi_rz_rspi_init(dev);                                                   \
+		if (ret < 0) {                                                                     \
+			return ret;                                                                \
 		}                                                                                  \
 		RZ_RSPI_IRQ_INIT(n);                                                               \
 		return 0;                                                                          \

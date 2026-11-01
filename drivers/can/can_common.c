@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Vestas Wind Systems A/S
  * Copyright (c) 2019 Alexander Wachter
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -11,9 +12,6 @@
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(can_common, CONFIG_CAN_LOG_LEVEL);
-
-/* Maximum acceptable deviation in sample point location (permille) */
-#define SAMPLE_POINT_MARGIN 50
 
 /* CAN sync segment is always one time quantum */
 #define CAN_SYNC_SEG 1
@@ -37,7 +35,7 @@ int z_impl_can_send(const struct device *dev, const struct can_frame *frame,
 		    k_timeout_t timeout, can_tx_callback_t callback,
 		    void *user_data)
 {
-	const struct can_driver_api *api = (const struct can_driver_api *)dev->api;
+	const struct can_driver_api *api = DEVICE_API_GET(can, dev);
 	uint32_t id_mask;
 
 	CHECKIF(frame == NULL) {
@@ -80,7 +78,6 @@ int z_impl_can_send(const struct device *dev, const struct can_frame *frame,
 int can_add_rx_filter(const struct device *dev, can_rx_callback_t callback,
 		      void *user_data, const struct can_filter *filter)
 {
-	const struct can_driver_api *api = (const struct can_driver_api *)dev->api;
 	uint32_t id_mask;
 
 	CHECKIF(callback == NULL || filter == NULL) {
@@ -102,7 +99,7 @@ int can_add_rx_filter(const struct device *dev, can_rx_callback_t callback,
 		return -EINVAL;
 	}
 
-	return api->add_rx_filter(dev, callback, user_data, filter);
+	return DEVICE_API_GET(can, dev)->add_rx_filter(dev, callback, user_data, filter);
 }
 
 static void can_msgq_put(const struct device *dev, struct can_frame *frame, void *user_data)
@@ -113,6 +110,8 @@ static void can_msgq_put(const struct device *dev, struct can_frame *frame, void
 	ARG_UNUSED(dev);
 
 	__ASSERT_NO_MSG(msgq);
+	/* k_msgq_put() copies msgq->msg_size bytes from the frame */
+	__ASSERT_NO_MSG(msgq->msg_size == sizeof(struct can_frame));
 
 	ret = k_msgq_put(msgq, frame, K_NO_WAIT);
 	if (ret) {
@@ -123,9 +122,132 @@ static void can_msgq_put(const struct device *dev, struct can_frame *frame, void
 int z_impl_can_add_rx_filter_msgq(const struct device *dev, struct k_msgq *msgq,
 				  const struct can_filter *filter)
 {
-	const struct can_driver_api *api = dev->api;
+	if (msgq->msg_size != sizeof(struct can_frame)) {
+		LOG_ERR("msgq %p message size %zu, expected %zu", msgq, msgq->msg_size,
+			sizeof(struct can_frame));
+		return -EINVAL;
+	}
 
-	return api->add_rx_filter(dev, can_msgq_put, msgq, filter);
+	return DEVICE_API_GET(can, dev)->add_rx_filter(dev, can_msgq_put, msgq, filter);
+}
+
+/* This is used for emulating the deprecated can_set_state_change_callback() API */
+static void can_state_change_callback_legacy_handler(const struct device *dev,
+						     struct can_state_change_callback *callback,
+						     enum can_state state,
+						     struct can_bus_err_cnt err_cnt)
+{
+	struct can_driver_data *common = (struct can_driver_data *)dev->data;
+	can_state_change_callback_t cb;
+	void *user_data;
+	int key = irq_lock();
+
+	cb = common->legacy_state_change_cb_handler;
+	user_data = common->legacy_state_change_cb_user_data;
+
+	irq_unlock(key);
+
+	if (cb != NULL) {
+		cb(dev, state, err_cnt, user_data);
+	}
+}
+
+/* This is the deprecated can_set_state_change_callback() API */
+void can_set_state_change_callback(const struct device *dev, can_state_change_callback_t callback,
+				   void *user_data)
+{
+	struct can_driver_data *common = (struct can_driver_data *)dev->data;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&common->state_change_callback_lock);
+
+	common->legacy_state_change_cb_handler = callback;
+	common->legacy_state_change_cb_user_data = user_data;
+
+	can_init_state_change_callback(&common->legacy_state_change_cb,
+				       can_state_change_callback_legacy_handler);
+
+	k_spin_unlock(&common->state_change_callback_lock, key);
+
+	if (callback != NULL) {
+		(void)can_add_state_change_callback(dev, &common->legacy_state_change_cb);
+	} else {
+		(void)can_remove_state_change_callback(dev, &common->legacy_state_change_cb);
+	}
+}
+
+int can_add_state_change_callback(const struct device *dev,
+				  struct can_state_change_callback *callback)
+{
+	struct can_driver_data *common = (struct can_driver_data *)dev->data;
+	const struct can_driver_api *api = DEVICE_API_GET(can, dev);
+	k_spinlock_key_t key;
+	int err = 0;
+
+	__ASSERT_NO_MSG(callback != NULL);
+	__ASSERT_NO_MSG(callback->handler != NULL);
+
+	key = k_spin_lock(&common->state_change_callback_lock);
+
+	if (api->state_change_callbacks_enabled != NULL) {
+		if (sys_slist_is_empty(&common->state_change_callbacks)) {
+			err = api->state_change_callbacks_enabled(dev, true);
+		}
+	}
+
+	(void)sys_slist_find_and_remove(&common->state_change_callbacks, &callback->node);
+	sys_slist_append(&common->state_change_callbacks, &callback->node);
+
+	k_spin_unlock(&common->state_change_callback_lock, key);
+
+	return err;
+}
+
+int can_remove_state_change_callback(const struct device *dev,
+				     struct can_state_change_callback *callback)
+{
+	struct can_driver_data *common = (struct can_driver_data *)dev->data;
+	const struct can_driver_api *api = DEVICE_API_GET(can, dev);
+	k_spinlock_key_t key;
+	int err = 0;
+
+	__ASSERT_NO_MSG(callback != NULL);
+
+	key = k_spin_lock(&common->state_change_callback_lock);
+
+	if (!sys_slist_find_and_remove(&common->state_change_callbacks, &callback->node)) {
+		err = -EINVAL;
+		goto unlock;
+	}
+
+	if (api->state_change_callbacks_enabled != NULL) {
+		if (sys_slist_is_empty(&common->state_change_callbacks)) {
+			err = api->state_change_callbacks_enabled(dev, false);
+		}
+	}
+
+unlock:
+	k_spin_unlock(&common->state_change_callback_lock, key);
+
+	return err;
+}
+
+void can_fire_state_change_callbacks(const struct device *dev, enum can_state state,
+				     struct can_bus_err_cnt err_cnt)
+{
+	struct can_driver_data *common = (struct can_driver_data *)dev->data;
+	struct can_state_change_callback *cb;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&common->state_change_callback_lock);
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&common->state_change_callbacks, cb, node) {
+		__ASSERT_NO_MSG(cb->handler != NULL);
+
+		cb->handler(dev, cb, state, err_cnt);
+	}
+
+	k_spin_unlock(&common->state_change_callback_lock, key);
 }
 
 /**
@@ -371,7 +493,6 @@ static int check_timing_in_range(const struct can_timing *timing,
 int z_impl_can_set_timing(const struct device *dev,
 			  const struct can_timing *timing)
 {
-	const struct can_driver_api *api = (const struct can_driver_api *)dev->api;
 	const struct can_timing *min = can_get_timing_min(dev);
 	const struct can_timing *max = can_get_timing_max(dev);
 	int err;
@@ -381,7 +502,7 @@ int z_impl_can_set_timing(const struct device *dev,
 		return err;
 	}
 
-	return api->set_timing(dev, timing);
+	return DEVICE_API_GET(can, dev)->set_timing(dev, timing);
 }
 
 int z_impl_can_set_bitrate(const struct device *dev, uint32_t bitrate)
@@ -402,7 +523,7 @@ int z_impl_can_set_bitrate(const struct device *dev, uint32_t bitrate)
 		return ret;
 	}
 
-	if (ret > SAMPLE_POINT_MARGIN) {
+	if (ret > CONFIG_CAN_SAMPLE_POINT_MARGIN) {
 		return -ERANGE;
 	}
 
@@ -413,7 +534,7 @@ int z_impl_can_set_bitrate(const struct device *dev, uint32_t bitrate)
 int z_impl_can_set_timing_data(const struct device *dev,
 			       const struct can_timing *timing_data)
 {
-	const struct can_driver_api *api = (const struct can_driver_api *)dev->api;
+	const struct can_driver_api *api = DEVICE_API_GET(can, dev);
 	const struct can_timing *min = can_get_timing_data_min(dev);
 	const struct can_timing *max = can_get_timing_data_max(dev);
 	int err;
@@ -448,7 +569,7 @@ int z_impl_can_set_bitrate_data(const struct device *dev, uint32_t bitrate_data)
 		return ret;
 	}
 
-	if (ret > SAMPLE_POINT_MARGIN) {
+	if (ret > CONFIG_CAN_SAMPLE_POINT_MARGIN) {
 		return -ERANGE;
 	}
 

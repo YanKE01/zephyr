@@ -14,14 +14,13 @@ properties:
   silabs,adc-ref-voltage:
     type: int
     description: |
-        ADC reference volatge in mv. This voltage is common for all
+        ADC reference voltage in mv. This voltage is common for all
         the channels.
         Valid range: 1800 - 3600
     required: true
 
   silabs,adc-sampling-rate:
     type: int
-    default: 100000
     description: |
         ADC sampling rate in Hz (1-2500000 Hz).
     required: true

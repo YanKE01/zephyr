@@ -13,6 +13,8 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/types.h>
 #include "sl_si91x_pwm.h"
 
@@ -120,24 +122,28 @@ static int pwm_siwx91x_set_cycles(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	if (data->pwm_channel_cfg[channel].is_chan_active == false) {
+	if (pulse_cycles > 0 && !data->pwm_channel_cfg[channel].is_chan_active) {
+		pm_device_runtime_get(dev);
+	}
+
+	if (!data->pwm_channel_cfg[channel].is_chan_active) {
 		/* Configure the channel with default parameters */
 		ret = siwx91x_default_channel_config(dev, channel);
 		if (ret) {
-			return -EINVAL;
+			goto out;
 		}
 	}
 
 	ret = sl_si91x_pwm_get_time_period(channel, (uint16_t *)&prev_period);
 	if (ret) {
-		return -EINVAL;
+		goto out;
 	}
 
 	if (period_cycles != prev_period) {
 		ret = sl_si91x_pwm_set_time_period(channel, period_cycles, 0);
 		if (ret) {
 			/* Programmed value must be out of range (>65535) */
-			return -EINVAL;
+			goto out;
 		}
 	}
 
@@ -148,21 +154,31 @@ static int pwm_siwx91x_set_cycles(const struct device *dev, uint32_t channel,
 	if (duty_cycle != data->pwm_channel_cfg[channel].duty_cycle) {
 		ret = sl_si91x_pwm_set_duty_cycle(pulse_cycles, channel);
 		if (ret) {
-			return -EINVAL;
+			goto out;
 		}
 		data->pwm_channel_cfg[channel].duty_cycle = duty_cycle;
 	}
 
-	if (data->pwm_channel_cfg[channel].is_chan_active == false) {
+	if (!data->pwm_channel_cfg[channel].is_chan_active) {
 		/* Start PWM after configuring the channel for first time */
 		ret = sl_si91x_pwm_start(channel);
 		if (ret) {
-			return -EINVAL;
+			goto out;
 		}
 		data->pwm_channel_cfg[channel].is_chan_active = true;
 	}
 
+	if (pulse_cycles == 0 && data->pwm_channel_cfg[channel].is_chan_active) {
+		pm_device_runtime_put(dev);
+		data->pwm_channel_cfg[channel].is_chan_active = false;
+	}
+
 	return 0;
+
+out:
+	pm_device_runtime_put(dev);
+	data->pwm_channel_cfg[channel].is_chan_active = false;
+	return -EINVAL;
 }
 
 static int pwm_siwx91x_get_cycles_per_sec(const struct device *dev, uint32_t channel,
@@ -179,7 +195,7 @@ static int pwm_siwx91x_get_cycles_per_sec(const struct device *dev, uint32_t cha
 	return 0;
 }
 
-static int pwm_siwx91x_init(const struct device *dev)
+static int pwm_siwx91x_pm_action(const struct device *dev, enum pm_device_action action)
 {
 	const struct pwm_siwx91x_config *config = dev->config;
 	struct pwm_siwx91x_data *data = dev->data;
@@ -187,31 +203,50 @@ static int pwm_siwx91x_init(const struct device *dev)
 	uint32_t pwm_frequency;
 	int ret;
 
-	ret = clock_control_on(config->clock_dev, config->clock_subsys);
-	if (ret) {
-		return ret;
-	}
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		break;
+	case PM_DEVICE_ACTION_TURN_ON:
+		ret = clock_control_on(config->clock_dev, config->clock_subsys);
+		if (ret != 0 && ret != -EALREADY) {
+			return ret;
+		}
 
-	ret = clock_control_get_rate(config->clock_dev, config->clock_subsys, &pwm_frequency);
-	if (ret) {
-		return ret;
-	}
+		ret = clock_control_get_rate(config->clock_dev, config->clock_subsys,
+					     &pwm_frequency);
+		if (ret) {
+			return ret;
+		}
 
-	ret = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
-	if (ret) {
-		return ret;
-	}
+		ret = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
+		if (ret) {
+			return ret;
+		}
 
-	ARRAY_FOR_EACH(data->pwm_channel_cfg, i) {
-		data->pwm_channel_cfg[i].frequency = pwm_frequency / config->ch_prescaler[i];
-	}
+		ARRAY_FOR_EACH(data->pwm_channel_cfg, i) {
+			data->pwm_channel_cfg[i].frequency =
+				pwm_frequency / config->ch_prescaler[i];
+		}
 
-	ret = sl_si91x_pwm_set_output_polarity(polarity_inverted, !polarity_inverted);
-	if (ret) {
-		return -EINVAL;
+		ret = sl_si91x_pwm_set_output_polarity(polarity_inverted, !polarity_inverted);
+		if (ret) {
+			return -EINVAL;
+		}
+		break;
+	case PM_DEVICE_ACTION_TURN_OFF:
+		break;
+	default:
+		return -ENOTSUP;
 	}
 
 	return 0;
+}
+
+static int pwm_siwx91x_init(const struct device *dev)
+{
+	return pm_device_driver_init(dev, pwm_siwx91x_pm_action);
 }
 
 static DEVICE_API(pwm, pwm_siwx91x_driver_api) = {
@@ -224,13 +259,14 @@ static DEVICE_API(pwm, pwm_siwx91x_driver_api) = {
 	static struct pwm_siwx91x_data pwm_siwx91x_data_##inst;                                    \
 	static const struct pwm_siwx91x_config pwm_config_##inst = {                               \
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                             \
-		.clock_subsys = (clock_control_subsys_t)DT_INST_PHA(inst, clocks, clkid),          \
+		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(inst, clkid),          \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),                                      \
 		.ch_prescaler = DT_INST_PROP(inst, silabs_ch_prescaler),                           \
 		.pwm_polarity = DT_INST_PROP(inst, silabs_pwm_polarity),                           \
 	};                                                                                         \
-	DEVICE_DT_INST_DEFINE(inst, &pwm_siwx91x_init, NULL, &pwm_siwx91x_data_##inst,             \
-			      &pwm_config_##inst, PRE_KERNEL_1, CONFIG_PWM_INIT_PRIORITY,          \
-			      &pwm_siwx91x_driver_api);
+	PM_DEVICE_DT_INST_DEFINE(inst, pwm_siwx91x_pm_action);                                     \
+	DEVICE_DT_INST_DEFINE(inst, &pwm_siwx91x_init, PM_DEVICE_DT_INST_GET(inst),                \
+			      &pwm_siwx91x_data_##inst, &pwm_config_##inst, PRE_KERNEL_1,	   \
+			      CONFIG_PWM_INIT_PRIORITY, &pwm_siwx91x_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(SIWX91X_PWM_INIT)

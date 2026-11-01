@@ -47,10 +47,16 @@
 extern "C" {
 #endif
 
-/** @brief Abstract Audio Broadcast Source structure. */
+/**
+ * @struct bt_cap_broadcast_source
+ * @brief Abstract Audio Broadcast Source structure.
+ */
 struct bt_cap_broadcast_source;
 
-/** @brief Abstract CAP Unicast Group structure. */
+/**
+ * @struct bt_cap_unicast_group
+ * @brief Abstract CAP Unicast Group structure.
+ */
 struct bt_cap_unicast_group;
 
 /**
@@ -61,7 +67,7 @@ struct bt_cap_unicast_group;
  * Service instance.
  *
  * This shall only be done as a server, and requires
- * @kconfig{BT_CAP_ACCEPTOR_SET_MEMBER}. If @kconfig{BT_CAP_ACCEPTOR_SET_MEMBER}
+ * @kconfig{CONFIG_BT_CAP_ACCEPTOR_SET_MEMBER}. If @kconfig{CONFIG_BT_CAP_ACCEPTOR_SET_MEMBER}
  * is not enabled, the Common Audio Service will by statically registered.
  *
  * @param[in]  param     Coordinated Set Identification Service register
@@ -98,40 +104,164 @@ struct bt_cap_initiator_cb {
 	/**
 	 * @brief Callback for bt_cap_initiator_unicast_audio_start().
 	 *
-	 * @param err            0 if success, BT_GATT_ERR() with a
-	 *                       specific ATT (BT_ATT_ERR_*) error code or -ECANCELED if cancelled
-	 *                       by bt_cap_initiator_unicast_audio_cancel().
-	 * @param conn           Pointer to the connection where the error
-	 *                       occurred. NULL if @p err is 0 or if cancelled by
-	 *                       bt_cap_initiator_unicast_audio_cancel()
+	 * @param err
+	 * - 0 if success.
+	 * - -ENOEXEC if subprocedure could not be performed.
+	 * - -ENOMEM if subprocedure could not be performed due to lack of memory.
+	 * - -EACCES if request rejected by peer.
+	 * - -EBUSY if subprocedure could not be performed because unicast client is already busy.
+	 * - -EINVAL if subprocedure contained invalid parameters.
+	 * - -EBADMSG if unexpected state change happened.
+	 * - -EALREADY if subprocedure could not be performed due to unexpected state.
+	 * - -ECONNRESET if connection dropped during procedure.
+	 * - -ENOTCONN if subprocedure could not be performed due to connection.
+	 * - -ECANCELED if cancelled by bt_cap_initiator_unicast_audio_cancel().
+	 *
+	 * @param conn Pointer to the connection where the error occurred. NULL if @p err is 0 or if
+	 *             cancelled by bt_cap_initiator_unicast_audio_cancel()
 	 */
 	void (*unicast_start_complete)(int err, struct bt_conn *conn);
 
 	/**
+	 * @brief All streams have been codec configured
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_start() are in the
+	 * @ref BT_BAP_EP_STATE_CODEC_CONFIGURED state or higher, with the requested codec
+	 * configuration.
+	 *
+	 * This is only called if at least one Config Codec operation was sent to a CAP acceptor,
+	 * i.e. it is not called if all streams already had the requested codec configuration.
+	 *
+	 * The unicast group may be reconfigured with bt_cap_unicast_group_reconfig() from this
+	 * callback, as the QoS Configuration subprocedure has not been started yet. This is only
+	 * possible if none of the streams in the unicast group have been connected earlier, as the
+	 * unicast group cannot be reconfigured once a CIS has been established. It is not possible
+	 * to start a new CAP procedure from this callback, as the current procedure is still in
+	 * progress.
+	 */
+	void (*unicast_start_codec_configured)(void);
+
+	/**
+	 * @brief All streams have been QoS configured
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_start() are in the
+	 * @ref BT_BAP_EP_STATE_QOS_CONFIGURED state or higher, with the QoS configuration of the
+	 * unicast group.
+	 *
+	 * This is only called if at least one Config QoS operation was sent to a CAP acceptor, i.e.
+	 * it is not called if all streams already had the requested QoS configuration.
+	 */
+	void (*unicast_start_qos_configured)(void);
+
+	/**
+	 * @brief All streams have been enabled
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_start() are in the
+	 * @ref BT_BAP_EP_STATE_ENABLING state or higher, with the requested metadata.
+	 *
+	 * This is only called if at least one Enable operation was sent to a CAP acceptor, i.e. it
+	 * is not called if all streams were already enabled with the requested metadata.
+	 */
+	void (*unicast_start_enabled)(void);
+
+	/**
+	 * @brief All streams have their CIS connected
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_start() have an established CIS.
+	 *
+	 * This is only called if at least one CIS was established as part of the procedure, i.e. it
+	 * is not called if all CISes were already established.
+	 */
+	void (*unicast_start_connected)(void);
+
+	/**
+	 * @brief All streams have been started
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_start() are in the
+	 * @ref BT_BAP_EP_STATE_STREAMING state.
+	 *
+	 * This is only called if at least one Receiver Start Ready operation was sent to a CAP
+	 * acceptor, i.e. it is not called if all streams were started by the CAP acceptors.
+	 */
+	void (*unicast_start_started)(void);
+
+	/**
 	 * @brief Callback for bt_cap_initiator_unicast_audio_update().
 	 *
-	 * @param err            0 if success, BT_GATT_ERR() with a
-	 *                       specific ATT (BT_ATT_ERR_*) error code or -ECANCELED if cancelled
-	 *                       by bt_cap_initiator_unicast_audio_cancel().
-	 * @param conn           Pointer to the connection where the error
-	 *                       occurred. NULL if @p err is 0 or if cancelled by
-	 *                       bt_cap_initiator_unicast_audio_cancel()
+	 * @param err
+	 * - 0 if success.
+	 * - -ENOEXEC if subprocedure could not be performed.
+	 * - -ENOMEM if subprocedure could not be performed due to lack of memory.
+	 * - -EACCES if request rejected by peer.
+	 * - -EBUSY if subprocedure could not be performed because unicast client is
+	 * - already busy.
+	 * - -EINVAL if subprocedure contained invalid parameters.
+	 * - -EBADMSG if unexpected state change happened.
+	 * - -ECONNRESET if connection dropped during procedure.
+	 * - -ENOTCONN if subprocedure could not be performed due to connection.
+	 * - -ECANCELED if cancelled by bt_cap_initiator_unicast_audio_cancel().
+	 *
+	 * @param conn Pointer to the connection where the error occurred. NULL if @p err is 0 or if
+	 *             cancelled by bt_cap_initiator_unicast_audio_cancel()
 	 */
 	void (*unicast_update_complete)(int err, struct bt_conn *conn);
 
 	/**
 	 * @brief Callback for bt_cap_initiator_unicast_audio_stop().
 	 *
-	 * @param err            0 if success, BT_GATT_ERR() with a
-	 *                       specific ATT (BT_ATT_ERR_*) error code or -ECANCELED if cancelled
-	 *                       by bt_cap_initiator_unicast_audio_cancel().
-	 * @param conn           Pointer to the connection where the error
-	 *                       occurred. NULL if @p err is 0 or if cancelled by
-	 *                       bt_cap_initiator_unicast_audio_cancel()
+	 * @param err
+	 * - 0 if success.
+	 * - -ENOEXEC if subprocedure could not be performed.
+	 * - -ENOMEM if subprocedure could not be performed due to lack of memory.
+	 * - -EACCES if request rejected by peer.
+	 * - -EBUSY if subprocedure could not be performed because unicast client is
+	 * - already busy.
+	 * - -EINVAL if subprocedure contained invalid parameters.
+	 * - -EBADMSG if unexpected state change happened.
+	 * - -EALREADY if subprocedure could not be performed due to unexpected state.
+	 * - -ECONNRESET if connection dropped during procedure.
+	 * - -ENOTCONN if subprocedure could not be performed due to connection.
+	 * - -ECANCELED if cancelled by bt_cap_initiator_unicast_audio_cancel().
+	 *
+	 * @param conn Pointer to the connection where the error occurred. NULL if @p err is 0 or if
+	 *             cancelled by bt_cap_initiator_unicast_audio_cancel()
 	 */
 	void (*unicast_stop_complete)(int err, struct bt_conn *conn);
+
+	/**
+	 * @brief All streams have been disabled
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_stop() are in the
+	 * @ref BT_BAP_EP_STATE_DISABLING or @ref BT_BAP_EP_STATE_QOS_CONFIGURED state.
+	 *
+	 * This is only called if at least one Disable operation was sent to a CAP acceptor, i.e. it
+	 * is not called if none of the streams were enabled or streaming.
+	 */
+	void (*unicast_stop_disabled)(void);
+
+	/**
+	 * @brief All streams have been stopped
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_stop() are in the
+	 * @ref BT_BAP_EP_STATE_QOS_CONFIGURED state.
+	 *
+	 * This is only called if at least one Receiver Stop Ready operation was sent to a CAP
+	 * acceptor, i.e. it is not called if none of the streams were in the
+	 * @ref BT_BAP_EP_STATE_DISABLING state.
+	 */
+	void (*unicast_stop_stopped)(void);
+
+	/**
+	 * @brief All streams have been released
+	 *
+	 * All streams supplied to bt_cap_initiator_unicast_audio_stop() have been released.
+	 *
+	 * This is only called if at least one Release operation was sent to a CAP acceptor, i.e. it
+	 * is not called if the streams were not requested to be released.
+	 */
+	void (*unicast_stop_released)(void);
 #endif /* CONFIG_BT_BAP_UNICAST_CLIENT */
-#if defined(CONFIG_BT_BAP_BROADCAST_SOURCE)
+#if defined(CONFIG_BT_BAP_BROADCAST_SOURCE) || defined(__DOXYGEN__)
 	/**
 	 * @brief The Broadcast Source has started and all of the streams are ready for audio data
 	 *
@@ -263,7 +393,7 @@ struct bt_cap_unicast_group_stream_param {
 	struct bt_cap_stream *stream;
 
 	/** The QoS settings for the stream object. */
-	struct bt_bap_qos_cfg *qos_cfg;
+	const struct bt_bap_qos_cfg *qos_cfg;
 };
 
 /**
@@ -337,13 +467,13 @@ struct bt_cap_unicast_group_param {
  * All streams in the same direction shall share the same interval and latency (see
  * @ref bt_bap_qos_cfg).
  *
- * @param[in]  param          The unicast group create parameters.
- * @param[out] unicast_group  Pointer to the unicast group created.
+ * @param[in]  param              The unicast group create parameters.
+ * @param[out] out_unicast_group  Pointer to the unicast group created.
  *
  * @return Zero on success or (negative) error code otherwise.
  */
 int bt_cap_unicast_group_create(const struct bt_cap_unicast_group_param *param,
-				struct bt_cap_unicast_group **unicast_group);
+				struct bt_cap_unicast_group **out_unicast_group);
 
 /**
  * @brief Reconfigure unicast group.
@@ -398,13 +528,13 @@ int bt_cap_unicast_group_add_streams(struct bt_cap_unicast_group *unicast_group,
  */
 int bt_cap_unicast_group_delete(struct bt_cap_unicast_group *unicast_group);
 
-/** Callback function for bt_bap_unicast_group_foreach_stream()
+/** Callback function for bt_cap_unicast_group_foreach_stream()
  *
  * @param stream     The audio stream
  * @param user_data  User data
  *
- * @retval true Stop iterating.
- * @retval false Continue iterating.
+ * @retval true Continue iterating.
+ * @retval false Stop iterating.
  */
 typedef bool (*bt_cap_unicast_group_foreach_stream_func_t)(struct bt_cap_stream *stream,
 							   void *user_data);
@@ -414,15 +544,33 @@ typedef bool (*bt_cap_unicast_group_foreach_stream_func_t)(struct bt_cap_stream 
  *
  * @param unicast_group  The unicast group
  * @param func           The callback function
- * @param user_data      User specified data that sent to the callback function
+ * @param user_data      User specified data that is sent to the callback function
  *
  * @retval 0 Success (even if no streams exists in the group).
- * @retval -ECANCELED Iteration was stopped by the callback function before complete.
+ * @retval -ECANCELED The @p func returned false and stopped the iteration.
  * @retval -EINVAL @p unicast_group or @p func were NULL.
  */
 int bt_cap_unicast_group_foreach_stream(struct bt_cap_unicast_group *unicast_group,
 					bt_cap_unicast_group_foreach_stream_func_t func,
 					void *user_data);
+
+/** Structure holding information of audio stream endpoint */
+struct bt_cap_unicast_group_info {
+	/** Pointer to the underlying Basic Audio Profile unicast group */
+	const struct bt_bap_unicast_group *unicast_group;
+};
+
+/**
+ * @brief Return structure holding information of unicast group
+ *
+ * @param unicast_group The unicast group object.
+ * @param info          The structure object to be filled with the info.
+ *
+ * @retval 0 Success
+ * @retval -EINVAL  @p unicast_group or @p info are NULL
+ */
+int bt_cap_unicast_group_get_info(const struct bt_cap_unicast_group *unicast_group,
+				  struct bt_cap_unicast_group_info *info);
 
 /** Stream specific parameters for the bt_cap_initiator_unicast_audio_start() function */
 struct bt_cap_unicast_audio_start_stream_param {
@@ -445,7 +593,7 @@ struct bt_cap_unicast_audio_start_stream_param {
 	 * This value is assigned to the @p stream, and shall remain valid while the stream is
 	 * non-idle.
 	 */
-	struct bt_audio_codec_cfg *codec_cfg;
+	const struct bt_audio_codec_cfg *codec_cfg;
 };
 
 /** Parameters for the bt_cap_initiator_unicast_audio_start() function */
@@ -553,7 +701,10 @@ int bt_cap_initiator_unicast_audio_start(const struct bt_cap_unicast_audio_start
  *
  * @param param Update parameters.
  *
- * @return 0 on success or negative error value on failure.
+ * @retval 0 Success
+ * @retval -EBUSY CAP procedure is already in progress
+ * @retval -EINVAL @p param contains invalid parameters
+ * @retval -EALREADY Metadata is already set for all the streams
  */
 int bt_cap_initiator_unicast_audio_update(const struct bt_cap_unicast_audio_update_param *param);
 
@@ -576,7 +727,7 @@ int bt_cap_initiator_unicast_audio_update(const struct bt_cap_unicast_audio_upda
 int bt_cap_initiator_unicast_audio_stop(const struct bt_cap_unicast_audio_stop_param *param);
 
 /**
- * @brief Cancel any current Common Audio Profile procedure
+ * @brief Cancel any current Common Audio Profile Initiator procedure
  *
  * This will stop the current procedure from continuing and making it possible to run a new
  * Common Audio Profile procedure.
@@ -595,8 +746,12 @@ int bt_cap_initiator_unicast_audio_stop(const struct bt_cap_unicast_audio_stop_p
  * The respective callbacks of the procedure will be called as part of this with the connection
  * pointer set to 0 and the err value set to -ECANCELED.
  *
+ * Use bt_cap_commander_cancel() to cancel any CAP Commander procedures.
+ * Use bt_cap_handover_cancel() to cancel any CAP Handover procedures.
+ *
  * @retval 0 on success
  * @retval -EALREADY if no procedure is active
+ * @retval -EOPNOTSUPP A procedure is active, but it is not an Initiator procedure.
  */
 int bt_cap_initiator_unicast_audio_cancel(void);
 
@@ -630,7 +785,7 @@ struct bt_cap_initiator_broadcast_subgroup_param {
 	struct bt_cap_initiator_broadcast_stream_param *stream_params;
 
 	/** Subgroup Codec configuration. */
-	struct bt_audio_codec_cfg *codec_cfg;
+	const struct bt_audio_codec_cfg *codec_cfg;
 };
 
 /** Parameters for * bt_cap_initiator_broadcast_audio_create() */
@@ -642,7 +797,7 @@ struct bt_cap_initiator_broadcast_create_param {
 	struct bt_cap_initiator_broadcast_subgroup_param *subgroup_params;
 
 	/** Quality of Service configuration. */
-	struct bt_bap_qos_cfg *qos;
+	const struct bt_bap_qos_cfg *qos;
 
 	/**
 	 * @brief Broadcast Source packing mode.
@@ -812,55 +967,178 @@ int bt_cap_initiator_broadcast_audio_delete(struct bt_cap_broadcast_source *broa
 int bt_cap_initiator_broadcast_get_base(struct bt_cap_broadcast_source *broadcast_source,
 					struct net_buf_simple *base_buf);
 
-/** Parameters for  bt_cap_initiator_unicast_to_broadcast() */
-struct bt_cap_unicast_to_broadcast_param {
+/** Callback function for bt_cap_initiator_broadcast_foreach_stream()
+ *
+ * @param stream     The audio stream
+ * @param user_data  User data
+ *
+ * @retval true Continue iterating.
+ * @retval false Stop iterating.
+ */
+typedef bool (*bt_cap_initiator_broadcast_foreach_stream_func_t)(struct bt_cap_stream *stream,
+								 void *user_data);
+
+/**
+ * @brief Iterate through all streams in a broadcast source
+ *
+ * @param broadcast_source  The broadcast source.
+ * @param func              The callback function.
+ * @param user_data         User specified data that is sent to the callback function.
+ *
+ * @retval 0          Success (even if no streams exists in the group).
+ * @retval -ECANCELED The @p func returned false and stopped the iteration.
+ * @retval -EINVAL    @p broadcast_source or @p func were NULL.
+ */
+int bt_cap_initiator_broadcast_foreach_stream(struct bt_cap_broadcast_source *broadcast_source,
+					      bt_cap_initiator_broadcast_foreach_stream_func_t func,
+					      void *user_data);
+
+/** Parameters for  bt_cap_handover_unicast_to_broadcast() */
+struct bt_cap_handover_unicast_to_broadcast_param {
+	/** The type of the set. */
+	enum bt_cap_set_type type;
+
 	/** The source unicast group with the streams. */
-	struct bt_bap_unicast_group *unicast_group;
+	struct bt_cap_unicast_group *unicast_group;
 
 	/**
-	 * @brief Whether or not to encrypt the streams.
+	 * @brief The advertising set to use for the broadcast source
 	 *
-	 * If set to true, then the broadcast code in @p broadcast_code
-	 * will be used to encrypt the streams.
+	 * This shall remain valid until the procedure has completed.
+	 * If the advertising set is not started at the time of calling
+	 * bt_cap_handover_unicast_to_broadcast(),
+	 * the procedure will start the advertising set with @ref BT_LE_EXT_ADV_START_DEFAULT.
 	 */
-	bool encrypt;
+	struct bt_le_ext_adv *ext_adv;
+
+	/** The periodic advertising interval configured for the advertising set. */
+	uint16_t pa_interval;
+
+	/** The broadcast ID the advertising set is, or will be, using. */
+	uint32_t broadcast_id;
 
 	/**
-	 * @brief 16-octet broadcast code.
+	 * @brief Broadcast source parameters.
 	 *
-	 * Only valid if @p encrypt is true.
-	 *
-	 * If the value is a string or a the value is less than 16 octets,
-	 * the remaining octets shall be 0.
-	 *
-	 * Example:
-	 *   The string "Broadcast Code" shall be
-	 *   [42 72 6F 61 64 63 61 73 74 20 43 6F 64 65 00 00]
+	 * These parameters shall remain valid until the procedure has completed.
 	 */
-	uint8_t broadcast_code[BT_ISO_BROADCAST_CODE_SIZE];
+	struct bt_cap_initiator_broadcast_create_param *broadcast_create_param;
+};
+
+/** Callback structure for CAP procedures */
+struct bt_cap_handover_cb {
+	/**
+	 * @brief The broadcast source has been created for handover
+	 *
+	 * When this is called, the broadcast source has been created and the BASE can be
+	 * generated by bt_cap_initiator_broadcast_get_base(). To continue with the broadcast
+	 * reception part of the procedure, the application shall enable extended and periodic
+	 * advertising and set the BASE in the periodic advertising data with
+	 * bt_le_per_adv_set_data(). The procedure will finish once the CAP acceptors have synced
+	 * to the newly created broadcast source.
+	 *
+	 * @param broadcast_source Pointer to newly created broadcast source.
+	 */
+	void (*unicast_to_broadcast_created)(struct bt_cap_broadcast_source *broadcast_source);
+
+	/**
+	 * @brief The unicast to broadcast handover procedure has finished
+	 *
+	 * @param err 0 if success else a negative errno value.
+	 * @param conn Pointer to the connection where the error occurred or NULL if local failure.
+	 * @param unicast_group NULL if the unicast group was deleted during the procedure, else
+	 *                      pointer to the unicast group provided in the parameters.
+	 * @param broadcast_source Pointer to newly created broadcast source, or NULL in case of an
+	 *                         error happening before it was created.
+	 */
+	void (*unicast_to_broadcast_complete)(int err, struct bt_conn *conn,
+					      struct bt_cap_unicast_group *unicast_group,
+					      struct bt_cap_broadcast_source *broadcast_source);
+
+	/**
+	 * @brief The broadcast to unicast handover procedure has finished
+	 *
+	 * @param err 0 if success else a negative errno value.
+	 * @param conn Pointer to the connection where the error occurred or NULL if local failure.
+	 * @param broadcast_source NULL if the broadcast sourced was deleted during the procedure,
+	 *                         else pointer to the broadcast sourced provided in the parameters.
+	 * @param unicast_group Pointer to newly created unicast group, or NULL in case of an
+	 *                      error happening before it was created.
+	 */
+	void (*broadcast_to_unicast_complete)(int err, struct bt_conn *conn,
+					      struct bt_cap_broadcast_source *broadcast_source,
+					      struct bt_cap_unicast_group *unicast_group);
 };
 
 /**
- * @brief Hands over the data streams in a unicast group to a broadcast source.
+ * @brief Register Common Audio Profile Handover callbacks
  *
- * The streams in the unicast group will be stopped and the unicast group
- * will be deleted. This can only be done for source streams.
- *
- * @note @kconfig{CONFIG_BT_CAP_INITIATOR},
- * @kconfig{CONFIG_BT_BAP_UNICAST_CLIENT} and
- * @kconfig{CONFIG_BT_BAP_BROADCAST_SOURCE} must be enabled for this function
- * to be enabled.
- *
- * @param param         The parameters for the handover.
- * @param source        The resulting broadcast source.
+ * @param cb   The callback structure. Shall remain static.
  *
  * @return 0 on success or negative error value on failure.
  */
-int bt_cap_initiator_unicast_to_broadcast(const struct bt_cap_unicast_to_broadcast_param *param,
-					  struct bt_cap_broadcast_source **source);
+int bt_cap_handover_register_cb(const struct bt_cap_handover_cb *cb);
 
-/** Parameters for  bt_cap_initiator_broadcast_to_unicast() */
-struct bt_cap_broadcast_to_unicast_param {
+/**
+ * @brief Unregister Common Audio Profile Handover callbacks
+ *
+ * @param cb   The callback structure that was previously registered.
+ *
+ * @retval 0 Success
+ * @retval -EINVAL @p cb is NULL or @p cb was not registered
+ */
+int bt_cap_handover_unregister_cb(const struct bt_cap_handover_cb *cb);
+
+/**
+ * @brief Hands over the sink streams in a unicast group to a broadcast source.
+ *
+ * All streams in the provided unicast group will be stopped and released. The sink streams will be
+ * transferred to a broadcast source, and the broadcast source information will be shared with
+ * all accepters that are currently receiving audio. Any stream that is not in the streaming state
+ * will only be released.
+ *
+ * bt_bap_broadcast_assistant_discover() must have been successfully perform for all members in @p
+ * param before starting this procedure.
+ *
+ * @kconfig_dep{CONFIG_BT_CAP_HANDOVER}
+ *
+ * @param param The parameters for the handover.
+ *
+ * @return 0 on success or negative error value on failure.
+ */
+int bt_cap_handover_unicast_to_broadcast(
+	const struct bt_cap_handover_unicast_to_broadcast_param *param);
+
+/** Parameters for  bt_cap_handover_broadcast_to_unicast() */
+struct bt_cap_handover_broadcast_to_unicast_param {
+	/**
+	 * @brief Parameters for stopping broadcast audio reception on acceptors
+	 *
+	 * This parameter is optional as stopping the broadcast audio should automatically stop
+	 * broadcast audio reception on the acceptors. Omitting this parameter will rely on the CAP
+	 * acceptors timing out on the BIG once it is stopped. The timeout on the CAP acceptors will
+	 * be between @ref BT_ISO_SYNC_TIMEOUT_MIN and @ref BT_ISO_SYNC_TIMEOUT_MAX.
+	 */
+	struct bt_cap_commander_broadcast_reception_stop_param *reception_stop_param;
+
+	/** @brief Broadcast ID of the @p broadcast_source
+	 *
+	 * Ignored if @p reception_stop_param is not NULL.
+	 */
+	uint32_t broadcast_id;
+
+	/** @brief Advertising set ID of the @p broadcast_source
+	 *
+	 * Ignored if @p reception_stop_param is not NULL.
+	 */
+	uint8_t adv_sid;
+
+	/** @brief Advertising type of the advertising address of @p broadcast_source
+	 *
+	 * Ignored if @p reception_stop_param is not NULL.
+	 */
+	uint8_t adv_type;
+
 	/**
 	 * @brief The source broadcast source with the streams.
 	 *
@@ -868,20 +1146,11 @@ struct bt_cap_broadcast_to_unicast_param {
 	 */
 	struct bt_cap_broadcast_source *broadcast_source;
 
-	/** The type of the set. */
-	enum bt_cap_set_type type;
+	/** Parameters for the unicast group to be created */
+	struct bt_cap_unicast_group_param *unicast_group_param;
 
-	/**
-	 * @brief The number of set members in @p members.
-	 *
-	 * This value shall match the number of streams in the
-	 * @p broadcast_source.
-	 *
-	 */
-	size_t count;
-
-	/** Coordinated or ad-hoc set members. */
-	union bt_cap_set_member **members;
+	/** Parameters for starting the unicast audio */
+	struct bt_cap_unicast_audio_start_param *unicast_start_param;
 };
 
 /**
@@ -890,26 +1159,51 @@ struct bt_cap_broadcast_to_unicast_param {
  * The streams in the broadcast source will be stopped and the broadcast source
  * will be deleted.
  *
- * @note @kconfig{CONFIG_BT_CAP_INITIATOR},
- * @kconfig{CONFIG_BT_BAP_UNICAST_CLIENT} and
- * @kconfig{CONFIG_BT_BAP_BROADCAST_SOURCE} must be enabled for this function
- * to be enabled.
+ * @kconfig_dep{CONFIG_BT_CAP_HANDOVER}
  *
  * @param[in]  param          The parameters for the handover.
- * @param[out] unicast_group  The resulting broadcast source.
  *
  * @return 0 on success or negative error value on failure.
  */
-int bt_cap_initiator_broadcast_to_unicast(const struct bt_cap_broadcast_to_unicast_param *param,
-					  struct bt_bap_unicast_group **unicast_group);
+int bt_cap_handover_broadcast_to_unicast(
+	const struct bt_cap_handover_broadcast_to_unicast_param *param);
+
+/**
+ * @brief Cancel any current Common Audio Profile Handover procedure
+ *
+ * This will stop the current procedure from continuing and making it possible to run a new
+ * Common Audio Profile procedure.
+ *
+ * It is recommended to do this if any existing procedure takes longer time than expected, which
+ * could indicate a missing response from the Common Audio Profile Acceptor.
+ *
+ * This does not send any requests to any Common Audio Profile Acceptors involved with the current
+ * procedure, and thus notifications from the Common Audio Profile Acceptors may arrive after this
+ * has been called. It is thus recommended to either only use this if a procedure has stalled, or
+ * wait a short while before starting any new Common Audio Profile procedure after this has been
+ * called to avoid getting notifications from the cancelled procedure. The wait time depends on
+ * the connection interval, the number of devices in the previous procedure and the behavior of the
+ * Common Audio Profile Acceptors.
+ *
+ * The respective callbacks of the procedure will be called as part of this with the connection
+ * pointer set to 0 and the err value set to -ECANCELED.
+ *
+ * Use bt_cap_commander_cancel() to cancel any CAP Commander procedures.
+ * Use bt_cap_initiator_unicast_audio_cancel() to cancel any CAP Initiator procedures.
+ *
+ * @retval 0 on success
+ * @retval -EALREADY if no procedure is active
+ * @retval -EOPNOTSUPP A procedure is active, but it is not a Handover procedure.
+ */
+int bt_cap_handover_cancel(void);
 
 /** Callback structure for CAP procedures */
 struct bt_cap_commander_cb {
 	/**
-	 * @brief Callback for bt_cap_initiator_unicast_discover().
+	 * @brief Callback for bt_cap_commander_discover().
 	 *
 	 * @param conn      The connection pointer supplied to
-	 *                  bt_cap_initiator_unicast_discover().
+	 *                  bt_cap_commander_discover().
 	 * @param err       0 if Common Audio Service was found else -ENODATA.
 	 * @param member    Pointer to the set member. NULL if err != 0.
 	 * @param csis_inst The Coordinated Set Identification Service if
@@ -1086,8 +1380,12 @@ int bt_cap_commander_discover(struct bt_conn *conn);
  * The respective callbacks of the procedure will be called as part of this with the connection
  * pointer set to NULL and the err value set to -ECANCELED.
  *
+ * Use bt_cap_initiator_unicast_audio_cancel() to cancel any CAP Initiator procedures.
+ * Use bt_cap_handover_cancel() to cancel any CAP Handover procedures.
+ *
  * @retval 0 on success
  * @retval -EALREADY if no procedure is active
+ * @retval -EOPNOTSUPP A procedure is active, but it is not a Commander procedure.
  */
 int bt_cap_commander_cancel(void);
 

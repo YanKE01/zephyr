@@ -1,3 +1,5 @@
+.. _virtio:
+
 Virtual I/O (VIRTIO)
 ##########################
 
@@ -122,6 +124,38 @@ virtqueue has to be acquired using :c:func:`virtio_get_virtqueue`. To send data 
 :c:func:`virtq_add_buffer_chain` has to be used. Along the descriptor chain, it takes pointer to the callback that
 will be invoked once the device returns the given descriptor chain. After that, the virtqueue has to be notified using
 :c:func:`virtio_notify_virtqueue` from the Virtio API.
+
+Guest-side Virtio drivers
+*************************
+Currently Zephyr provides drivers for Virtio over PCI and Virtio over MMIO and drivers for three devices using virtio - virtiofs, used
+to access the filesystem of the host, virtio-entropy, used as an entropy source, and virtio-blk, used to access a block device.
+
+Virtiofs
+=========
+This driver provides support for `virtiofs <https://virtio-fs.gitlab.io/>`_ - a filesystem allowing a virtual machine guest to access
+a directory on the host. It uses FUSE messages to communicate between the host and the guest in order to perform filesystem operations such as
+opening and reading files. Every time the guest wants to perform some filesystem operation it places in the virtqueue a descriptor chain
+starting with the device readable part, containing the FUSE input header and input data, and ending it with the device writeable part, with place
+for the FUSE output header and output data.
+
+Virtio-entropy
+==============
+This driver allows using virtio-entropy as an entropy source in Zephyr. The operation of this device is simple - the driver places a
+buffer in the virtqueue and receives it back, filled with random data.
+
+Virtio-blk
+==========
+This driver exposes a virtio-blk block device to Zephyr's disk access layer, so it can be used through the
+:ref:`Disk Access API <disk_access_api>` and, on top of it, a filesystem. It keeps a single request in flight, submitting a descriptor
+chain made of a request header, the caller's data buffer as one or more scatter-gather segments, and a status byte. See
+:ref:`disk_virtio_blk` for details.
+
+Virtio samples
+**************
+A sample showcasing the use of a driver relying on Virtio is provided in :zephyr:code-sample:`virtiofs`. If you wish
+to check code interfacing directly with the Virtio driver, you can check the virtiofs driver, especially :c:func:`virtiofs_init`
+for initialization and :c:func:`virtiofs_send_receive` with the :c:func:`virtiofs_recv_cb` for data transfer to/from
+the Virtio device.
 
 API Reference
 *************

@@ -14,10 +14,12 @@ zephyr_compile_definitions(${MCUX_CPU})
 list(APPEND CMAKE_MODULE_PATH
     ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}
     ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}/drivers
+    ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}/periph
 )
 
 zephyr_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH})
 zephyr_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}/drivers)
+zephyr_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}/periph)
 
 if(CONFIG_CPU_CORTEX_A)
     list(APPEND CMAKE_MODULE_PATH
@@ -40,7 +42,7 @@ endfunction()
 message("Load components for ${MCUX_DEVICE}:")
 
 # Required by all SCFW-based SoCs
-if (CONFIG_SOC_MIMX8QM6_ADSP OR CONFIG_SOC_MIMX8QX6_ADSP)
+if(CONFIG_SOC_MIMX8QM6_ADSP OR CONFIG_SOC_MIMX8QX6_ADSP)
     list(APPEND CMAKE_MODULE_PATH
         ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/mcux-sdk/devices/${MCUX_DEVICE_PATH}/scfw_api
     )
@@ -66,18 +68,14 @@ zephyr_library_sources_ifdef(CONFIG_SOC_LPC54114_M4
 
 #Include system_xxx file
 #This can be extended to other SoC series if needed
-if (DEFINED CONFIG_SOC_RESET_HOOK)
-  if (CONFIG_SOC_LPC54114_M4)
+if(DEFINED CONFIG_SOC_RESET_HOOK)
+  if(CONFIG_SOC_LPC54114_M4)
     include(device_system_LPC54114_cm4)
-  elseif (CONFIG_SOC_LPC54114_M0)
+  elseif(CONFIG_SOC_LPC54114_M0)
     include(device_system_LPC54114_cm0plus)
   else()
     include(device_system)
   endif()
-endif()
-
-if(CONFIG_CPU_CORTEX_A)
-  include_driver_ifdef(CONFIG_HAS_MCUX_CACHE		cache/armv8-a	driver_cache_armv8a)
 endif()
 
 include(../mcux-sdk-ng/middleware/middleware.cmake)

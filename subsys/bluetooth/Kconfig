@@ -28,17 +28,28 @@ config BT_HCI
 	  HCI driver in between.
 
 config BT_CUSTOM
-	bool "Custom"
+	bool "Custom [DEPRECATED]"
+	select DEPRECATED
 	help
-	  Select a custom, non-HCI based stack. If you're not sure what
-	  this is, you probably want the HCI-based stack instead.
+	  Select a custom, non-HCI based stack. Deprecated: the option dates
+	  from the time when a whole Bluetooth Host could be offloaded behind
+	  the Zephyr Bluetooth API, nothing in the tree selects it, and HCI
+	  transports are regular device drivers. Out-of-tree stacks add their
+	  own entry to the choice instead.
 
 endchoice
 
-# The Bluetooth subsystem requires the system workqueue to execute at
-# a cooperative priority.
+config BT_SYSTEM_WORKQUEUE_COOP
+	bool
+	help
+	  Selected by the Bluetooth components that submit work to the system
+	  workqueue and rely on it running at a cooperative priority.
+
+	  A build that selects none of them keeps the system workqueue priority
+	  the application chose.
+
 config SYSTEM_WORKQUEUE_PRIORITY
-	range -256 -1
+	range -256 -1 if BT_SYSTEM_WORKQUEUE_COOP
 
 if BT_HCI
 
@@ -47,19 +58,6 @@ config BT_HCI_RAW
 	help
 	  This option allows to access Bluetooth controller
 	  from the application with the RAW HCI protocol.
-
-config BT_HCI_RAW_H4
-	bool "RAW HCI H:4 transport"
-	help
-	  This option enables HCI RAW access to work over an H:4
-	  transport, note that it still need to be selected at runtime.
-
-config BT_HCI_RAW_H4_ENABLE
-	bool "RAW HCI H:4 transport enable"
-	depends on BT_HCI_RAW_H4
-	help
-	  This option enables use of H:4 transport for HCI RAW access at
-	  build time.
 
 config BT_HCI_RAW_CMD_EXT
 	bool "RAW HCI Command Extension"
@@ -98,6 +96,11 @@ rsource "Kconfig.adv"
 
 config BT_CONN
 	bool
+	help
+	  Indicates that support for Bluetooth LE connections (ACL) is enabled.
+	  This internal option is selected automatically by the roles that need
+	  connections, such as BT_PERIPHERAL and BT_CENTRAL, and is not meant to
+	  be set directly.
 
 config BT_MAX_CONN
 	int "Maximum number of simultaneous connections"
@@ -115,14 +118,45 @@ config BT_CONN_TX
 	help
 	  Hidden configuration that is true if ACL or broadcast ISO is enabled
 
+config BT_LE_LOCAL_MINIMUM_REQUIRED_FEATURE_PAGE
+	int
+	default 1 if BT_FRAME_SPACE_UPDATE || BT_SHORTER_CONNECTION_INTERVALS
+	default 0
+	depends on BT_LE_EXTENDED_FEAT_SET
+	help
+	  Minimum required feature page that must be supported.
+
+config BT_LE_MAX_LOCAL_SUPPORTED_FEATURE_PAGE
+	int "Maximum supported feature page"
+	default BT_LE_LOCAL_MINIMUM_REQUIRED_FEATURE_PAGE
+	range BT_LE_LOCAL_MINIMUM_REQUIRED_FEATURE_PAGE 10
+	depends on BT_LE_EXTENDED_FEAT_SET
+	help
+	  Maximum feature page that can be stored for local supported features.
+
+config BT_LE_EXTENDED_FEAT_SET
+	bool "LL Extended Feature Set"
+	depends on !HAS_BT_CTLR || BT_CTLR_EXTENDED_FEAT_SET_SUPPORT
+	help
+	  Enable support for the LL Extended Feature Set feature.
+
 if BT_CONN
+config BT_CONN_DYNAMIC_CALLBACKS
+	bool "Dynamic connection callbacks"
+	default y
+	help
+	  Enable support for dynamic connection callbacks. This links in
+	  bt_conn_cb_register(). Disabling this config is safe. It will make
+	  uses of this and associated APIs fail to link. Note: Static registration
+	  through BT_CONN_CB_DEFINE() is always available and does not depend on
+	  this config.
+
 config BT_HCI_ACL_FLOW_CONTROL
 	bool "Controller to Host ACL flow control support"
 	# Enable if building a Host-only build
 	default y if !HAS_BT_CTLR && !BT_STM32_IPM && !BT_ESP32  && !BT_STM32WBA
 	# Enable if building a Controller-only build
 	default y if BT_HCI_RAW
-	select POLL
 	help
 	  Enable support for throttling ACL buffers from the controller
 	  to the host. This is particularly useful when the host and
@@ -188,6 +222,12 @@ config BT_SUBRATING
 	  Enable support for LE Connection Subrating feature that is defined in the
 	  Bluetooth Core specification, Version 5.4 | Vol 6, Part B, Section 4.6.35.
 
+config BT_FRAME_SPACE_UPDATE
+	bool "Frame Space Update"
+	depends on (!HAS_BT_CTLR || BT_CTLR_FRAME_SPACE_UPDATE_SUPPORT) && BT_CONN && BT_LE_EXTENDED_FEAT_SET
+	help
+	  Enable support for Bluetooth 6.0 Frame Space Update feature.
+
 config BT_CHANNEL_SOUNDING
 	bool "Channel Sounding [EXPERIMENTAL]"
 	select EXPERIMENTAL
@@ -221,6 +261,15 @@ config BT_CHANNEL_SOUNDING_REASSEMBLY_BUFFER_CNT
 	  Controls the number of the reassembly buffers for CS subevent
 	  results. Each running CS procedure is allocated one buffer and the
 	  number of concurrent CS procedures is limited by this value.
+
+config BT_SHORTER_CONNECTION_INTERVALS
+	bool "Shorter Connection Intervals"
+	depends on !HAS_BT_CTLR || BT_CTLR_SHORTER_CONNECTION_INTERVALS_SUPPORT
+	depends on BT_LE_EXTENDED_FEAT_SET
+	depends on BT_SUBRATING
+	help
+	  Enable support for the Bluetooth 6.2 Shorter Connection Intervals
+	  feature.
 
 endif # BT_CONN
 
@@ -377,6 +426,8 @@ rsource "Kconfig.logging"
 config BT_SHELL
 	bool "Bluetooth shell"
 	select SHELL
+	select SHELL_GETOPT
+	select GETOPT_LONG
 	select BT_PRIVATE_SHELL
 	select BT_TICKER_NEXT_SLOT_GET if BT_LL_SW_SPLIT
 	help

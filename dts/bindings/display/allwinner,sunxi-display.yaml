@@ -10,7 +10,7 @@ description: |
 
 compatible: "allwinner,sunxi-display"
 
-include: base.yaml
+include: display-controller.yaml
 
 properties:
   height:

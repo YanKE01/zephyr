@@ -8,12 +8,11 @@ Overview
 ********
 
 A simple application to demonstrate the :ref:`LoRaWAN subsystem <lorawan_api>` of Zephyr.
+Every fifth uplink requests a link check, logging the demodulation margin and
+gateway count reported by the network.
 
 Building and Running
 ********************
-
-This sample can be found under
-:zephyr_file:`samples/subsys/lorawan/class_a` in the Zephyr tree.
 
 Before building the sample, make sure to select the correct region in the
 ``prj.conf`` file.

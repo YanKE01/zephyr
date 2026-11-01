@@ -23,6 +23,8 @@ supported:
   - uart
   - usb_device
   - usbd
+  - dma
+  - crc
 testing:
   ignore_tags:
     - net

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2025 Analog Devices, Inc.
+ * Copyright (c) 2025-2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <arm/armv7-m.dtsi>
 #include <adi/max32/max32xxx.dtsi>
+#include <adi/max32/max32xxx-m4.dtsi>
 #include <zephyr/dt-bindings/dma/max32650_dma.h>
 
 &flash0 {
@@ -56,6 +56,11 @@
 /* MAX32650 extra peripherals. */
 / {
 	soc {
+		sram0: memory@20000000 {
+			compatible = "mmio-sram";
+			reg = <0x20000000 DT_SIZE_K(32)>;
+		};
+
 		sram1: memory@20008000 {
 			compatible = "mmio-sram";
 			reg = <0x20008000 DT_SIZE_K(64)>;
@@ -175,7 +180,7 @@
 			status = "disabled";
 		};
 
-		wdt0: watchdog@40003000  {
+		wdt0: watchdog@40003000 {
 			compatible = "adi,max32-watchdog";
 			reg = <0x40003000 0x400>;
 			interrupts = <1 0>;
@@ -183,7 +188,7 @@
 			status = "disabled";
 		};
 
-		wdt1: watchdog@40003400  {
+		wdt1: watchdog@40003400 {
 			compatible = "adi,max32-watchdog";
 			reg = <0x40003400 0x400>;
 			interrupts = <57 0>;
@@ -196,10 +201,31 @@
 			reg = <0x40028000 0x1000>;
 			clocks = <&gcr ADI_MAX32_CLOCK_BUS0 5>;
 			interrupts = <28 0>, <29 0>, <30 0>, <31 0>, <68 0>, <69 0>, <70 0>, <71 0>,
-				<72 0>, <73 0>, <74 0>, <75 0>, <76 0>, <77 0>, <78 0>, <79 0>;
+				     <72 0>, <73 0>, <74 0>, <75 0>, <76 0>, <77 0>, <78 0>, <79 0>;
 			dma-channels = <16>;
 			status = "disabled";
 			#dma-cells = <2>;
+		};
+
+		usbhs: usbhs@400b1000 {
+			compatible = "adi,max32-usbhs";
+			reg = <0x400b1000 0x1000>;
+			clocks = <&gcr ADI_MAX32_CLOCK_BUS0 3>;
+			interrupts = <2 0>;
+			num-bidir-endpoints = <1>;
+			num-in-endpoints = <6>;
+			num-out-endpoints = <7>;
+			maximum-speed = "high-speed";
+			status = "disabled";
+		};
+
+		hpb: hpb@40039000 {
+			compatible = "adi,max32-hpb";
+			reg = <0x40039000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&gcr ADI_MAX32_CLOCK_BUS1 4 &gcr ADI_MAX32_CLOCK_BUS1 7>;
+			status = "disabled";
 		};
 	};
 };

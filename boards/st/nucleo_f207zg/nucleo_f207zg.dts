@@ -17,8 +17,10 @@
 	chosen {
 		zephyr,console = &usart3;
 		zephyr,shell-uart = &usart3;
+		zephyr,canbus = &can1;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
 	};
 
 	leds: leds {
@@ -79,6 +81,7 @@
 		green-pwm-led = &green_pwm_led;
 		blue-pwm-led = &blue_pwm_led;
 		red-pwm-led = &red_pwm_led;
+		rtc = &rtc;
 		sw0 = &user_button;
 		watchdog0 = &iwdg;
 		die-temp0 = &die_temp;
@@ -122,6 +125,8 @@
 &i2c1 {
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
 };
@@ -129,6 +134,8 @@
 &i2c2 {
 	pinctrl-0 = <&i2c2_scl_pb10 &i2c2_sda_pb11>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 11 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
 };
@@ -153,12 +160,24 @@ zephyr_udc0: &usbotg_fs {
 	status = "okay";
 };
 
+&can1 {
+	pinctrl-0 = <&can1_rx_pd0 &can1_tx_pd1>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&can2 {
+	pinctrl-0 = <&can2_rx_pb5 &can2_tx_pb6>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
 &iwdg {
 	status = "okay";
 };
 
 &rtc {
-	clocks = <&rcc STM32_CLOCK_BUS_APB1 0x10000000>,
+	clocks = <&rcc STM32_CLOCK(APB1, 28)>,
 		 <&rcc STM32_SRC_LSI RTC_SEL(2)>;
 	status = "okay";
 };
@@ -167,11 +186,14 @@ zephyr_udc0: &usbotg_fs {
 	status = "okay";
 };
 
+&adc123_common {
+	st,adc-prescaler = <2>;
+	status = "okay";
+};
+
 &adc1 {
 	pinctrl-0 = <&adc1_in0_pa0>;
 	pinctrl-names = "default";
-	st,adc-clock-source = "SYNC";
-	st,adc-prescaler = <2>;
 	status = "okay";
 };
 
@@ -210,36 +232,56 @@ zephyr_udc0: &usbotg_fs {
 
 &flash0 {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
+		/* Sectors 0 and 1 (2x16kByte) */
 		boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "mcuboot";
 			reg = <0x0 DT_SIZE_K(32)>;
 			read-only;
 		};
 
 		/*
+		 * Sectors 2 and 3 (2x16kByte)
+		 *
 		 * nvs subsystem requires 2 sectors with a max total of 32K
 		 * On F2 series, the only option is to use the following
 		 * partition, which is compatible with mcuboot usage.
-		 * Keep it commented in order it is not used by CI.
+		 * Keep it commented in order it is not used by CI
+		 * since, when MCUBoot is not embedded, Zephyr image starts
+		 * from flash0 beginning and overlaps storage_partition.
 		 *
 		 * storage_partition: partition@8000 {
+		 *	compatible = "zephyr,mapped-partition";
 		 *	label = "storage";
 		 *	reg = <0x8000 DT_SIZE_K(32)>;
 		 * };
 		 */
 
+		/* Sector 4 (64kByte): spare/unused */
+
+		/* Sectors 5 to 7 (3x128kByte) */
 		slot0_partition: partition@20000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-0";
-			reg = <0x20000 DT_SIZE_K(448)>;
+			reg = <0x20000 DT_SIZE_K(384)>;
 		};
 
-		slot1_partition: partition@90000 {
+		/* Sectors 8 to 10 (3x128kByte) */
+		slot1_partition: partition@80000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-1";
-			reg = <0x90000 DT_SIZE_K(448)>;
+			reg = <0x80000 DT_SIZE_K(384)>;
+		};
+
+		/* Sector 11 (128kByte) */
+		scratch_partition: partition@e0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-scratch";
+			reg = <0xe0000 DT_SIZE_K(128)>;
 		};
 	};
 };

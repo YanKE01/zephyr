@@ -12,9 +12,11 @@ supported:
   - adc
   - watchdog
   - counter
+  - crc
   - gpio
   - spi
   - i2c
+  - i2c_target
   - rtc
   - hwinfo
   - clock_control
@@ -22,6 +24,7 @@ supported:
   - pdm
   - i2s
   - mspi
+  - sdhc
 testing:
   ignore_tags:
     - net

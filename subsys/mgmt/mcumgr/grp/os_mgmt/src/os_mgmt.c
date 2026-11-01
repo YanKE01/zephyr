@@ -9,7 +9,6 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <zephyr/debug/object_tracing.h>
-#include <zephyr/kernel_structs.h>
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/mgmt/handlers.h>
@@ -26,6 +25,11 @@
 
 #include <mgmt/mcumgr/util/zcbor_bulk.h>
 
+#ifdef CONFIG_MCUMGR_GRP_OS_MPSTAT
+#include <zephyr/sys/sys_heap.h>
+#include <mgmt/mcumgr/transport/smp_internal.h>
+#endif
+
 #ifdef CONFIG_REBOOT
 #include <zephyr/sys/reboot.h>
 #endif
@@ -40,7 +44,6 @@
 #endif
 
 #if defined(CONFIG_MCUMGR_GRP_OS_INFO) || defined(CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO)
-#include <stdio.h>
 #include <zephyr/version.h>
 #if defined(CONFIG_MCUMGR_GRP_OS_INFO)
 #include <os_mgmt_processor.h>
@@ -48,7 +51,6 @@
 #if defined(CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO)
 #include <bootutil/boot_status.h>
 #endif
-#include <mgmt/mcumgr/util/zcbor_bulk.h>
 #if defined(CONFIG_NET_HOSTNAME_ENABLE)
 #include <zephyr/net/hostname.h>
 #elif defined(CONFIG_BT)
@@ -144,6 +146,22 @@ struct datetime_parser {
 extern uint8_t *MCUMGR_GRP_OS_INFO_BUILD_DATE_TIME;
 #endif
 
+#ifdef CONFIG_MCUMGR_GRP_OS_MPSTAT
+/* Specifies the maximum characters in the memory pool ID, allowing up to 999 outputs */
+#define MPSTAT_ID_KEY_SIZE 4
+
+#ifdef CONFIG_MCUMGR_GRP_OS_MPSTAT_ONLY_SUPPORTED_STATS
+/* Number of items per memory pool output */
+#define MPSTAT_KEY_MAP_ENTRIES 3
+#else
+/* Number of items per memory pool output */
+#define MPSTAT_KEY_MAP_ENTRIES 4
+
+/* Specifies the block size of memory pools, zephyr used byte-level allocation */
+#define MPSTAT_BLOCK_SIZE 1
+#endif
+#endif
+
 /**
  * Command handler: os echo
  */
@@ -162,7 +180,10 @@ static int os_mgmt_echo(struct smp_streamer *ctxt)
 
 	ok = zcbor_map_decode_bulk(zsd, echo_decode, ARRAY_SIZE(echo_decode), &decoded) == 0;
 
-	if (!ok) {
+	/* No "d" key leaves data a zero-length string with no buffer;
+	 * echoing it back would hand zcbor_tstr_encode() a NULL pointer.
+	 */
+	if (!ok || decoded == 0) {
 		return MGMT_ERR_EINVAL;
 	}
 
@@ -227,7 +248,7 @@ os_mgmt_taskstat_encode_stack_info(zcbor_state_t *zse,
 	stack_size = thread->stack_info.size / 4;
 
 #ifdef CONFIG_INIT_STACKS
-	unsigned int stack_unused;
+	size_t stack_unused;
 
 	if (k_thread_stack_space_get(thread, &stack_unused) == 0) {
 		stack_used = (thread->stack_info.size - stack_unused) / 4;
@@ -288,9 +309,9 @@ static inline bool
 os_mgmt_taskstat_encode_priority(zcbor_state_t *zse, const struct k_thread *thread)
 {
 	return (zcbor_tstr_put_lit(zse, "prio")					&&
-		IS_ENABLED(CONFIG_MCUMGR_GRP_OS_TASKSTAT_SIGNED_PRIORITY) ?
+		(IS_ENABLED(CONFIG_MCUMGR_GRP_OS_TASKSTAT_SIGNED_PRIORITY) ?
 		zcbor_int32_put(zse, (int)thread->base.prio) :
-		zcbor_uint32_put(zse, (unsigned int)thread->base.prio) & 0xff);
+		zcbor_uint32_put(zse, (unsigned int)thread->base.prio & 0xff)));
 }
 
 /**
@@ -353,6 +374,77 @@ static int os_mgmt_taskstat_read(struct smp_streamer *ctxt)
 	return 0;
 }
 #endif /* CONFIG_MCUMGR_GRP_OS_TASKSTAT */
+
+#ifdef CONFIG_MCUMGR_GRP_OS_MPSTAT
+/**
+ * Command handler: os mpstat
+ */
+static int os_mgmt_mpstat_read(struct smp_streamer *ctxt)
+{
+	zcbor_state_t *zse = ctxt->writer->zs;
+	struct sys_heap **heap;
+	uint8_t key[MPSTAT_ID_KEY_SIZE] = { 0 };
+	int heap_elements;
+	int i = 0;
+	bool ok;
+
+	heap_elements = sys_heap_array_get(&heap);
+
+	ok = zcbor_tstr_put_lit(zse, "mpools") &&
+	     zcbor_map_start_encode(zse, heap_elements);
+
+	if (!ok) {
+		goto end;
+	}
+
+	while (i < heap_elements) {
+		struct sys_memory_stats heap_stats;
+		uint32_t heap_total_size;
+		int rc;
+		uint8_t key_size;
+
+		rc = sys_heap_runtime_stats_get(heap[i], &heap_stats);
+
+		if (rc != 0) {
+			ok = smp_mgmt_reset_zse(ctxt) &&
+			     smp_add_cmd_err(zse, MGMT_GROUP_ID_OS,
+					     OS_MGMT_ERR_HEAP_STATS_FETCH_FAILED);
+			LOG_ERR("Failed to get heap stats from address %p: %d", heap[i], rc);
+			goto end;
+		}
+
+		key_size = u8_to_dec(key, sizeof(key), i);
+		heap_total_size = heap_stats.allocated_bytes + heap_stats.free_bytes;
+
+		ok = zcbor_tstr_encode_ptr(zse, key, (size_t)key_size) &&
+		     zcbor_map_start_encode(zse, MPSTAT_KEY_MAP_ENTRIES) &&
+#ifndef CONFIG_MCUMGR_GRP_OS_MPSTAT_ONLY_SUPPORTED_STATS
+		     zcbor_tstr_put_lit(zse, "blksiz") &&
+		     zcbor_uint32_put(zse, MPSTAT_BLOCK_SIZE) &&
+#endif
+		     zcbor_tstr_put_lit(zse, "nblks") &&
+		     zcbor_uint32_put(zse, heap_total_size) &&
+		     zcbor_tstr_put_lit(zse, "nfree") &&
+		     zcbor_uint32_put(zse, heap_stats.free_bytes) &&
+		     zcbor_tstr_put_lit(zse, "min") &&
+		     zcbor_uint32_put(zse, (heap_total_size - heap_stats.max_allocated_bytes)) &&
+		     zcbor_map_end_encode(zse, MPSTAT_KEY_MAP_ENTRIES);
+
+		if (!ok) {
+			break;
+		}
+
+		++i;
+	}
+
+	if (ok) {
+		ok = zcbor_map_end_encode(zse, heap_elements);
+	}
+
+end:
+	return MGMT_RETURN_CHECK(ok);
+}
+#endif /* CONFIG_MCUMGR_GRP_OS_MPSTAT */
 
 #ifdef CONFIG_REBOOT
 /**
@@ -487,8 +579,7 @@ os_mgmt_mcumgr_params(struct smp_streamer *ctxt)
 #define BOOTLOADER_MODE MCUBOOT_MODE_UPGRADE_ONLY
 #elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET)
 #define BOOTLOADER_MODE MCUBOOT_MODE_SWAP_USING_OFFSET
-#elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE) || \
-defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_WITHOUT_SCRATCH)
+#elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE)
 #define BOOTLOADER_MODE MCUBOOT_MODE_SWAP_USING_MOVE
 #elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP)
 #define BOOTLOADER_MODE MCUBOOT_MODE_DIRECT_XIP
@@ -830,9 +921,7 @@ static int os_mgmt_info(struct smp_streamer *ctxt)
 
 	if (format_bitmask & OS_MGMT_INFO_FORMAT_HARDWARE_PLATFORM) {
 		rc = snprintf(&output[output_length], (sizeof(output) - output_length),
-			      (prior_output == true ? " %s%s%s" : "%s%s%s"), CONFIG_BOARD,
-			      (sizeof(CONFIG_BOARD_REVISION) > 1 ? "@" : ""),
-			      CONFIG_BOARD_REVISION);
+			      (prior_output == true ? " %s" : "%s"), CONFIG_BOARD_TARGET);
 
 		if (rc < 0 || rc >= (sizeof(output) - output_length)) {
 			goto fail;
@@ -1116,6 +1205,7 @@ static int os_mgmt_translate_error_code(uint16_t err)
 	case OS_MGMT_ERR_QUERY_YIELDS_NO_ANSWER:
 	case OS_MGMT_ERR_RTC_NOT_SET:
 	case OS_MGMT_ERR_QUERY_RESPONSE_VALUE_NOT_VALID:
+	case OS_MGMT_ERR_HEAP_STATS_FETCH_FAILED:
 		rc = MGMT_ERR_ENOENT;
 		break;
 
@@ -1138,6 +1228,12 @@ static const struct mgmt_handler os_mgmt_group_handlers[] = {
 #ifdef CONFIG_MCUMGR_GRP_OS_TASKSTAT
 	[OS_MGMT_ID_TASKSTAT] = {
 		os_mgmt_taskstat_read, NULL
+	},
+#endif
+
+#ifdef CONFIG_MCUMGR_GRP_OS_MPSTAT
+	[OS_MGMT_ID_MPSTAT] = {
+		os_mgmt_mpstat_read, NULL
 	},
 #endif
 

@@ -49,22 +49,6 @@ static inline const char *bt_hci_err_to_str(uint8_t hci_err)
 }
 #endif
 
-/** Allocate a HCI command buffer.
-  *
-  * This function allocates a new buffer for a HCI command. It is given
-  * the OpCode (encoded e.g. using the BT_OP macro) and the total length
-  * of the parameters. Upon successful return the buffer is ready to have
-  * the parameters encoded into it.
-  *
-  * @deprecated Use bt_hci_cmd_alloc() instead.
-  *
-  * @param opcode     Command OpCode.
-  * @param param_len  Length of command parameters.
-  *
-  * @return Newly allocated buffer.
-  */
-__deprecated struct net_buf *bt_hci_cmd_create(uint16_t opcode, uint8_t param_len);
-
 /** Allocate an HCI command buffer.
  *
  * This function allocates a new buffer for an HCI command. Upon successful
@@ -94,7 +78,8 @@ struct net_buf *bt_hci_cmd_alloc(k_timeout_t timeout);
   * @param opcode Command OpCode.
   * @param buf    Command buffer or NULL (if no parameters).
   *
-  * @return 0 on success or negative error value on failure.
+  * @return 0 on success (the command has been queued), negative errno value on failure.
+  * @retval -EHOSTDOWN The HCI transport is not open, i.e. Bluetooth is not enabled.
   */
 int bt_hci_cmd_send(uint16_t opcode, struct net_buf *buf);
 
@@ -119,7 +104,8 @@ int bt_hci_cmd_send(uint16_t opcode, struct net_buf *buf);
   *               for calling net_buf_unref() on the buffer when done parsing
   *               it.
   *
-  * @return 0 on success or negative error value on failure.
+  * @return 0 on success (the command completed), negative errno value on failure.
+  * @retval -EHOSTDOWN The HCI transport is not open, i.e. Bluetooth is not enabled.
   */
 int bt_hci_cmd_send_sync(uint16_t opcode, struct net_buf *buf,
 			 struct net_buf **rsp);
@@ -176,7 +162,7 @@ int bt_hci_get_adv_sync_handle(const struct bt_le_per_adv_sync *sync, uint16_t *
  *
  * @param handle The periodic sync set handle
  *
- * @retval The corresponding periodic advertising sync set object on success,
+ * @return The corresponding periodic advertising sync set object on success,
  *         NULL if it does not exist.
  */
 struct bt_le_per_adv_sync *bt_hci_per_adv_sync_lookup_handle(uint16_t handle);

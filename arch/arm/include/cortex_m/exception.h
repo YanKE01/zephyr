@@ -24,14 +24,9 @@
 
 #include <cmsis_core.h>
 #include <zephyr/arch/arm/exception.h>
-#include <zephyr/irq_offload.h>
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#ifdef CONFIG_IRQ_OFFLOAD
-extern volatile irq_offload_routine_t offload_routine;
 #endif
 
 /* Writes to the AIRCR must be accompanied by a write of the value 0x05FA
@@ -260,16 +255,6 @@ static ALWAYS_INLINE void z_arm_set_fault_sp(const struct arch_esf *esf, uint32_
 #endif /* CONFIG_ARMV7_M_ARMV8_M_MAINLINE || CONFIG_ARMV6_M_ARMV8_M_BASELINE */
 #endif /* CONFIG_DEBUG_COREDUMP */
 }
-
-/**
- * @brief Assess whether a debug monitor event should be treated as an error
- *
- * This routine checks the status of a debug_monitor() exception, and
- * evaluates whether this needs to be considered as a processor error.
- *
- * @return true if the DM exception is a processor error, otherwise false
- */
-bool z_arm_debug_monitor_event_error_check(void);
 
 #ifdef __cplusplus
 }

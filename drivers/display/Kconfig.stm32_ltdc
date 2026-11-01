@@ -8,9 +8,11 @@ menuconfig STM32_LTDC
 	default y
 	depends on DT_HAS_ST_STM32_LTDC_ENABLED
 	select USE_STM32_HAL_LTDC
-	select USE_STM32_HAL_RIF if SOC_SERIES_STM32N6X
-	select CACHE_MANAGEMENT if CPU_HAS_DCACHE
+	select CACHE_MANAGEMENT if DCACHE
 	select PINCTRL
+	select RESET
+	select GPIO if $(dt_compat_any_has_prop,$(DT_COMPAT_ST_STM32_LTDC),disp-on-gpios) || \
+		$(dt_compat_any_has_prop,$(DT_COMPAT_ST_STM32_LTDC),bl-ctrl-gpios)
 	help
 	  Enable driver for STM32 LCT-TFT display controller periheral.
 
@@ -19,7 +21,6 @@ if STM32_LTDC
 choice STM32_LTDC_PIXEL_FORMAT
 	prompt "Color pixel format"
 	default STM32_LTDC_RGB565
-	depends on STM32_LTDC
 	help
 	  Specify the color pixel format for the STM32 LCD-TFT display controller.
 

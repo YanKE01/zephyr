@@ -166,10 +166,14 @@ static uint8_t sdp_discover_func(struct bt_conn *conn, struct bt_sdp_client_resu
 	return BT_SDP_DISCOVER_UUID_CONTINUE;
 }
 
+static struct bt_sdp_attribute_id_list attr_ids;
+static struct bt_sdp_attribute_id_range attr_id_ranges[1];
+
 static int cmd_ssa_discovery(const struct shell *sh, size_t argc, char *argv[])
 {
-	int err;
+	int err = 0;
 	size_t len;
+	uint8_t uuid128[BT_UUID_SIZE_128];
 
 	len = strlen(argv[1]);
 
@@ -189,17 +193,41 @@ static int cmd_ssa_discovery(const struct shell *sh, size_t argc, char *argv[])
 		sdp_discover.uuid = &sdp_discover_uuid.u32.uuid;
 	} else if (len == (BT_UUID_SIZE_128 * 2)) {
 		sdp_discover_uuid.u128.uuid.type = BT_UUID_TYPE_128;
-		hex2bin(argv[1], len, &sdp_discover_uuid.u128.val[0],
-			sizeof(sdp_discover_uuid.u128.val));
+		hex2bin(argv[1], len, &uuid128[0], sizeof(uuid128));
+		sys_memcpy_swap(sdp_discover_uuid.u128.val, uuid128, sizeof(uuid128));
 		sdp_discover.uuid = &sdp_discover_uuid.u128.uuid;
 	} else {
 		shell_error(sh, "Invalid UUID");
 		return -ENOEXEC;
 	}
 
+	attr_ids.count = 0;
+
+	if (argc > 2) {
+		attr_ids.count = ARRAY_SIZE(attr_id_ranges);
+		attr_ids.ranges = attr_id_ranges;
+		attr_id_ranges[0].beginning = (uint16_t)shell_strtol(argv[2], 0, &err);
+		if (err < 0) {
+			shell_error(sh, "Invalid beginning ATTR ID");
+			return -ENOEXEC;
+		}
+		attr_id_ranges[0].ending = 0xffff;
+	}
+
+	if (argc > 3) {
+		attr_id_ranges[0].ending = (uint16_t)shell_strtol(argv[3], 0, &err);
+		if (err < 0) {
+			shell_error(sh, "Invalid ending ATTR ID");
+			return -ENOEXEC;
+		}
+	}
+
 	sdp_discover.func = sdp_discover_func;
 	sdp_discover.pool = &sdp_client_pool;
 	sdp_discover.type = BT_SDP_DISCOVER_SERVICE_SEARCH_ATTR;
+	if (attr_ids.count != 0) {
+		sdp_discover.ids = &attr_ids;
+	}
 
 	err = bt_sdp_discover(default_conn, &sdp_discover);
 	if (err) {
@@ -213,6 +241,7 @@ static int cmd_ss_discovery(const struct shell *sh, size_t argc, char *argv[])
 {
 	int err;
 	size_t len;
+	uint8_t uuid128[BT_UUID_SIZE_128];
 
 	len = strlen(argv[1]);
 
@@ -232,8 +261,8 @@ static int cmd_ss_discovery(const struct shell *sh, size_t argc, char *argv[])
 		sdp_discover.uuid = &sdp_discover_uuid.u32.uuid;
 	} else if (len == (BT_UUID_SIZE_128 * 2)) {
 		sdp_discover_uuid.u128.uuid.type = BT_UUID_TYPE_128;
-		hex2bin(argv[1], len, &sdp_discover_uuid.u128.val[0],
-			sizeof(sdp_discover_uuid.u128.val));
+		hex2bin(argv[1], len, &uuid128[0], sizeof(uuid128));
+		sys_memcpy_swap(sdp_discover_uuid.u128.val, uuid128, sizeof(uuid128));
 		sdp_discover.uuid = &sdp_discover_uuid.u128.uuid;
 	} else {
 		shell_error(sh, "Invalid UUID");
@@ -254,7 +283,7 @@ static int cmd_ss_discovery(const struct shell *sh, size_t argc, char *argv[])
 
 static int cmd_sa_discovery(const struct shell *sh, size_t argc, char *argv[])
 {
-	int err;
+	int err = 0;
 	size_t len;
 	uint32_t handle;
 
@@ -268,15 +297,95 @@ static int cmd_sa_discovery(const struct shell *sh, size_t argc, char *argv[])
 		return -ENOEXEC;
 	}
 
+	attr_ids.count = 0;
+
+	if (argc > 2) {
+		attr_ids.count = ARRAY_SIZE(attr_id_ranges);
+		attr_ids.ranges = attr_id_ranges;
+		attr_id_ranges[0].beginning = (uint16_t)shell_strtol(argv[2], 0, &err);
+		if (err < 0) {
+			shell_error(sh, "Invalid beginning ATTR ID");
+			return -ENOEXEC;
+		}
+		attr_id_ranges[0].ending = 0xffff;
+	}
+
+	if (argc > 3) {
+		attr_id_ranges[0].ending = (uint16_t)shell_strtol(argv[3], 0, &err);
+		if (err < 0) {
+			shell_error(sh, "Invalid ending ATTR ID");
+			return -ENOEXEC;
+		}
+	}
+
 	sdp_discover.func = sdp_discover_func;
 	sdp_discover.pool = &sdp_client_pool;
 	sdp_discover.type = BT_SDP_DISCOVER_SERVICE_ATTR;
+	if (attr_ids.count != 0) {
+		sdp_discover.ids = &attr_ids;
+	}
 
 	err = bt_sdp_discover(default_conn, &sdp_discover);
 	if (err) {
 		shell_error(sh, "Fail to start SDP Discovery (err %d)", err);
 		return err;
 	}
+	return 0;
+}
+
+/*
+ * Attribute ID ranges for sa_discovery_ranges. Sized for one range more than a request PDU
+ * carries: 32 ranges of 5 bytes plus the 2-byte sequence header make the 162-byte limit.
+ */
+#define ATTR_ID_RANGE_MAX_COUNT 32
+static struct bt_sdp_attribute_id_range attr_id_range_list[ATTR_ID_RANGE_MAX_COUNT + 1];
+
+static int cmd_sa_discovery_ranges(const struct shell *sh, size_t argc, char *argv[])
+{
+	int err = 0;
+	size_t len;
+	uint32_t handle;
+	unsigned long count;
+	uint32_t step;
+
+	len = strlen(argv[1]);
+
+	if (len == (sizeof(handle) * 2)) {
+		hex2bin(argv[1], len, (uint8_t *)&handle, sizeof(handle));
+		sdp_discover.handle = sys_be32_to_cpu(handle);
+	} else {
+		shell_error(sh, "Invalid handle");
+		return -ENOEXEC;
+	}
+
+	count = shell_strtoul(argv[2], 0, &err);
+	if (err < 0 || count == 0 || count > ARRAY_SIZE(attr_id_range_list)) {
+		shell_error(sh, "Invalid range count");
+		return -ENOEXEC;
+	}
+
+	/* Split the attribute ID space into ascending, non-overlapping ranges */
+	step = 0x10000 / count;
+	for (size_t i = 0; i < count; i++) {
+		attr_id_range_list[i].beginning = (uint16_t)(i * step);
+		attr_id_range_list[i].ending =
+			(i == count - 1) ? 0xffff : (uint16_t)((i + 1) * step - 1);
+	}
+
+	attr_ids.count = count;
+	attr_ids.ranges = attr_id_range_list;
+
+	sdp_discover.func = sdp_discover_func;
+	sdp_discover.pool = &sdp_client_pool;
+	sdp_discover.type = BT_SDP_DISCOVER_SERVICE_ATTR;
+	sdp_discover.ids = &attr_ids;
+
+	err = bt_sdp_discover(default_conn, &sdp_discover);
+	if (err != 0) {
+		shell_error(sh, "Fail to start SDP Discovery (err %d)", err);
+		return err;
+	}
+
 	return 0;
 }
 
@@ -309,10 +418,16 @@ static int cmd_ssa_discovery_fail(const struct shell *sh, size_t argc, char *arg
 	return 0;
 }
 
+#define HELP_ATTR_ID_LIST " [start] [end]"
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sdp_client_cmds,
-	SHELL_CMD_ARG(ss_discovery, NULL, "<UUID>", cmd_ss_discovery, 2, 0),
-	SHELL_CMD_ARG(sa_discovery, NULL, "<Service Record Handle>", cmd_sa_discovery, 2, 0),
-	SHELL_CMD_ARG(ssa_discovery, NULL, "<UUID>", cmd_ssa_discovery, 2, 0),
+	SHELL_CMD_ARG(ss_discovery, NULL, "<Big endian UUID>", cmd_ss_discovery, 2, 0),
+	SHELL_CMD_ARG(sa_discovery, NULL, "<Service Record Handle>" HELP_ATTR_ID_LIST,
+		      cmd_sa_discovery, 2, 2),
+	SHELL_CMD_ARG(ssa_discovery, NULL, "<Big endian UUID>" HELP_ATTR_ID_LIST,
+		      cmd_ssa_discovery, 2, 2),
+	SHELL_CMD_ARG(sa_discovery_ranges, NULL, "<Service Record Handle> <range count>",
+		      cmd_sa_discovery_ranges, 3, 0),
 	SHELL_CMD_ARG(ssa_discovery_fail, NULL, "", cmd_ssa_discovery_fail, 1, 0),
 	SHELL_SUBCMD_SET_END
 );

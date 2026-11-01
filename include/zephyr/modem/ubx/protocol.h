@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_MODEM_UBX_PROTOCOL_
-#define ZEPHYR_MODEM_UBX_PROTOCOL_
+#ifndef ZEPHYR_INCLUDE_MODEM_UBX_PROTOCOL_H_
+#define ZEPHYR_INCLUDE_MODEM_UBX_PROTOCOL_H_
 
 #include <stdint.h>
 #include <zephyr/modem/ubx/checksum.h>
@@ -74,12 +74,19 @@ enum ubx_nav_fix_type {
 	UBX_NAV_FIX_TYPE_TIME_ONLY = 5,
 };
 
+enum ubx_nav_hp_dgnss_mode {
+	UBX_NAV_HP_DGNSS_MODE_RTK_FLOAT = 2,
+	UBX_NAV_HP_DGNSS_MODE_RTK_FIXED = 3,
+};
+
 #define UBX_NAV_PVT_VALID_DATE				BIT(0)
 #define UBX_NAV_PVT_VALID_TIME				BIT(1)
 #define UBX_NAV_PVT_VALID_UTC_TOD			BIT(2)
 #define UBX_NAV_PVT_VALID_MAGN				BIT(3)
 
 #define UBX_NAV_PVT_FLAGS_GNSS_FIX_OK			BIT(0)
+#define UBX_NAV_PVT_FLAGS_GNSS_CARR_SOLN_FLOATING	BIT(6)
+#define UBX_NAV_PVT_FLAGS_GNSS_CARR_SOLN_FIXED		BIT(7)
 
 #define UBX_NAV_PVT_FLAGS3_INVALID_LLH			BIT(0)
 
@@ -143,6 +150,7 @@ enum ubx_gnss_id {
 };
 
 #define UBX_NAV_SAT_FLAGS_SV_USED			BIT(3)
+#define UBX_NAV_SAT_FLAGS_RTCM_CORR_USED		BIT(17)
 
 struct ubx_nav_sat {
 	uint32_t itow;
@@ -534,4 +542,4 @@ static inline int ubx_frame_encode(uint8_t class, uint8_t id,
 		},										   \
 	}
 
-#endif /* ZEPHYR_MODEM_UBX_PROTOCOL_ */
+#endif /* ZEPHYR_INCLUDE_MODEM_UBX_PROTOCOL_H_ */

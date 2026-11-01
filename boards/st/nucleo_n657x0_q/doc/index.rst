@@ -62,6 +62,34 @@ Supported Features
 
 .. zephyr:board-supported-hw::
 
+Ethernet
+========
+
+NUCLEO-N657X0-Q features an Ethernet interface connected to an external PHY via RMII.
+
+An area of the on-chip OTP (One-Time Programmable) memory is dedicated to holding
+Ethernet MAC addresses. This area is not programmed during manufacturing and reads
+as all zeroes; it must be programmed in the field using `STM32CubeProgrammer`_.
+
+To use the OTP MAC address ``MAC_ADDR1`` in your application, add the following overlay:
+
+.. code-block:: dts
+
+   &mac {
+       nvmem-cells = <&mac_address0>;
+       nvmem-cell-names = "mac-address";
+   };
+
+.. warning::
+
+  Ethernet will not work with this overlay if the on-chip OTP has not been
+  programmed, because the unprogrammed OTP value (all zeroes) would be read
+  and used as MAC address, but 00:00:00:00:00:00 is not a valid MAC address.
+
+However, to allow running Zephyr net related samples without programming
+irreversibly your device, by default, the STM32 Ethernet driver creates a
+locally administered MAC address from the device unique ID.
+
 USB
 ===
 
@@ -146,6 +174,17 @@ Serial Port
 NUCLEO-N657X0-Q board has 10 U(S)ARTs. The Zephyr console output is assigned to
 USART1. Default settings are 115200 8N1.
 
+STM32 OEMuROT integration
+=========================
+
+STM32CubeN6 provides an external secure bootloader called STM32 OEMuROT
+that takes advantage of the secure features of the STM32N657X0
+microcontroller. Refer to the `OEMuRoT for STM32N6 wiki article`_ for details
+on this bootloader.
+
+Integration of this bootloader in the Zephyr build environment is available
+in the external `STM32 OEMxROT module`_.
+
 Programming and Debugging
 *************************
 
@@ -176,7 +215,7 @@ To program the board, there are two options:
   and executed from there.
 - Optionally, it can also be taken advantage from the serial boot interface provided
   by the boot ROM. In that case, firmware is directly loaded in RAM and executed from
-  there. It is not retained.
+  there. It is not retained in persistent memory.
 
 Programming an application to NUCLEO-N657X0-Q
 ---------------------------------------------
@@ -199,33 +238,38 @@ First, connect the NUCLEO-N657X0-Q to your host computer using the ST-Link USB p
          .. note::
             For flashing, before powering the board, set the boot pins in the following configuration:
 
-            * BOOT0: 0
-            * BOOT1: 1
+            * BOOT0: 0 (jumper JP1 in position 1, printed on PCB)
+            * BOOT1: 1 (jumper JP2 in position 2, not-printed on PCB)
 
             After flashing, to run the application, set the boot pins in the following configuration:
 
-            * BOOT1: 0
+            * BOOT0: 0 (jumper JP1 in position 1, printed on PCB)
+            * BOOT1: 0 (jumper JP2 in position 1, printed on PCB)
 
-	    Power off and on the board again.
+            Power off and on the board again.
 
       .. group-tab:: Serial Boot Loader (USB)
 
-         Additionally, connect the NUCLEO-N657X0-Q to your host computer using the USB port.
-         In this configuration, ST-Link is used to power the board and for serial communication
-         over the Virtual COM Port.
+         Additionally to the USB/ST-Link, connect the NUCLEO-N657X0-Q to your
+         host computer using the USB port (USB/CN8).
+
+         In this configuration, ST-Link (USB connector CN10) is used to power
+         the board and for serial communication over the Virtual COM Port,
+         while USB/CN8 is used to send the Zephyr image to Boot ROM for loading
+         it in RAM and executing it.
 
          .. note::
             Before powering the board, set the boot pins in the following configuration:
 
-            * BOOT0: 1
-            * BOOT1: 0
+            * BOOT0: 1 (jumper JP1 in position 2, not-printed on PCB)
+            * BOOT1: 0 (jumper JP2 in position 1, printed on PCB)
 
          Build and load an application using ``nucleo_n657x0_q/stm32n657xx/sb`` target (you
          can also use the shortened form: ``nucleo_n657x0_q//sb``)
 
          .. zephyr-app-commands::
             :zephyr-app: samples/hello_world
-            :board: nucleo_n657x0_q
+            :board: nucleo_n657x0_q//sb
             :goals: build flash
 
 
@@ -288,6 +332,7 @@ To do so, it is advised to use Twister's hardware map feature with the following
 
 .. _NUCLEO-N657X0-Q User Manual:
    https://www.st.com/resource/en/user_manual/um3417-stm32n6-nucleo144-board-mb1940-stmicroelectronics.pdf
+
 .. _STM32N657X0 on www.st.com:
    https://www.st.com/en/microcontrollers-microprocessors/stm32n657x0.html
 
@@ -296,3 +341,9 @@ To do so, it is advised to use Twister's hardware map feature with the following
 
 .. _STM32CubeProgrammer:
    https://www.st.com/en/development-tools/stm32cubeprog.html
+
+.. _OEMuRoT for STM32N6 wiki article:
+   https://wiki.st.com/stm32mcu/wiki/Security:OEMuRoT_for_STM32N6
+
+.. _STM32 OEMxROT module:
+   https://github.com/stm32-hotspot/zephyr-stm32-oemxrot

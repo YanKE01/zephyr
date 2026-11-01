@@ -24,6 +24,7 @@
 		cpu@0 {
 			status = "disabled";
 		};
+
 		cpu@1 {
 			status = "disabled";
 		};
@@ -41,11 +42,11 @@
 
 &enet {
 	status = "okay";
+	pinctrl-0 = <&pinmux_enet>;
+	pinctrl-names = "default";
 };
 
 &enet_mac {
-	pinctrl-0 = <&pinmux_enet>;
-	pinctrl-names = "default";
 	phy-handle = <&phy>;
 	zephyr,random-mac-address;
 	phy-connection-type = "rgmii";
@@ -56,6 +57,7 @@
 	pinctrl-0 = <&pinmux_mdio>;
 	pinctrl-names = "default";
 	status = "okay";
+
 	phy: phy@0 {
 		compatible = "qca,ar8031";
 		reg = <0>;

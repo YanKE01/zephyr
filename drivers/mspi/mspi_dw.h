@@ -1,8 +1,17 @@
 /*
  * Copyright (c) 2024 Nordic Semiconductor ASA
+ * Copyright (c) 2025 Tenstorrent AI ULC
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+
+#if DT_HAS_COMPAT_STATUS_OKAY(snps_designware_ssi_v2)
+/*
+ * Later versions of the SSI have different register offsets. Define a macro
+ * to use these.
+ */
+#define SSI_VERSION_2 1
+#endif
 
 /*
  * This header is part of mspi_dw.c extracted only for clarity.
@@ -10,23 +19,25 @@
  */
 
 /* CTRLR0 - Control Register 0 */
-#define CTRLR0_SPI_FRF_MASK	GENMASK(23, 22)
+#define CTRLR0_SSI_IS_MST_BIT	BIT(31)
+#define CTRLR0_SPI_FRF_MASK	COND_CODE_1(SSI_VERSION_2, (GENMASK(22, 21)), (GENMASK(23, 22)))
 #define CTRLR0_SPI_FRF_STANDARD	0UL
 #define CTRLR0_SPI_FRF_DUAL	1UL
 #define CTRLR0_SPI_FRF_QUAD	2UL
 #define CTRLR0_SPI_FRF_OCTAL	3UL
-#define CTRLR0_TMOD_MASK	GENMASK(11, 10)
+#define CTRLR0_TMOD_MASK	COND_CODE_1(SSI_VERSION_2, (GENMASK(9, 8)), (GENMASK(11, 10)))
 #define CTRLR0_TMOD_TX_RX	0UL
 #define CTRLR0_TMOD_TX		1UL
 #define CTRLR0_TMOD_RX		2UL
 #define CTRLR0_TMOD_EEPROM	3UL
-#define CTRLR0_SCPOL_BIT	BIT(9)
-#define CTRLR0_SCPH_BIT		BIT(8)
-#define CTRLR0_FRF_MASK		GENMASK(7, 6)
+#define CTRLR0_SCPOL_BIT	COND_CODE_1(SSI_VERSION_2, (BIT(7)), (BIT(9)))
+#define CTRLR0_SCPH_BIT		COND_CODE_1(SSI_VERSION_2, (BIT(6)), (BIT(8)))
+#define CTRLR0_FRF_MASK		COND_CODE_1(SSI_VERSION_2, (GENMASK(5, 4)), (GENMASK(7, 6)))
 #define CTRLR0_FRF_SPI		0UL
 #define CTRLR0_FRF_SSP		1UL
 #define CTRLR0_FRF_MICROWIRE	2UL
-#define CTRLR0_DFS_MASK		GENMASK(4, 0)
+#define CTRLR0_DFS_MASK		COND_CODE_1(SSI_VERSION_2, (GENMASK(3, 0)), (GENMASK(4, 0)))
+#define CTRLR0_DFS32_MASK	COND_CODE_1(SSI_VERSION_2, (GENMASK(20, 16)), (0UL))
 
 /* CTRLR1- Control Register 1 */
 #define CTRLR1_NDF_MASK		GENMASK(15, 0)
@@ -162,6 +173,22 @@
 #define XIP_WRITE_CTRL_FRF_QUAD		2UL
 #define XIP_WRITE_CTRL_FRF_OCTAL	3UL
 
+/* DMACR - DMA Control Register */
+#define DMACR_ATW_MASK			GENMASK(4, 3)
+#define DMACR_ATW_1			0UL
+#define DMACR_ATW_2			1UL
+#define DMACR_ATW_4			2UL
+#define DMACR_ATW_8			3UL
+#define DMACR_IDMAE_BIT			BIT(2)
+#define DMACR_TDMAE_BIT			BIT(1)
+#define DMACR_RDMAE_BIT			BIT(0)
+
+/* DMATDLR - DMA Transmit Data Level */
+#define DMATDLR_DMATDL_MASK		GENMASK(3, 0)
+
+/* DMARDLR - DMA Receive Data Level */
+#define DMARDLR_DMARDL_MASK		GENMASK(3, 0)
+
 /* Register access helpers. */
 #define USES_AUX_REG(inst) + DT_INST_PROP(inst, aux_reg_enable)
 #define AUX_REG_INSTANCES (0 DT_INST_FOREACH_STATUS_OKAY(USES_AUX_REG))
@@ -235,3 +262,21 @@ static void reg_write(uint32_t data, const struct device *dev, uint32_t off)
 		dev_config->write(data, dev, off); \
 	}
 #endif
+
+#define USES_MEMMAP_WRITE_SUPPORT(inst) + DT_INST_PROP(inst, memmap_write_support)
+#define MEMMAP_WRITE_SUPPORT_INSTANCES \
+	(0 DT_INST_FOREACH_STATUS_OKAY(USES_MEMMAP_WRITE_SUPPORT))
+
+#define USES_CONCURRENT_MEMMAP_SUPPORT(inst) \
+	+ DT_INST_PROP(inst, concurrent_memmap_support)
+#define CONCURRENT_MEMMAP_SUPPORT_INSTANCES \
+	(0 DT_INST_FOREACH_STATUS_OKAY(USES_CONCURRENT_MEMMAP_SUPPORT))
+
+/* XIPSER only needs to be managed on cores that support concurrent memory-mapping (so master
+ * transfers keep running while memory mapping is enabled) and without mem-map-write support,
+ * hence why this register exists for IP's with concurrent mem-map enabled. However, this
+ * driver doesn't yet support the hardware concurrent mem-map feature. Regardless, we still
+ * need to use this register.
+ */
+#define SUPPORTS_XIP_SER (CONCURRENT_MEMMAP_SUPPORT_INSTANCES != 0 && \
+	MEMMAP_WRITE_SUPPORT_INSTANCES == 0)

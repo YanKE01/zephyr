@@ -2,6 +2,53 @@
 
 include_guard(GLOBAL)
 
+#[=======================================================================[.rst:
+kconfig
+*******
+
+This module contains the Kconfig configuration logic.
+
+It provides the following targets:
+
+* ``menuconfig``: Run the Kconfig menuconfig tool.
+* ``guiconfig``: Run the Kconfig guiconfig tool.
+* ``hardenconfig``: Run the Kconfig hardenconfig tool.
+* ``traceconfig``: Run the Kconfig traceconfig tool.
+
+Variables
+=========
+
+After loading this module, the following global variables are defined:
+
+.. cmake:variable:: KCONFIG_ROOT
+
+   Path to the Kconfig root file.
+   Default: ``${ZEPHYR_BASE}/Kconfig``.
+
+.. cmake:variable:: AUTOCONF_H
+
+   Path to the generated autoconf header file.
+   Default: ``${PROJECT_BINARY_DIR}/include/generated/zephyr/autoconf.h``.
+
+.. cmake:variable:: DOTCONFIG
+
+   Path to the generated .config file.
+   Default: ``${PROJECT_BINARY_DIR}/.config``.
+
+.. cmake:variable:: EXTRA_KCONFIG_TARGETS
+
+   List of extra Kconfig targets to add.
+
+.. cmake:variable:: EXTRA_KCONFIG_TARGET_COMMAND_FOR_<target>
+
+   Command to run for the extra Kconfig target.
+
+The Kconfig fragments this module reads are selected by :cmake:variable:`CONF_FILE` and
+:cmake:variable:`EXTRA_CONF_FILE`, which are resolved by the :cmake:module:`configuration_files`
+module.
+
+#]=======================================================================]
+
 include(extensions)
 include(python)
 
@@ -51,22 +98,13 @@ else()
   set(KCONFIG_ROOT ${ZEPHYR_BASE}/Kconfig)
 endif()
 
+zephyr_get(KCONFIG_VARIANT_SOURCE SYSBUILD LOCAL)
+
 if(NOT DEFINED BOARD_DEFCONFIG)
   zephyr_file(CONF_FILES ${BOARD_DIRECTORIES} DEFCONFIG BOARD_DEFCONFIG)
 endif()
 
 if(DEFINED BOARD_REVISION)
-  zephyr_build_string(config_board_string
-                      BOARD ${BOARD}
-                      BOARD_QUALIFIERS ${BOARD_QUALIFIERS}
-                      BOARD_REVISION ${BOARD_REVISION}
-  )
-  set(board_rev_file ${config_board_string})
-  if(EXISTS ${BOARD_DIR}/${board_rev_file}.conf)
-    message(DEPRECATION "Use of '${board_rev_file}.conf' is deprecated, please switch to '${board_rev_file}_defconfig'")
-    set_ifndef(BOARD_REVISION_CONFIG ${BOARD_DIR}/${board_rev_file}.conf)
-  endif()
-
   # Generate boolean board revision kconfig option
   zephyr_string(SANITIZE TOUPPER BOARD_REVISION_GEN_CONFIG_VAR "BOARD_REVISION_${BOARD_REVISION}")
 
@@ -99,15 +137,9 @@ zephyr_file(CONF_FILES ${BOARD_EXTENSION_DIRS} KCONF board_extension_conf_files 
 # separated list instead.
 string(REPLACE ";" "?" DTS_ROOT_BINDINGS "${DTS_ROOT_BINDINGS}")
 
-# Export each `ZEPHYR_<module>_MODULE_DIR` to Kconfig.
-# This allows Kconfig files to refer relative from a modules root as:
-# source "$(ZEPHYR_FOO_MODULE_DIR)/Kconfig"
+# Export each `ZEPHYR_<module>_KCONFIG` to Kconfig.
 foreach(module_name ${ZEPHYR_MODULE_NAMES})
   zephyr_string(SANITIZE TOUPPER MODULE_NAME_UPPER ${module_name})
-  list(APPEND
-       ZEPHYR_KCONFIG_MODULES_DIR
-       "ZEPHYR_${MODULE_NAME_UPPER}_MODULE_DIR=${ZEPHYR_${MODULE_NAME_UPPER}_MODULE_DIR}"
-  )
 
   if(ZEPHYR_${MODULE_NAME_UPPER}_KCONFIG)
     list(APPEND
@@ -135,12 +167,28 @@ else()
   set(_local_TOOLCHAIN_HAS_PICOLIBC n)
 endif()
 
+if(TOOLCHAIN_HAS_GLIBCXX)
+  set(_local_TOOLCHAIN_HAS_GLIBCXX y)
+else()
+  set(_local_TOOLCHAIN_HAS_GLIBCXX n)
+endif()
+
+if(TOOLCHAIN_HAS_LIBCXX)
+  set(_local_TOOLCHAIN_HAS_LIBCXX y)
+else()
+  set(_local_TOOLCHAIN_HAS_LIBCXX n)
+endif()
+
 # APP_DIR: Path to the main image (sysbuild) or synonym for APPLICATION_SOURCE_DIR (non-sysbuild)
 zephyr_get(APP_DIR VAR APP_DIR APPLICATION_SOURCE_DIR)
+
+# Load the module Kconfig file into CMake
+include("${KCONFIG_BINARY_DIR}/kconfig_module_dirs.cmake")
 
 set(COMMON_KCONFIG_ENV_SETTINGS
   PYTHON_EXECUTABLE=${PYTHON_EXECUTABLE}
   srctree=${ZEPHYR_BASE}
+  ${kconfig_env_dirs}
   KERNELVERSION=${KERNELVERSION}
   APPVERSION=${APP_VERSION_STRING}
   APP_VERSION_EXTENDED_STRING=${APP_VERSION_EXTENDED_STRING}
@@ -156,9 +204,12 @@ set(COMMON_KCONFIG_ENV_SETTINGS
   KCONFIG_BINARY_DIR=${KCONFIG_BINARY_DIR}
   APPLICATION_SOURCE_DIR=${APPLICATION_SOURCE_DIR}
   ZEPHYR_TOOLCHAIN_VARIANT=${ZEPHYR_TOOLCHAIN_VARIANT}
+  TOOLCHAIN_VARIANT_COMPILER=${TOOLCHAIN_VARIANT_COMPILER}
   TOOLCHAIN_KCONFIG_DIR=${TOOLCHAIN_KCONFIG_DIR}
   TOOLCHAIN_HAS_NEWLIB=${_local_TOOLCHAIN_HAS_NEWLIB}
   TOOLCHAIN_HAS_PICOLIBC=${_local_TOOLCHAIN_HAS_PICOLIBC}
+  TOOLCHAIN_HAS_GLIBCXX=${_local_TOOLCHAIN_HAS_GLIBCXX}
+  TOOLCHAIN_HAS_LIBCXX=${_local_TOOLCHAIN_HAS_LIBCXX}
   EDT_PICKLE=${EDT_PICKLE}
   # Export all Zephyr modules to Kconfig
   ${ZEPHYR_KCONFIG_MODULES_DIR}
@@ -193,29 +244,56 @@ set(EXTRA_KCONFIG_TARGET_COMMAND_FOR_hardenconfig
   ${ZEPHYR_BASE}/scripts/kconfig/hardenconfig.py
   )
 
-set_ifndef(KCONFIG_TARGETS menuconfig guiconfig hardenconfig)
+set(EXTRA_KCONFIG_TARGET_COMMAND_FOR_traceconfig
+  ${ZEPHYR_BASE}/scripts/kconfig/traceconfig.py
+  ${DOTCONFIG}
+  ${PROJECT_BINARY_DIR}/kconfig-trace.md
+  )
 
-foreach(kconfig_target
-    ${KCONFIG_TARGETS}
-    ${EXTRA_KCONFIG_TARGETS}
-    )
-  add_custom_target(
-    ${kconfig_target}
-    ${CMAKE_COMMAND} -E env
-    ZEPHYR_BASE=${ZEPHYR_BASE}
-    ${COMMON_KCONFIG_ENV_SETTINGS}
-    "SHIELD_AS_LIST=${SHIELD_AS_LIST_ESCAPED}"
-    DTS_POST_CPP=${DTS_POST_CPP}
-    DTS_ROOT_BINDINGS=${DTS_ROOT_BINDINGS}
-    ${PTY_INTERFACE}
-    ${PYTHON_EXECUTABLE}
-    ${EXTRA_KCONFIG_TARGET_COMMAND_FOR_${kconfig_target}}
-    ${KCONFIG_ROOT}
-    WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/kconfig
-    USES_TERMINAL
-    COMMAND_EXPAND_LISTS
-    )
-endforeach()
+zephyr_get(KCONFIG_TARGETS SYSBUILD LOCAL)
+
+if(NOT DEFINED KCONFIG_TARGETS)
+  set(KCONFIG_TARGETS menuconfig guiconfig hardenconfig traceconfig)
+endif()
+
+# Settings for the hardenconfig target, forwarded to its environment
+# below. See scripts/kconfig/hardenconfig.py.
+zephyr_get(HARDENCONFIG_PROFILE SYSBUILD LOCAL)
+zephyr_get(HARDENCONFIG_EXTRA_SOURCES SYSBUILD LOCAL)
+zephyr_get(HARDENCONFIG_JSON SYSBUILD LOCAL)
+zephyr_get(HARDENCONFIG_SHOW_ALL SYSBUILD LOCAL)
+zephyr_get(HARDENCONFIG_STRICT SYSBUILD LOCAL)
+
+# Create the Kconfig targets. Skipped if KCONFIG_VARIANT_SOURCE is set, because
+# a variant image shall not be configured independently of its source image.
+if(NOT KCONFIG_VARIANT_SOURCE)
+  foreach(kconfig_target
+      ${KCONFIG_TARGETS}
+      ${EXTRA_KCONFIG_TARGETS}
+      )
+    zephyr_custom_target_shared(
+      ${kconfig_target}
+      ${CMAKE_COMMAND} -E env
+      ZEPHYR_BASE=${ZEPHYR_BASE}
+      ${COMMON_KCONFIG_ENV_SETTINGS}
+      HARDENCONFIG_PROFILE=${HARDENCONFIG_PROFILE}
+      "HARDENCONFIG_EXTRA_SOURCES=${HARDENCONFIG_EXTRA_SOURCES}"
+      HARDENCONFIG_JSON=${HARDENCONFIG_JSON}
+      HARDENCONFIG_SHOW_ALL=${HARDENCONFIG_SHOW_ALL}
+      HARDENCONFIG_STRICT=${HARDENCONFIG_STRICT}
+      SHIELD_AS_LIST='${SHIELD_AS_LIST_ESCAPED}'
+      DTS_POST_CPP=${DTS_POST_CPP}
+      DTS_ROOT_BINDINGS=${DTS_ROOT_BINDINGS}
+      ${PTY_INTERFACE}
+      ${PYTHON_EXECUTABLE}
+      ${EXTRA_KCONFIG_TARGET_COMMAND_FOR_${kconfig_target}}
+      ${KCONFIG_ROOT}
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}/kconfig
+      USES_TERMINAL
+      )
+  endforeach()
+
+endif()
 
 # Support assigning Kconfig symbols on the command-line with CMake
 # cache variables prefixed according to the Kconfig namespace.
@@ -309,12 +387,24 @@ foreach(f ${merge_config_files})
   endif()
 endforeach()
 
+if(KCONFIG_VARIANT_SOURCE)
+  set(
+    merge_config_files
+    ${KCONFIG_VARIANT_SOURCE}
+  )
+endif()
+
 # Calculate a checksum of merge_config_files to determine if we need
-# to re-generate .config
+# to re-generate .config. DTS is also checksummed since it can affect
+# configurations via $(dt...) functions.
+set(config_checksum_files ${merge_config_files})
+if(DEFINED ZEPHYR_DTS)
+  set(config_checksum_files ${config_checksum_files};${ZEPHYR_DTS})
+endif()
 set(merge_config_files_checksum "")
-foreach(f ${merge_config_files})
+foreach(f ${config_checksum_files})
   file(MD5 ${f} checksum)
-  set(merge_config_files_checksum "${merge_config_files_checksum}${checksum}")
+  string(APPEND merge_config_files_checksum "${checksum}")
 endforeach()
 
 # Add to the checksum all the Kconfig files which were used last time
@@ -324,7 +414,7 @@ if(EXISTS ${PARSED_KCONFIG_SOURCES_TXT})
   foreach(f ${parsed_kconfig_sources_list})
     if(EXISTS ${f})
       file(MD5 ${f} checksum)
-      set(merge_kconfig_checksum "${merge_kconfig_checksum}${checksum}")
+      string(APPEND merge_kconfig_checksum "${checksum}")
     endif()
   endforeach()
 endif()
@@ -351,7 +441,10 @@ if(EXISTS ${DOTCONFIG} AND EXISTS ${merge_config_files_checksum_file})
 endif()
 
 if(CREATE_NEW_DOTCONFIG)
-  set(input_configs_flags --handwritten-input-configs)
+  if(NOT KCONFIG_VARIANT_SOURCE)
+    set(input_configs_flags --handwritten-input-configs)
+  endif()
+
   set(input_configs ${merge_config_files} ${FORCED_CONF_FILE})
   build_info(kconfig files PATH ${input_configs})
 else()
@@ -367,12 +460,18 @@ if(NOT EXISTS ${autoconf_h_path})
   file(MAKE_DIRECTORY ${autoconf_h_path})
 endif()
 
+zephyr_get(KCONFIG_WARNING_AS_ERROR)
+if(KCONFIG_WARNING_AS_ERROR)
+  set(kconfig_py_flags --warning-as-error)
+endif()
+
 execute_process(
   COMMAND ${CMAKE_COMMAND} -E env
   ${COMMON_KCONFIG_ENV_SETTINGS}
   SHIELD_AS_LIST=${SHIELD_AS_LIST_ESCAPED_COMMAND}
   ${PYTHON_EXECUTABLE}
   ${ZEPHYR_BASE}/scripts/kconfig/kconfig.py
+  ${kconfig_py_flags}
   --zephyr-base=${ZEPHYR_BASE}
   ${input_configs_flags}
   ${KCONFIG_ROOT}
@@ -392,24 +491,22 @@ endif()
 # Read out the list of 'Kconfig' sources that were used by the engine.
 file(STRINGS ${PARSED_KCONFIG_SOURCES_TXT} parsed_kconfig_sources_list ENCODING UTF-8)
 
-# Recalculate the Kconfig files' checksum, since the list of files may have
-# changed.
-set(merge_kconfig_checksum "")
-foreach(f ${parsed_kconfig_sources_list})
-  file(MD5 ${f} checksum)
-  set(merge_kconfig_checksum "${merge_kconfig_checksum}${checksum}")
-endforeach()
-
 # Force CMAKE configure when the Kconfig sources or configuration files changes.
-foreach(kconfig_input
-    ${merge_config_files}
-    ${DOTCONFIG}
-    ${parsed_kconfig_sources_list}
-    )
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${kconfig_input})
-endforeach()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${merge_config_files}
+  ${DOTCONFIG}
+  ${parsed_kconfig_sources_list}
+)
 
 if(CREATE_NEW_DOTCONFIG)
+  # Recalculate the Kconfig files' checksum, since the list of files may have
+  # changed.
+  set(merge_kconfig_checksum "")
+  foreach(f ${parsed_kconfig_sources_list})
+    file(MD5 ${f} checksum)
+    string(APPEND merge_kconfig_checksum "${checksum}")
+  endforeach()
+
   # Write the new configuration fragment checksum. Only do this if kconfig.py
   # succeeds, to avoid marking zephyr/.config as up-to-date when it hasn't been
   # regenerated.

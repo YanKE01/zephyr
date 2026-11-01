@@ -5,6 +5,7 @@
  */
 
 #include <soc.h>
+#include <stm32_bitops.h>
 
 #include <stm32_ll_bus.h>
 #include <stm32_ll_pwr.h>
@@ -36,23 +37,27 @@ int enabled_clock(uint32_t src_clk)
 	    (src_clk == STM32_SRC_PLL3_R && IS_ENABLED(STM32_PLL3_R_ENABLED)) ||
 	    (src_clk == STM32_SRC_PLL4_P && IS_ENABLED(STM32_PLL4_P_ENABLED)) ||
 	    (src_clk == STM32_SRC_PLL4_Q && IS_ENABLED(STM32_PLL4_Q_ENABLED)) ||
-	    (src_clk == STM32_SRC_PLL4_R && IS_ENABLED(STM32_PLL4_R_ENABLED))) {
+	    (src_clk == STM32_SRC_PLL4_R && IS_ENABLED(STM32_PLL4_R_ENABLED)) ||
+	    (src_clk == STM32_SRC_TIMPCLK1) ||
+	    (src_clk == STM32_SRC_TIMPCLK2) ||
+	    (src_clk == STM32_SRC_TIMPCLK6)) {
 		return 0;
 	}
 
 	return -ENOTSUP;
 }
 
+static int stm32_clock_control_configure(const struct device *dev,
+					 clock_control_subsys_t sub_system, void *data);
+
 static int stm32_clock_control_on(const struct device *dev, clock_control_subsys_t sub_system)
 {
 	struct stm32_pclken *pclken = (struct stm32_pclken *)sub_system;
 	volatile int temp;
 
-	ARG_UNUSED(dev);
-
 	if (!IN_RANGE(pclken->bus, STM32_PERIPH_BUS_MIN, STM32_PERIPH_BUS_MAX)) {
-		/* Attempt to toggle a wrong periph clock bit */
-		return -ENOTSUP;
+		/* Source selection entry: apply it instead of toggling a gate */
+		return stm32_clock_control_configure(dev, sub_system, NULL);
 	}
 
 	/* STM32MP13 has EN_SET registers - no need for RMW */
@@ -90,6 +95,9 @@ static int stm32_clock_control_configure(const struct device *dev,
 					 void *data)
 {
 	struct stm32_pclken *pclken = (struct stm32_pclken *)(sub_system);
+	uint32_t enr = pclken->enr;
+	uint32_t reg = STM32_DT_CLKSEL_REG_GET(enr);
+	uint32_t shift = STM32_DT_CLKSEL_SHIFT_GET(enr);
 	int err;
 
 	ARG_UNUSED(dev);
@@ -101,20 +109,76 @@ static int stm32_clock_control_configure(const struct device *dev,
 		return err;
 	}
 
-	sys_clear_bits(DT_REG_ADDR(DT_NODELABEL(rcc)) + STM32_DT_CLKSEL_REG_GET(pclken->enr),
-		       STM32_DT_CLKSEL_MASK_GET(pclken->enr) <<
-			STM32_DT_CLKSEL_SHIFT_GET(pclken->enr));
-	sys_set_bits(DT_REG_ADDR(DT_NODELABEL(rcc)) + STM32_DT_CLKSEL_REG_GET(pclken->enr),
-		     STM32_DT_CLKSEL_VAL_GET(pclken->enr) <<
-			STM32_DT_CLKSEL_SHIFT_GET(pclken->enr));
+	if (pclken->enr == NO_SEL) {
+		/* Domain clock is fixed. Nothing to set. Exit */
+		return 0;
+	}
+
+	stm32_reg_modify_bits((uint32_t *)(DT_REG_ADDR(DT_NODELABEL(rcc)) + reg),
+			      STM32_DT_CLKSEL_MASK_GET(enr) << shift,
+			      STM32_DT_CLKSEL_VAL_GET(enr) << shift);
 
 	return 0;
+}
+
+static int stm32_clock_control_get_eth_rate(uint32_t eth_source, uint32_t *rate)
+{
+	uint32_t eth_rate = LL_RCC_GetETHClockFreq(eth_source);
+
+	if (eth_rate == LL_RCC_PERIPH_FREQUENCY_NO) {
+		return -EIO;
+	}
+
+	*rate = eth_rate;
+
+	return 0;
+}
+
+/*
+ * Rates of the domain clocks of the ethernet controllers: the kernel clock
+ * selectors and the PTP dividers, which divide the kernel clock by their
+ * value plus one, all live in ETH12CKSELR.
+ */
+static int stm32_clock_control_get_eth_domain_rate(uint32_t enr, uint32_t *rate)
+{
+	uint32_t ptp_div;
+	int ret;
+
+	if (STM32_DT_CLKSEL_REG_GET(enr) != ETH12CKSELR_REG) {
+		return -ENOTSUP;
+	}
+
+	switch (STM32_DT_CLKSEL_SHIFT_GET(enr)) {
+	case RCC_ETH12CKSELR_ETH1SRC_Pos:
+		return stm32_clock_control_get_eth_rate(LL_RCC_ETH1_CLKSOURCE, rate);
+	case RCC_ETH12CKSELR_ETH2SRC_Pos:
+		return stm32_clock_control_get_eth_rate(LL_RCC_ETH2_CLKSOURCE, rate);
+	case RCC_ETH12CKSELR_ETH1PTPDIV_Pos:
+		ret = stm32_clock_control_get_eth_rate(LL_RCC_ETH1_CLKSOURCE, rate);
+		ptp_div = READ_BIT(RCC->ETH12CKSELR, RCC_ETH12CKSELR_ETH1PTPDIV) >>
+			  RCC_ETH12CKSELR_ETH1PTPDIV_Pos;
+		break;
+	case RCC_ETH12CKSELR_ETH2PTPDIV_Pos:
+		ret = stm32_clock_control_get_eth_rate(LL_RCC_ETH2_CLKSOURCE, rate);
+		ptp_div = READ_BIT(RCC->ETH12CKSELR, RCC_ETH12CKSELR_ETH2PTPDIV) >>
+			  RCC_ETH12CKSELR_ETH2PTPDIV_Pos;
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	if (ret == 0) {
+		*rate /= ptp_div + 1;
+	}
+
+	return ret;
 }
 
 static int stm32_clock_control_get_subsys_rate(const struct device *dev,
 					       clock_control_subsys_t sub_system, uint32_t *rate)
 {
 	struct stm32_pclken *pclken = (struct stm32_pclken *)sub_system;
+	LL_RCC_ClocksTypeDef clocks;
 
 	ARG_UNUSED(dev);
 
@@ -124,16 +188,61 @@ static int stm32_clock_control_get_subsys_rate(const struct device *dev,
 		case LL_APB1_GRP1_PERIPH_UART4:
 			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_UART4_CLKSOURCE);
 			break;
+		case LL_APB1_GRP1_PERIPH_USART3:
+		case LL_APB1_GRP1_PERIPH_UART5:
+			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_USART35_CLKSOURCE);
+			break;
+		case LL_APB1_GRP1_PERIPH_UART7:
+		case LL_APB1_GRP1_PERIPH_UART8:
+			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_UART78_CLKSOURCE);
+			break;
 		case LL_APB1_GRP1_PERIPH_I2C1:
 		case LL_APB1_GRP1_PERIPH_I2C2:
 			*rate = LL_RCC_GetI2CClockFreq(LL_RCC_I2C12_CLKSOURCE);
 			break;
+		case LL_APB1_GRP1_PERIPH_SPI2:
+			*rate = LL_RCC_GetSPIClockFreq(LL_RCC_SPI23_CLKSOURCE);
+			break;
+		case LL_APB1_GRP1_PERIPH_SPI3:
+			*rate = LL_RCC_GetSPIClockFreq(LL_RCC_SPI23_CLKSOURCE);
+			break;
+		default:
+			return -ENOTSUP;
+		}
+		break;
+	case STM32_CLOCK_BUS_APB2:
+		switch (pclken->enr) {
+		case LL_APB2_GRP1_PERIPH_SPI1:
+			*rate = LL_RCC_GetSPIClockFreq(LL_RCC_SPI1_CLKSOURCE);
+			break;
+		case LL_APB2_GRP1_PERIPH_USART6:
+			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_USART6_CLKSOURCE);
+			break;
+		default:
+			return -ENOTSUP;
+		}
+		break;
+	case STM32_CLOCK_BUS_APB5:
+		switch (pclken->enr) {
+		case LL_APB5_GRP1_PERIPH_BSEC: {
+			LL_RCC_ClocksTypeDef rcc_clocks;
+
+			LL_RCC_GetSystemClocksFreq(&rcc_clocks);
+			*rate = rcc_clocks.PCLK5_Frequency;
+			break;
+		}
 		default:
 			return -ENOTSUP;
 		}
 		break;
 	case STM32_CLOCK_BUS_APB6:
 		switch (pclken->enr) {
+		case LL_APB6_GRP1_PERIPH_USART1:
+			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_USART1_CLKSOURCE);
+			break;
+		case LL_APB6_GRP1_PERIPH_USART2:
+			*rate = LL_RCC_GetUARTClockFreq(LL_RCC_USART2_CLKSOURCE);
+			break;
 		case LL_APB6_GRP1_PERIPH_I2C3:
 			*rate = LL_RCC_GetI2CClockFreq(LL_RCC_I2C3_CLKSOURCE);
 			break;
@@ -143,9 +252,42 @@ static int stm32_clock_control_get_subsys_rate(const struct device *dev,
 		case LL_APB6_GRP1_PERIPH_I2C5:
 			*rate = LL_RCC_GetI2CClockFreq(LL_RCC_I2C5_CLKSOURCE);
 			break;
+		case LL_APB6_GRP1_PERIPH_SPI4:
+			*rate = LL_RCC_GetSPIClockFreq(LL_RCC_SPI4_CLKSOURCE);
+			break;
+		case LL_APB6_GRP1_PERIPH_SPI5:
+			*rate = LL_RCC_GetSPIClockFreq(LL_RCC_SPI5_CLKSOURCE);
+			break;
 		default:
 			return -ENOTSUP;
 		}
+		break;
+	case STM32_CLOCK_BUS_AHB6:
+		switch (pclken->enr) {
+		case LL_AHB6_GRP1_PERIPH_ETH1MAC:
+		case LL_AHB6_GRP1_PERIPH_ETH2MAC:
+			LL_RCC_GetSystemClocksFreq(&clocks);
+			*rate = clocks.HCLK6_Frequency;
+			break;
+		case LL_AHB6_GRP1_PERIPH_ETH1CK:
+			return stm32_clock_control_get_eth_rate(LL_RCC_ETH1_CLKSOURCE, rate);
+		case LL_AHB6_GRP1_PERIPH_ETH2CK:
+			return stm32_clock_control_get_eth_rate(LL_RCC_ETH2_CLKSOURCE, rate);
+		default:
+			return -ENOTSUP;
+		}
+		break;
+	case STM32_SRC_PLL3_Q:
+	case STM32_SRC_PLL4_P:
+		return stm32_clock_control_get_eth_domain_rate(pclken->enr, rate);
+	case STM32_SRC_TIMPCLK1:
+		*rate = LL_RCC_GetTIMGClockFreq(LL_RCC_TIMG1PRES);
+		break;
+	case STM32_SRC_TIMPCLK2:
+		*rate = LL_RCC_GetTIMGClockFreq(LL_RCC_TIMG2PRES);
+		break;
+	case STM32_SRC_TIMPCLK6:
+		*rate = LL_RCC_GetTIMGClockFreq(LL_RCC_TIMG3PRES);
 		break;
 	default:
 		return -ENOTSUP;
@@ -236,19 +378,20 @@ static int stm32_clock_control_init(const struct device *dev)
 	/* while active.*/
 
 	LL_RCC_SetMPUClkSource(LL_RCC_MPU_CLKSOURCE_HSE);
-	while ((READ_BIT(RCC->MPCKSELR, RCC_MPCKSELR_MPUSRCRDY) != RCC_MPCKSELR_MPUSRCRDY)) {
+	while (stm32_reg_read_bits(&RCC->MPCKSELR, RCC_MPCKSELR_MPUSRCRDY) !=
+	       RCC_MPCKSELR_MPUSRCRDY) {
 	}
 
-	CLEAR_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVPEN);
-	while (READ_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVPEN) == RCC_PLL1CR_DIVPEN) {
+	stm32_reg_clear_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVPEN);
+	while (stm32_reg_read_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVPEN) == RCC_PLL1CR_DIVPEN) {
 	};
 
-	CLEAR_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVQEN);
-	while (READ_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVQEN) == RCC_PLL1CR_DIVQEN) {
+	stm32_reg_clear_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVQEN);
+	while (stm32_reg_read_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVQEN) == RCC_PLL1CR_DIVQEN) {
 	};
 
-	CLEAR_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVREN);
-	while (READ_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVREN) == RCC_PLL1CR_DIVREN) {
+	stm32_reg_clear_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVREN);
+	while (stm32_reg_read_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVREN) == RCC_PLL1CR_DIVREN) {
 	};
 
 	uint32_t pll1_n = DT_PROP(DT_NODELABEL(pll1), mul_n);
@@ -273,8 +416,8 @@ static int stm32_clock_control_init(const struct device *dev)
 	while (LL_RCC_PLL1_IsReady() != 1) {
 	}
 
-	SET_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVPEN);
-	while (READ_BIT(RCC->PLL1CR, RCC_PLL1CR_DIVPEN) != RCC_PLL1CR_DIVPEN) {
+	stm32_reg_set_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVPEN);
+	while (stm32_reg_read_bits(&RCC->PLL1CR, RCC_PLL1CR_DIVPEN) != RCC_PLL1CR_DIVPEN) {
 	};
 
 	LL_RCC_SetMPUClkSource(LL_RCC_MPU_CLKSOURCE_PLL1);

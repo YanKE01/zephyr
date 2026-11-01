@@ -14,8 +14,8 @@
  * should be include instead <sys/util_internal.h>
  */
 
-#ifndef ZEPHYR_INCLUDE_SYS_UTIL_MACROS_H_
-#define ZEPHYR_INCLUDE_SYS_UTIL_MACROS_H_
+#ifndef ZEPHYR_INCLUDE_SYS_UTIL_MACRO_H_
+#define ZEPHYR_INCLUDE_SYS_UTIL_MACRO_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,17 +49,23 @@ extern "C" {
 #define BIT64(_n) (1ULL << (_n))
 
 /**
- * @brief Set or clear a bit depending on a boolean value
+ * @brief Set or clear a bit depending on a boolean value in an unsigned integer
  *
- * The argument @p var is a variable whose value is written to as a
- * side effect.
+ * The argument @p var is a variable whose value is written to as a side effect.
  *
  * @param var Variable to be altered
  * @param bit Bit number
  * @param set if 0, clears @p bit in @p var; any other value sets @p bit
  */
-#define WRITE_BIT(var, bit, set) \
-	((var) = (set) ? ((var) | BIT(bit)) : ((var) & ~BIT(bit)))
+#define WRITE_BIT(var, bit, set)                                                                   \
+	do {                                                                                       \
+		__typeof__(var) __mask = ((__typeof__(var))1U << (bit));                           \
+		if (set) {                                                                         \
+			(var) |= __mask;                                                           \
+		} else {                                                                           \
+			(var) &= ~__mask;                                                          \
+		}                                                                                  \
+	} while (0)
 
 /**
  * @brief Bit mask with bits 0 through <tt>n-1</tt> (inclusive) set,
@@ -218,6 +224,31 @@ extern "C" {
  */
 #define COND_CODE_0(_flag, _if_0_code, _else_code) \
 	Z_COND_CODE_0(_flag, _if_0_code, _else_code)
+
+/**
+ * @brief Evaluate a list of COND_CODE_1-style cases.
+ *
+ * Each case consists of a flag and a value wrapped in parentheses. The
+ * arguments are processed from left to right until a flag expands to the
+ * literal 1, in which case the corresponding value is expanded. If no flags
+ * expand to 1, the last argument (which must also be wrapped in parentheses)
+ * is used as the default value. Supplying only the default argument is also
+ * supported.
+ *
+ * Example:
+ *
+ *     int foo = COND_CASE_1(CONFIG_SOME_BOOL, (handle_a()),
+ *                           CONFIG_SOME_OTHER_BOOL, (handle_b()),
+ *                           (handle_default()));
+ *
+ * Supports up to 16 flag/value pairs before the default.
+ *
+ * @param ... Flag/value pairs followed by the default value. Each value must
+ *            be provided in parentheses to avoid comma handling issues.
+ * @see COND_CODE_1()
+ */
+#define COND_CASE_1(...) \
+	Z_COND_CASE_1(__VA_ARGS__)
 
 /**
  * @brief Insert code if @p _flag is defined and equals 1.
@@ -383,22 +414,32 @@ extern "C" {
 /**
  * @brief Get nth argument from argument list.
  *
- * @param N Argument index to fetch. Counter from 1.
+ * @param N Argument index to fetch. Counter from 1. N is valid if N < 64.
  * @param ... Variable list of arguments from which one argument is returned.
  *
  * @return Nth argument.
  */
-#define GET_ARG_N(N, ...) Z_GET_ARG_##N(__VA_ARGS__)
+#define GET_ARG_N(N, ...) UTIL_CAT(Z_GET_ARG_, N)(__VA_ARGS__)
 
 /**
  * @brief Strips n first arguments from the argument list.
  *
- * @param N Number of arguments to discard.
+ * @param N Number of arguments to discard. N is valid if N < 64.
  * @param ... Variable list of arguments.
  *
  * @return argument list without N first arguments.
  */
-#define GET_ARGS_LESS_N(N, ...) Z_GET_ARGS_LESS_##N(__VA_ARGS__)
+#define GET_ARGS_LESS_N(N, ...) UTIL_CAT(Z_GET_ARGS_LESS_, N)(__VA_ARGS__)
+
+/**
+ * @brief Get the first N arguments from the argument list.
+ *
+ * @param N Number of arguments to take. N is valid if N < 64.
+ * @param ... Variable list of arguments.
+ *
+ * @return argument list only contains first N arguments.
+ */
+#define GET_ARGS_FIRST_N(N, ...) UTIL_CAT(Z_GET_ARGS_FIRST_, N)(__VA_ARGS__)
 
 /**
  * @brief Like <tt>a || b</tt>, but does evaluation and
@@ -657,6 +698,25 @@ extern "C" {
 	Z_FOR_EACH_ENGINE(Z_FOR_EACH_EXEC, (,), Z_BYPASS, _, __VA_ARGS__)
 
 /**
+ * @brief Mark each argument as unused to suppress compiler warnings.
+ *
+ * Applies ARG_UNUSED() to every element of the argument list.
+ *
+ * Example:
+ *
+ *     ARGS_UNUSED(p1, p2, p3);
+ *
+ * This expands to:
+ *
+ *     (void)(p1);
+ *     (void)(p2);
+ *     (void)(p3);
+ *
+ * @param ... List of variables to mark as unused.
+ */
+#define ARGS_UNUSED(...) FOR_EACH(ARG_UNUSED, (;), __VA_ARGS__)
+
+/**
  * @brief Number of arguments in the variable arguments list minus one.
  *
  * @note Supports up to 64 arguments.
@@ -704,7 +764,7 @@ extern "C" {
  * @return The results of expanding the macro on each argument, all pasted
  *         together
  */
-#define MACRO_MAP_CAT(...) MACRO_MAP_CAT_(__VA_ARGS__)
+#define MACRO_MAP_CAT(...) Z_MACRO_MAP_CAT_(__VA_ARGS__)
 
 /**
  * @brief Mapping macro that pastes a fixed number of results together
@@ -719,7 +779,7 @@ extern "C" {
  * @return The results of expanding the macro on each argument, all pasted
  *         together
  */
-#define MACRO_MAP_CAT_N(N, ...) MACRO_MAP_CAT_N_(N, __VA_ARGS__)
+#define MACRO_MAP_CAT_N(N, ...) Z_MACRO_MAP_CAT_N_(N, __VA_ARGS__)
 
 /**
  * @}
@@ -729,4 +789,4 @@ extern "C" {
 }
 #endif
 
-#endif /* ZEPHYR_INCLUDE_SYS_UTIL_MACROS_H_ */
+#endif /* ZEPHYR_INCLUDE_SYS_UTIL_MACRO_H_ */

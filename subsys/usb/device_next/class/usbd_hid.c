@@ -57,6 +57,7 @@ struct usbd_hid_descriptor {
 };
 
 enum {
+	HID_DEV_CLASS_INITIALIZED,
 	HID_DEV_CLASS_ENABLED,
 };
 
@@ -66,8 +67,8 @@ struct hid_device_config {
 	struct net_buf_pool *pool_out;
 	struct net_buf_pool *pool_in;
 	struct usbd_desc_node *const if_desc_data;
-	const struct usb_desc_header **fs_desc;
-	const struct usb_desc_header **hs_desc;
+	const struct usb_desc_header *const *fs_desc;
+	const struct usb_desc_header *const *hs_desc;
 };
 
 struct hid_device_data {
@@ -84,18 +85,28 @@ struct hid_device_data {
 
 static inline uint8_t hid_get_in_ep(struct usbd_class_data *const c_data)
 {
+	struct usbd_context *uds_ctx = usbd_class_get_ctx(c_data);
 	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
 	struct usbd_hid_descriptor *desc = dcfg->desc;
+
+	if (USBD_SUPPORTS_HIGH_SPEED && usbd_bus_speed(uds_ctx) == USBD_SPEED_HS) {
+		return desc->hs_in_ep.bEndpointAddress;
+	}
 
 	return desc->in_ep.bEndpointAddress;
 }
 
 static inline uint8_t hid_get_out_ep(struct usbd_class_data *const c_data)
 {
+	struct usbd_context *uds_ctx = usbd_class_get_ctx(c_data);
 	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
 	struct usbd_hid_descriptor *desc = dcfg->desc;
+
+	if (USBD_SUPPORTS_HIGH_SPEED && usbd_bus_speed(uds_ctx) == USBD_SPEED_HS) {
+		return desc->hs_out_ep.bEndpointAddress;
+	}
 
 	return desc->out_ep.bEndpointAddress;
 }
@@ -132,6 +143,20 @@ static int usbd_hid_request(struct usbd_class_data *const c_data,
 	return usbd_ep_buf_free(uds_ctx, buf);
 }
 
+static struct net_buf *hid_cth_response(struct usbd_class_data *const c_data,
+					const void *data, const size_t len)
+{
+	struct net_buf *buf;
+
+	buf = usbd_ep_ctrl_data_in_alloc(usbd_class_get_ctx(c_data), len);
+	if (buf == NULL) {
+		return NULL;
+	}
+
+	net_buf_add_mem(buf, data, len);
+	return buf;
+}
+
 static int handle_set_idle(const struct device *dev,
 			   const struct usb_setup_packet *const setup)
 {
@@ -139,6 +164,7 @@ static int handle_set_idle(const struct device *dev,
 	const uint8_t id = HID_GET_IDLE_ID(setup->wValue);
 	struct hid_device_data *const ddata = dev->data;
 	const struct hid_device_ops *ops = ddata->ops;
+	int ret = 0;
 
 	if (id == 0U) {
 		/* Only the common idle rate is stored. */
@@ -148,35 +174,33 @@ static int handle_set_idle(const struct device *dev,
 	if (ops->set_idle != NULL) {
 		ops->set_idle(dev, id, duration * 4UL);
 	} else {
-		errno = -ENOTSUP;
+		ret = -ENOTSUP;
 	}
 
 	LOG_DBG("Set Idle, Report ID %u Duration %u", id, duration);
 
-	return 0;
+	return ret;
 }
 
-static int handle_get_idle(const struct device *dev,
-			   const struct usb_setup_packet *const setup,
-			   struct net_buf *const buf)
+static struct net_buf *handle_get_idle(struct usbd_class_data *const c_data,
+				       const struct usb_setup_packet *const setup)
 {
+	const struct device *dev = usbd_class_get_private(c_data);
 	const uint8_t id = HID_GET_IDLE_ID(setup->wValue);
 	struct hid_device_data *const ddata = dev->data;
 	const struct hid_device_ops *ops = ddata->ops;
-	uint32_t duration;
+	uint8_t duration;
 
 	if (setup->wLength != 1U) {
-		errno = -ENOTSUP;
-		return 0;
+		return NULL;
 	}
 
 	/*
-	 * There is no Get Idle callback in the leagacy API, do not issue a
+	 * There is no Get Idle callback in the legacy API, do not issue a
 	 * protocol error if no callback is provided but ID is 0.
 	 */
 	if (id != 0U && ops->get_idle == NULL) {
-		errno = -ENOTSUP;
-		return 0;
+		return NULL;
 	}
 
 	if (id == 0U) {
@@ -187,7 +211,31 @@ static int handle_get_idle(const struct device *dev,
 	}
 
 	LOG_DBG("Get Idle, Report ID %u Duration %u", id, duration);
-	net_buf_add_u8(buf, duration);
+	return hid_cth_response(c_data, &duration, 1);
+}
+
+static int verify_set_report(const struct device *dev,
+			     const struct usb_setup_packet *const setup)
+{
+	const uint8_t type = HID_GET_REPORT_TYPE(setup->wValue);
+	const uint8_t id = HID_GET_REPORT_ID(setup->wValue);
+	struct hid_device_data *const ddata = dev->data;
+	const struct hid_device_ops *ops = ddata->ops;
+
+	if (ops->set_report == NULL) {
+		LOG_DBG("Set Report not supported");
+		return -ENOTSUP;
+	}
+
+	if ((type != HID_REPORT_TYPE_INPUT) &&
+	    (type != HID_REPORT_TYPE_OUTPUT) &&
+	    (type != HID_REPORT_TYPE_FEATURE)) {
+		return -EINVAL;
+	}
+
+	if (ops->verify_set_report != NULL) {
+		return ops->verify_set_report(dev, type, id, setup->wLength);
+	}
 
 	return 0;
 }
@@ -200,72 +248,86 @@ static int handle_set_report(const struct device *dev,
 	const uint8_t id = HID_GET_REPORT_ID(setup->wValue);
 	struct hid_device_data *const ddata = dev->data;
 	const struct hid_device_ops *ops = ddata->ops;
+	int ret;
 
 	if (ops->set_report == NULL) {
-		errno = -ENOTSUP;
 		LOG_DBG("Set Report not supported");
-		return 0;
+		return -ENOTSUP;
 	}
 
 	switch (type) {
 	case HID_REPORT_TYPE_INPUT:
 		LOG_DBG("Set Report, Input Report ID %u", id);
-		errno = ops->set_report(dev, type, id, buf->len, buf->data);
+		ret = ops->set_report(dev, type, id, buf->len, buf->data);
 		break;
 	case HID_REPORT_TYPE_OUTPUT:
 		LOG_DBG("Set Report, Output Report ID %u", id);
-		errno = ops->set_report(dev, type, id, buf->len, buf->data);
+		ret = ops->set_report(dev, type, id, buf->len, buf->data);
 		break;
 	case HID_REPORT_TYPE_FEATURE:
 		LOG_DBG("Set Report, Feature Report ID %u", id);
-		errno = ops->set_report(dev, type, id, buf->len, buf->data);
+		ret = ops->set_report(dev, type, id, buf->len, buf->data);
 		break;
 	default:
-		errno = -ENOTSUP;
+		ret = -ENOTSUP;
 		break;
 	}
 
-	return 0;
+	return ret;
 }
 
-static int handle_get_report(const struct device *dev,
-			     const struct usb_setup_packet *const setup,
-			     struct net_buf *const buf)
+static struct net_buf *handle_get_report(struct usbd_class_data *const c_data,
+					 const struct usb_setup_packet *const setup)
 {
+	const struct device *dev = usbd_class_get_private(c_data);
 	const uint8_t type = HID_GET_REPORT_TYPE(setup->wValue);
 	const uint8_t id = HID_GET_REPORT_ID(setup->wValue);
 	struct hid_device_data *const ddata = dev->data;
 	const struct hid_device_ops *ops = ddata->ops;
-	const size_t size = setup->wLength;
-	int ret = 0;
+	struct net_buf *buf;
+	size_t len = setup->wLength;
+	int ret;
 
 	switch (type) {
 	case HID_REPORT_TYPE_INPUT:
 		LOG_DBG("Get Report, Input Report ID %u", id);
-		ret = ops->get_report(dev, type, id, size, buf->data);
 		break;
 	case HID_REPORT_TYPE_OUTPUT:
 		LOG_DBG("Get Report, Output Report ID %u", id);
-		ret = ops->get_report(dev, type, id, size, buf->data);
 		break;
 	case HID_REPORT_TYPE_FEATURE:
 		LOG_DBG("Get Report, Feature Report ID %u", id);
-		ret = ops->get_report(dev, type, id, size, buf->data);
 		break;
 	default:
-		errno = -ENOTSUP;
-		break;
+		return NULL;
 	}
+
+	if (ops->get_report_size) {
+		ret = ops->get_report_size(dev, type, id);
+
+		if (ret <= 0) {
+			return NULL;
+		}
+
+		len = MIN(setup->wLength, ret);
+	}
+
+	buf = usbd_ep_ctrl_data_in_alloc(usbd_class_get_ctx(c_data), len);
+	if (buf == NULL) {
+		return NULL;
+	}
+
+	ret = ops->get_report(dev, type, id, len, buf->data);
 
 	if (ret > 0) {
 		__ASSERT(ret <= net_buf_tailroom(buf),
 			 "Buffer overflow in the HID driver");
 		net_buf_add(buf, MIN(net_buf_tailroom(buf), ret));
 	} else {
-		errno = ret ? ret : -ENOTSUP;
+		net_buf_drop(&buf);
 	}
 
-	return 0;
+	return buf;
 }
 
 static int handle_set_protocol(const struct device *dev,
@@ -279,8 +341,7 @@ static int handle_set_protocol(const struct device *dev,
 
 	if (protocol > HID_PROTOCOL_REPORT) {
 		/* Can only be 0 (Boot Protocol) or 1 (Report Protocol). */
-		errno = -ENOTSUP;
-		return 0;
+		return -ENOTSUP;
 	}
 
 	if (desc->if0.bInterfaceSubClass == 0) {
@@ -288,8 +349,7 @@ static int handle_set_protocol(const struct device *dev,
 		 * The device does not support the boot protocol and we will
 		 * not notify it.
 		 */
-		errno = -ENOTSUP;
-		return 0;
+		return -ENOTSUP;
 	}
 
 	LOG_DBG("Set Protocol: %s", protocol ? "Report" : "Boot");
@@ -305,60 +365,57 @@ static int handle_set_protocol(const struct device *dev,
 	return 0;
 }
 
-static int handle_get_protocol(const struct device *dev,
-			       const struct usb_setup_packet *const setup,
-			       struct net_buf *const buf)
+static struct net_buf *handle_get_protocol(struct usbd_class_data *const c_data,
+					   const struct usb_setup_packet *const setup)
 {
+	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
 	struct hid_device_data *const ddata = dev->data;
 	struct usbd_hid_descriptor *const desc = dcfg->desc;
 
 	if (setup->wValue != 0 || setup->wLength != 1) {
-		errno = -ENOTSUP;
-		return 0;
+		return NULL;
 	}
 
 	if (desc->if0.bInterfaceSubClass == 0) {
 		/* The device does not support the boot protocol */
-		errno = -ENOTSUP;
-		return 0;
+		return NULL;
 	}
 
 	LOG_DBG("Get Protocol: %s", ddata->protocol ? "Report" : "Boot");
-	net_buf_add_u8(buf, ddata->protocol);
-
-	return 0;
+	return hid_cth_response(c_data, &ddata->protocol, 1);
 }
 
-static int handle_get_descriptor(const struct device *dev,
-				 const struct usb_setup_packet *const setup,
-				 struct net_buf *const buf)
+static struct net_buf *handle_get_descriptor(struct usbd_class_data *const c_data,
+					     const struct usb_setup_packet *const setup)
 {
+	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
 	struct hid_device_data *const ddata = dev->data;
 	uint8_t desc_type = USB_GET_DESCRIPTOR_TYPE(setup->wValue);
 	uint8_t desc_idx = USB_GET_DESCRIPTOR_INDEX(setup->wValue);
 	struct usbd_hid_descriptor *const desc = dcfg->desc;
+	struct net_buf *buf;
 
 	switch (desc_type) {
 	case USB_DESC_HID_REPORT:
 		LOG_DBG("Get descriptor report");
-		net_buf_add_mem(buf, ddata->rdesc, MIN(ddata->rsize, setup->wLength));
+		buf = hid_cth_response(c_data, ddata->rdesc, MIN(ddata->rsize, setup->wLength));
 		break;
 	case USB_DESC_HID:
 		LOG_DBG("Get descriptor HID");
-		net_buf_add_mem(buf, &desc->hid, MIN(desc->hid.bLength, setup->wLength));
+		buf = hid_cth_response(c_data, &desc->hid, MIN(desc->hid.bLength, setup->wLength));
 		break;
 	case USB_DESC_HID_PHYSICAL:
 		LOG_DBG("Get descriptor physical %u", desc_idx);
-		errno = -ENOTSUP;
+		buf = NULL;
 		break;
 	default:
-		errno = -ENOTSUP;
+		buf = NULL;
 		break;
 	}
 
-	return 0;
+	return buf;
 }
 
 static int usbd_hid_ctd(struct usbd_class_data *const c_data,
@@ -367,6 +424,20 @@ static int usbd_hid_ctd(struct usbd_class_data *const c_data,
 {
 	const struct device *dev = usbd_class_get_private(c_data);
 	int ret = 0;
+
+	if (setup->bRequest == USB_HID_SET_REPORT) {
+		if (setup->wLength == 0) {
+			return -ENOTSUP;
+		}
+
+		if (buf == NULL) {
+			return verify_set_report(dev, setup);
+		}
+	} else {
+		if (setup->wLength != 0) {
+			return -ENOTSUP;
+		}
+	}
 
 	switch (setup->bRequest) {
 	case USB_HID_SET_IDLE:
@@ -379,39 +450,37 @@ static int usbd_hid_ctd(struct usbd_class_data *const c_data,
 		ret = handle_set_protocol(dev, setup);
 		break;
 	default:
-		errno = -ENOTSUP;
+		ret = -ENOTSUP;
 		break;
 	}
 
 	return ret;
 }
 
-static int usbd_hid_cth(struct usbd_class_data *const c_data,
-			const struct usb_setup_packet *const setup,
-			struct net_buf *const buf)
+static struct net_buf *usbd_hid_cth(struct usbd_class_data *const c_data,
+				    const struct usb_setup_packet *const setup)
 {
-	const struct device *dev = usbd_class_get_private(c_data);
-	int ret = 0;
+	struct net_buf *buf;
 
 	switch (setup->bRequest) {
 	case USB_HID_GET_IDLE:
-		ret = handle_get_idle(dev, setup, buf);
+		buf = handle_get_idle(c_data, setup);
 		break;
 	case USB_HID_GET_REPORT:
-		ret = handle_get_report(dev, setup, buf);
+		buf = handle_get_report(c_data, setup);
 		break;
 	case USB_HID_GET_PROTOCOL:
-		ret = handle_get_protocol(dev, setup, buf);
+		buf = handle_get_protocol(c_data, setup);
 		break;
 	case USB_SREQ_GET_DESCRIPTOR:
-		ret = handle_get_descriptor(dev, setup, buf);
+		buf = handle_get_descriptor(c_data, setup);
 		break;
 	default:
-		errno = -ENOTSUP;
+		buf = NULL;
 		break;
 	}
 
-	return ret;
+	return buf;
 }
 
 static void usbd_hid_sof(struct usbd_class_data *const c_data)
@@ -474,8 +543,8 @@ static void usbd_hid_resumed(struct usbd_class_data *const c_data)
 	LOG_DBG("Configuration resumed, device %s", dev->name);
 }
 
-static void *usbd_hid_get_desc(struct usbd_class_data *const c_data,
-			       const enum usbd_speed speed)
+static const void *usbd_hid_get_desc(struct usbd_class_data *const c_data,
+				     const enum usbd_speed speed)
 {
 	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
@@ -493,7 +562,14 @@ static int usbd_hid_init(struct usbd_class_data *const c_data)
 	const struct device *dev = usbd_class_get_private(c_data);
 	const struct hid_device_config *dcfg = dev->config;
 	struct usbd_hid_descriptor *const desc = dcfg->desc;
+	struct hid_device_data *const ddata = dev->data;
 
+	if (ddata->ops == NULL ||  ddata->rdesc == NULL || !ddata->rsize) {
+		LOG_ERR("HID device does not seem to be registered");
+		return -EINVAL;
+	}
+
+	atomic_set_bit(&ddata->state, HID_DEV_CLASS_INITIALIZED);
 	LOG_DBG("HID class %s init", c_data->name);
 
 	if (dcfg->if_desc_data != NULL && desc->if0.iInterface == 0) {
@@ -509,6 +585,10 @@ static int usbd_hid_init(struct usbd_class_data *const c_data)
 
 static void usbd_hid_shutdown(struct usbd_class_data *const c_data)
 {
+	const struct device *dev = usbd_class_get_private(c_data);
+	struct hid_device_data *const ddata = dev->data;
+
+	atomic_clear_bit(&ddata->state, HID_DEV_CLASS_INITIALIZED);
 	LOG_DBG("HID class %s shutdown", c_data->name);
 }
 
@@ -610,6 +690,56 @@ static int hid_dev_submit_report(const struct device *dev,
 	return 0;
 }
 
+static __maybe_unused int hid_dev_set_out_polling(const struct device *dev,
+						  const unsigned int period_us)
+{
+	const struct hid_device_config *const dcfg = dev->config;
+	struct hid_device_data *const ddata = dev->data;
+	struct usbd_hid_descriptor *const desc = dcfg->desc;
+
+	if (atomic_test_bit(&ddata->state, HID_DEV_CLASS_INITIALIZED)) {
+		return -EBUSY;
+	}
+
+	if (USBD_SUPPORTS_HIGH_SPEED) {
+		if (desc->hs_out_ep.bLength == 0) {
+			/* This device does not have output reports. */
+			return -ENOTSUP;
+		}
+
+		desc->hs_out_ep.bInterval = USB_HS_INT_EP_INTERVAL(period_us);
+	}
+
+	if (desc->out_ep.bLength == 0) {
+		/* This device does not have output reports. */
+		return -ENOTSUP;
+	}
+
+	desc->out_ep.bInterval = USB_FS_INT_EP_INTERVAL(period_us);
+
+	return 0;
+}
+
+static __maybe_unused int hid_dev_set_in_polling(const struct device *dev,
+						 const unsigned int period_us)
+{
+	const struct hid_device_config *const dcfg = dev->config;
+	struct hid_device_data *const ddata = dev->data;
+	struct usbd_hid_descriptor *const desc = dcfg->desc;
+
+	if (atomic_test_bit(&ddata->state, HID_DEV_CLASS_INITIALIZED)) {
+		return -EBUSY;
+	}
+
+	if (USBD_SUPPORTS_HIGH_SPEED) {
+		desc->hs_in_ep.bInterval = USB_HS_INT_EP_INTERVAL(period_us);
+	}
+
+	desc->in_ep.bInterval = USB_FS_INT_EP_INTERVAL(period_us);
+
+	return 0;
+}
+
 static int hid_dev_register(const struct device *dev,
 			    const uint8_t *const rdesc, const uint16_t rsize,
 			    const struct hid_device_ops *const ops)
@@ -618,7 +748,7 @@ static int hid_dev_register(const struct device *dev,
 	struct hid_device_data *const ddata = dev->data;
 	struct usbd_hid_descriptor *const desc = dcfg->desc;
 
-	if (atomic_test_bit(&ddata->state, HID_DEV_CLASS_ENABLED)) {
+	if (atomic_test_bit(&ddata->state, HID_DEV_CLASS_INITIALIZED)) {
 		return -EALREADY;
 	}
 
@@ -666,7 +796,7 @@ static int hid_device_init(const struct device *dev)
 	return 0;
 }
 
-struct usbd_class_api usbd_hid_api = {
+static const struct usbd_class_api usbd_hid_api = {
 	.request = usbd_hid_request,
 	.update = NULL,
 	.sof = usbd_hid_sof,
@@ -684,6 +814,10 @@ struct usbd_class_api usbd_hid_api = {
 static const struct hid_device_driver_api hid_device_api = {
 	.submit_report = hid_dev_submit_report,
 	.dev_register = hid_dev_register,
+#if CONFIG_USBD_HID_SET_POLLING_PERIOD
+	.set_out_polling = hid_dev_set_out_polling,
+	.set_in_polling = hid_dev_set_in_polling,
+#endif
 };
 
 #include "usbd_hid_macros.h"
@@ -692,13 +826,13 @@ static const struct hid_device_driver_api hid_device_api = {
 	static struct usbd_hid_descriptor hid_desc_##n = {			\
 		.if0 = HID_INTERFACE_DEFINE(n, 0),				\
 		.hid = HID_DESCRIPTOR_DEFINE(n),				\
-		.in_ep = HID_IN_EP_DEFINE(n, false, true),			\
-		.hs_in_ep = HID_IN_EP_DEFINE(n, true, true),			\
-		.out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, false, true),		\
-		.hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, true, true),		\
+		.in_ep = HID_IN_EP_DEFINE(n, 0, 1),				\
+		.hs_in_ep = HID_IN_EP_DEFINE(n, 1, 1),				\
+		.out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, 0, 1),			\
+		.hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, 1, 1),		\
 	};									\
 										\
-	const static struct usb_desc_header *hid_fs_desc_##n[] = {		\
+	const static struct usb_desc_header *const hid_fs_desc_##n[] = {	\
 		(struct usb_desc_header *) &hid_desc_##n.if0,			\
 		(struct usb_desc_header *) &hid_desc_##n.hid,			\
 		(struct usb_desc_header *) &hid_desc_##n.in_ep,			\
@@ -706,7 +840,7 @@ static const struct hid_device_driver_api hid_device_api = {
 		NULL,								\
 	};									\
 										\
-	const static struct usb_desc_header *hid_hs_desc_##n[] = {		\
+	const static struct usb_desc_header *const hid_hs_desc_##n[] = {	\
 		(struct usb_desc_header *) &hid_desc_##n.if0,			\
 		(struct usb_desc_header *) &hid_desc_##n.hid,			\
 		(struct usb_desc_header *) &hid_desc_##n.hs_in_ep,		\
@@ -718,16 +852,16 @@ static const struct hid_device_driver_api hid_device_api = {
 	static struct usbd_hid_descriptor hid_desc_##n = {			\
 		.if0 = HID_INTERFACE_DEFINE(n, 0),				\
 		.hid = HID_DESCRIPTOR_DEFINE(n),				\
-		.in_ep = HID_IN_EP_DEFINE(n, false, false),			\
-		.hs_in_ep = HID_IN_EP_DEFINE(n, true, false),			\
-		.out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, false, false),		\
-		.hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, true, false),		\
+		.in_ep = HID_IN_EP_DEFINE(n, 0, 0),				\
+		.hs_in_ep = HID_IN_EP_DEFINE(n, 1, 0),				\
+		.out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, 0, 0),			\
+		.hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, 1, 0),		\
 		.if0_1 = HID_INTERFACE_DEFINE(n, 1),				\
-		.alt_hs_in_ep = HID_IN_EP_DEFINE(n, true, true),		\
-		.alt_hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, true, true),	\
+		.alt_hs_in_ep = HID_IN_EP_DEFINE(n, 1, 1),			\
+		.alt_hs_out_ep = HID_OUT_EP_DEFINE_OR_ZERO(n, 1, 1),		\
 	};									\
 										\
-	const static struct usb_desc_header *hid_fs_desc_##n[] = {		\
+	const static struct usb_desc_header *const hid_fs_desc_##n[] = {	\
 		(struct usb_desc_header *) &hid_desc_##n.if0,			\
 		(struct usb_desc_header *) &hid_desc_##n.hid,			\
 		(struct usb_desc_header *) &hid_desc_##n.in_ep,			\
@@ -735,7 +869,7 @@ static const struct hid_device_driver_api hid_device_api = {
 		NULL,								\
 	};									\
 										\
-	const static struct usb_desc_header *hid_hs_desc_##n[] = {		\
+	const static struct usb_desc_header *const hid_hs_desc_##n[] = {	\
 		(struct usb_desc_header *) &hid_desc_##n.if0,			\
 		(struct usb_desc_header *) &hid_desc_##n.hid,			\
 		(struct usb_desc_header *) &hid_desc_##n.hs_in_ep,		\

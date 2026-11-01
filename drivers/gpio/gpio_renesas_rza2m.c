@@ -12,6 +12,9 @@
 #include <zephyr/logging/log.h>
 #include "gpio_renesas_rza2m.h"
 
+#define DEV_CFG(dev)  ((const struct gpio_rza2m_tint_config *const)(dev)->config)
+#define DEV_DATA(dev) ((struct gpio_rza2m_tint_data *)(dev)->data)
+
 LOG_MODULE_REGISTER(rza2m_gpio, CONFIG_GPIO_LOG_LEVEL);
 
 /* clang-format off */
@@ -316,7 +319,7 @@ static int gpio_rza2m_pin_configure(const struct device *port_dev, gpio_pin_t pi
 		return -EINVAL;
 	}
 
-	if ((flags & GPIO_PULL_UP) || (flags & GPIO_PULL_DOWN)) {
+	if (flags & (GPIO_PULL_UP | GPIO_PULL_DOWN)) {
 		return -ENOTSUP;
 	}
 
@@ -368,14 +371,13 @@ static int gpio_rza2m_pin_get_config(const struct device *port_dev, gpio_pin_t p
 		*flags |= GPIO_INPUT;
 	} else if ((reg16 >> (pin * 2)) == RZA2M_PDR_OUTPUT) {
 		*flags |= GPIO_OUTPUT;
-	}
-
-	/* Get pin initial value */
-	reg8 = sys_read8(RZA2M_PODR(int_dev, port));
-	if (reg8 & BIT(pin)) {
-		*flags |= GPIO_OUTPUT_INIT_HIGH;
-	} else {
-		*flags |= GPIO_OUTPUT_INIT_LOW;
+		/* Get pin initial value */
+		reg8 = sys_read8(RZA2M_PODR(int_dev, port));
+		if (reg8 & BIT(pin)) {
+			*flags |= GPIO_OUTPUT_INIT_HIGH;
+		} else {
+			*flags |= GPIO_OUTPUT_INIT_LOW;
+		}
 	}
 
 	/* Get pin drive strength */
@@ -478,7 +480,7 @@ static int gpio_rza2m_int_init(const struct device *dev)
 {
 	const struct gpio_rza2m_tint_config *config = dev->config;
 
-	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
+	DEVICE_MMIO_NAMED_MAP(dev, mmio, K_MEM_CACHE_NONE);
 	config->gpio_int_init();
 
 	return 0;
@@ -517,7 +519,7 @@ static int gpio_rza2m_port_init(const struct device *port_dev)
 	GPIO_RZA2M_DECLARE_ALL_IRQS(node_id)                                                       \
 	GPIO_RZA2M_TINT_CONNECT_FUNC(node_id)                                                      \
 	static const struct gpio_rza2m_tint_config gpio_rza2m_tint_cfg_##node_id = {               \
-		DEVICE_MMIO_ROM_INIT(DT_PARENT(DT_INST(0, renesas_rza2m_gpio_int))),               \
+		DEVICE_MMIO_NAMED_ROM_INIT(mmio, DT_PARENT(DT_INST(0, renesas_rza2m_gpio_int))),   \
 		.gpio_int_init = gpio_rza2m_tint_connect_func##node_id,                            \
 	};                                                                                         \
 	static struct gpio_rza2m_tint_data gpio_rza2m_tint_data_##node_id;                         \
@@ -527,10 +529,7 @@ static int gpio_rza2m_port_init(const struct device *port_dev)
 
 #define GPIO_RZA2M_PORT_INIT(inst)                                                                 \
 	static const struct gpio_rza2m_port_config gpio_rza2m_cfg_##inst = {                       \
-		.common =                                                                          \
-			{                                                                          \
-				.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(inst),            \
-			},                                                                         \
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(inst),                                   \
 		.port = DT_INST_REG_ADDR(inst),                                                    \
 		.ngpios = DT_INST_PROP(inst, ngpios),                                              \
 		.int_dev = DEVICE_DT_GET_OR_NULL(DT_INST(0, renesas_rza2m_gpio_int)),              \

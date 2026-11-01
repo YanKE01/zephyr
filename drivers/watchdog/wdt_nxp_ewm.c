@@ -1,11 +1,12 @@
 /*
- * Copyright 2025 NXP
+ * Copyright 2025-2026 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #define DT_DRV_COMPAT nxp_ewm
 
+#include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/irq.h>
 
@@ -18,8 +19,11 @@ LOG_MODULE_REGISTER(wdt_nxp_ewm);
 struct nxp_ewm_config {
 	EWM_Type *base;
 	void (*irq_config_func)(const struct device *dev);
+	const struct device *clock_dev;
+	clock_control_subsys_t clock_subsys;
 	bool is_input_enabled;
 	bool is_input_active_high;
+	uint8_t clk_sel;
 	uint8_t clk_divider;
 };
 
@@ -87,10 +91,9 @@ static int nxp_ewm_install_timeout(const struct device *dev,
 		return -ENOMEM;
 	}
 
-	if (cfg && cfg->window.max <= NXP_EWM_MAX_TIMEOUT_WINDOW &&
+	if (cfg->window.max <= NXP_EWM_MAX_TIMEOUT_WINDOW &&
 		cfg->window.min <= cfg->window.max &&
-		cfg->window.max > 0 &&
-		cfg->window.min >= 0) {
+		cfg->window.max > 0) {
 		data->timeout_cfg.window = cfg->window;
 	} else {
 		return -EINVAL;
@@ -102,9 +105,7 @@ static int nxp_ewm_install_timeout(const struct device *dev,
 	}
 #endif
 
-	if (cfg->callback) {
-		data->timeout_cfg.callback = cfg->callback;
-	}
+	data->timeout_cfg.callback = cfg->callback;
 
 	return 0;
 }
@@ -141,9 +142,53 @@ static int nxp_ewm_init(const struct device *dev)
 	const struct nxp_ewm_config *config = dev->config;
 	EWM_Type *base = config->base;
 
+	if (config->clock_dev != NULL) {
+		int err;
+
+		if (!device_is_ready(config->clock_dev)) {
+			LOG_ERR("Clock controller not ready");
+			return -ENODEV;
+		}
+
+		err = clock_control_configure(config->clock_dev, config->clock_subsys, NULL);
+		if (err < 0 && err != -ENOSYS) {
+			LOG_ERR("Failed to configure EWM clock: %d", err);
+			return err;
+		}
+
+		err = clock_control_on(config->clock_dev, config->clock_subsys);
+		if (err < 0) {
+			LOG_ERR("Failed to enable EWM clock: %d", err);
+			return err;
+		}
+	}
+
+#if DT_INST_NODE_HAS_PROP(0, clk_sel)
+	/* Set clock select value for CLKCTRL register */
+	switch (config->clk_sel) {
+	case 0:
+		base->CLKCTRL = EWM_CLKCTRL_CLKSEL(0);
+		break;
+	case 1:
+		base->CLKCTRL = EWM_CLKCTRL_CLKSEL(1);
+		break;
+	case 2:
+		base->CLKCTRL = EWM_CLKCTRL_CLKSEL(2);
+		break;
+	case 3:
+		base->CLKCTRL = EWM_CLKCTRL_CLKSEL(3);
+		break;
+	default:
+		LOG_ERR("Invalid clock select value: %d", config->clk_sel);
+		return -EINVAL;
+	}
+#endif /* DT_INST_NODE_HAS_PROP(0, clk_sel) */
+
+#if DT_INST_NODE_HAS_PROP(0, clk_divider)
 	if (config->clk_divider >= 0 && config->clk_divider <= 0xFF) {
 		base->CLKPRESCALER = EWM_CLKPRESCALER_CLK_DIV(config->clk_divider);
 	}
+#endif /* DT_INST_NODE_HAS_PROP(0, clk_divider) */
 	config->irq_config_func(dev);
 
 	return 0;
@@ -156,16 +201,32 @@ static DEVICE_API(wdt, nxp_ewm_api) = {
 	.feed = nxp_ewm_feed,
 };
 
+#define CLK_SEL_DEFAULT 0
+#define EWM_CONFIG_CLK_SEL_INIT(n)\
+	.clk_sel = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, clk_sel),	\
+					(DT_INST_ENUM_IDX(n, clk_sel)),	\
+					(CLK_SEL_DEFAULT)),
+
+/* Only SoCs that gate the EWM describe a clock for it. */
+#define EWM_CONFIG_CLOCK_INIT(n)						\
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, clocks),				\
+		(.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n)),		\
+		 .clock_subsys =						\
+			(clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, name),),	\
+		(.clock_dev = NULL,))
+
 #define WDT_EWM_INIT(n)							\
 	static void nxp_ewm_config_func_##n(const struct device *dev);	\
 									\
 	static const struct nxp_ewm_config nxp_ewm_config_##n = {	\
 		.base = (EWM_Type *)DT_INST_REG_ADDR(n),		\
 		.irq_config_func = nxp_ewm_config_func_##n,		\
+		EWM_CONFIG_CLOCK_INIT(n)				\
 		.is_input_enabled = DT_INST_PROP(n, input_trigger_en),	\
 		.is_input_active_high =					\
 			DT_INST_PROP(n, input_trigger_active_high),	\
-		.clk_divider = DT_INST_PROP(n, clk_divider),		\
+		EWM_CONFIG_CLK_SEL_INIT(n)	\
+		.clk_divider = DT_INST_PROP_OR(n, clk_divider, 0),	\
 	};								\
 									\
 	static struct nxp_ewm_data nxp_ewm_data_##n;			\

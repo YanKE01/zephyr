@@ -15,15 +15,9 @@
 
 	chosen {
 		zephyr,code-partition = &slot0_partition;
-		zephyr,sram = &cpuapp_sram;
+		zephyr,sram = &cpuapp_sram_app;
 	};
 };
 
-/* FLPR not supported yet, give all SRAM and RRAM to the APP core */
-&cpuapp_sram {
-	reg = <0x20000000 DT_SIZE_K(96)>;
-	ranges = <0x0 0x20000000 DT_SIZE_K(96)>;
-};
-
 /* Include default memory partition configuration file */
-#include <nordic/nrf54l05_partition.dtsi>
+#include <vendor/nordic/nrf54l05_cpuapp_partition.dtsi>

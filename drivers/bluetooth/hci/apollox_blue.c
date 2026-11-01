@@ -15,8 +15,8 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/bluetooth.h>
+#include <zephyr/drivers/bluetooth/hci_lockstep.h>
 #include <zephyr/bluetooth/hci.h>
-#include <zephyr/bluetooth/hci_raw.h>
 
 #define LOG_LEVEL CONFIG_BT_HCI_DRIVER_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -110,7 +110,7 @@ static void bt_clkreq_isr(const struct device *unused1, struct gpio_callback *un
 static void bt_apollo_controller_ready_wait(void)
 {
 	/* The CS pin is used to wake up the controller as well. If the controller is not ready
-	 * to receive the SPI packet, need to inactivate the CS at first and reconfigure the pin
+	 * to receive the SPI packet, need to deactivate the CS at first and reconfigure the pin
 	 * to CS function again before next sending attempt.
 	 */
 	gpio_pin_configure_dt(&cs_gpio, GPIO_OUTPUT_INACTIVE);
@@ -343,9 +343,23 @@ int bt_apollo_controller_init(spi_transmit_fun transmit)
 
 int bt_apollo_controller_deinit(void)
 {
-	int ret = -ENOTSUP;
+	int ret = 0;
 
-#if (CONFIG_SOC_SERIES_APOLLO3X)
+#if (CONFIG_SOC_SERIES_APOLLO4X)
+	/* Keep the Controller in resetting state */
+	gpio_pin_set_dt(&rst_gpio, 1);
+
+	/* Disable XO32MHz */
+	clock_control_off(clk32m_dev, (clock_control_subsys_t)CLOCK_CONTROL_AMBIQ_TYPE_HFXTAL_BLE);
+	/* Disable XO32kHz  */
+	clock_control_off(clk32k_dev, (clock_control_subsys_t)CLOCK_CONTROL_AMBIQ_TYPE_LFXTAL);
+
+	/* Disable GPIOs */
+	gpio_pin_configure_dt(&irq_gpio, GPIO_DISCONNECTED);
+	gpio_pin_configure_dt(&clkreq_gpio, GPIO_DISCONNECTED);
+	gpio_remove_callback(clkreq_gpio.port, &clkreq_gpio_cb);
+	gpio_remove_callback(irq_gpio.port, &irq_gpio_cb);
+#elif (CONFIG_SOC_SERIES_APOLLO3X)
 	irq_disable(DT_IRQN(SPI_DEV_NODE));
 
 	ret = am_apollo3_bt_controller_deinit();
@@ -355,73 +369,45 @@ int bt_apollo_controller_deinit(void)
 		ret = -EPERM;
 		LOG_ERR("BT controller deinitialization fails");
 	}
-#endif /* CONFIG_SOC_SERIES_APOLLO3X */
+#else
+	ret = -ENOTSUP;
+#endif /* CONFIG_SOC_SERIES_APOLLO4X */
 
 	return ret;
 }
 
 #if (CONFIG_SOC_SERIES_APOLLO4X)
-static int bt_apollo_set_nvds(void)
+static int bt_apollo_set_nvds(struct bt_hci_lockstep *ls)
 {
 	int ret;
-	struct net_buf *buf;
 
-#if defined(CONFIG_BT_HCI_RAW)
-	struct bt_hci_cmd_hdr hdr;
+	BT_HCI_PKT_CMD_DEFINE(cmd, HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH);
 
-	hdr.opcode = sys_cpu_to_le16(HCI_VSC_UPDATE_NVDS_CFG_CMD_OPCODE);
-	hdr.param_len = HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH;
-	buf = bt_buf_get_tx(BT_BUF_CMD, K_NO_WAIT, &hdr, sizeof(hdr));
-	if (!buf) {
-		return -ENOBUFS;
+	(void)net_buf_simple_add_mem(&cmd, &am_devices_cooper_nvds[0],
+				     HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH);
+
+	ret = bt_hci_lockstep_cmd_send_sync(ls, HCI_VSC_UPDATE_NVDS_CFG_CMD_OPCODE, &cmd, NULL);
+	if (ret != 0) {
+		return ret;
 	}
 
-	net_buf_add_mem(buf, &am_devices_cooper_nvds[0], HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH);
-	ret = bt_send(buf);
+	/* Give some time to make NVDS take effect in BLE controller */
+	k_sleep(K_MSEC(5));
 
-	if (!ret) {
-		/* Give some time to make NVDS take effect in BLE controller */
-		k_sleep(K_MSEC(5));
-
-		/* Need to send reset command to make the NVDS take effect */
-		hdr.opcode = sys_cpu_to_le16(BT_HCI_OP_RESET);
-		hdr.param_len = 0;
-		buf = bt_buf_get_tx(BT_BUF_CMD, K_NO_WAIT, &hdr, sizeof(hdr));
-		if (!buf) {
-			return -ENOBUFS;
-		}
-
-		ret = bt_send(buf);
-	}
-#else
-	uint8_t *p;
-
-	buf = bt_hci_cmd_alloc(K_FOREVER);
-	if (!buf) {
-		return -ENOBUFS;
-	}
-
-	p = net_buf_add(buf, HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH);
-	memcpy(p, &am_devices_cooper_nvds[0], HCI_VSC_UPDATE_NVDS_CFG_CMD_LENGTH);
-	ret = bt_hci_cmd_send_sync(HCI_VSC_UPDATE_NVDS_CFG_CMD_OPCODE, buf, NULL);
-
-	if (!ret) {
-		/* Give some time to make NVDS take effect in BLE controller */
-		k_sleep(K_MSEC(5));
-	}
-#endif /* defined(CONFIG_BT_HCI_RAW) */
-
-	return ret;
+	/* Need to send reset command to make the NVDS take effect */
+	return bt_hci_lockstep_cmd_send_sync(ls, BT_HCI_OP_RESET, NULL, NULL);
 }
 #endif /* CONFIG_SOC_SERIES_APOLLO4X */
 
-int bt_apollo_vnd_setup(void)
+int bt_apollo_vnd_setup(struct bt_hci_lockstep *ls)
 {
 	int ret = 0;
 
 #if (CONFIG_SOC_SERIES_APOLLO4X)
 	/* Set the NVDS parameters to BLE controller */
-	ret = bt_apollo_set_nvds();
+	ret = bt_apollo_set_nvds(ls);
+#else
+	ARG_UNUSED(ls);
 #endif /* CONFIG_SOC_SERIES_APOLLO4X */
 
 	return ret;

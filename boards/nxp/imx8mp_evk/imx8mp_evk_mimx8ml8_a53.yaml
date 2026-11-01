@@ -17,7 +17,9 @@ supported:
   - gpio
   - i2c
   - net
+  - pwm
   - uart
+  - watchdog
 testing:
   ignore_tags:
     - bluetooth

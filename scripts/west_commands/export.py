@@ -6,6 +6,8 @@ import argparse
 from pathlib import Path
 
 from west.commands import WestCommand
+
+from build_helpers import forward_logging_to_west
 from zcmake import run_cmake
 
 EXPORT_DESCRIPTION = '''\
@@ -24,25 +26,25 @@ class ZephyrExport(WestCommand):
     def __init__(self):
         super().__init__(
             'zephyr-export',
-            # Keep this in sync with the string in west-commands.yml.
-            'export Zephyr installation as a CMake config package',
-            EXPORT_DESCRIPTION,
+            '',
+            description=EXPORT_DESCRIPTION,
             accepts_unknown_args=False)
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(
             self.name,
-            help=self.help,
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=self.description)
         return parser
 
     def do_run(self, args, unknown_args):
+        # Forward debug output from the zcmake module logger so it is
+        # visible under "west -v" / "west -vv".
+        forward_logging_to_west(self, 'zcmake')
         # The 'share' subdirectory of the top level zephyr repository.
         share = Path(__file__).parents[2] / 'share'
 
         self.run_cmake_export(share / 'zephyr-package' / 'cmake')
-        self.run_cmake_export(share / 'zephyrunittest-package' / 'cmake')
 
     def run_cmake_export(self, path):
         # Run a package installation script.

@@ -12,9 +12,9 @@ This section is a quick hands-on reference to start debugging your
 application with QEMU. Most content in this section is already covered in
 `QEMU`_ and `GNU_Debugger`_ reference manuals.
 
-.. _QEMU: http://wiki.qemu.org/Main_Page
+.. _QEMU: https://wiki.qemu.org/Main_Page
 
-.. _GNU_Debugger: http://www.gnu.org/software/gdb
+.. _GNU_Debugger: https://www.gnu.org/software/gdb
 
 In this quick reference, you'll find shortcuts, specific environmental
 variables, and parameters that can help you to quickly set up your debugging
@@ -349,7 +349,7 @@ The allowlist of devices is configured using the devicetree, for example::
 
       i2c-dump-allowlist {
           compatible = "zephyr,i2c-dump-allowlist";
-          devices = < &display0 >, < &sensor3 >;
+          devices = <&display0>, <&sensor3>;
       };
   };
 

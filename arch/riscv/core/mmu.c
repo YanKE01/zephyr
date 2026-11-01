@@ -181,7 +181,7 @@ void z_riscv_mm_init(void)
 	csr_set(mstatus, MSTATUS_MPRV);
 }
 
-void arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
+int arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 {
 	uintptr_t va = (uintptr_t)virt;
 
@@ -195,9 +195,10 @@ void arch_mem_map(void *virt, uintptr_t phys, size_t size, uint32_t flags)
 		pte_sync(pte);
 	}
 	tlb_flush();
+	return 0;
 }
 
-void arch_mem_unmap(void *addr, size_t size)
+int arch_mem_unmap(void *addr, size_t size)
 {
 	uintptr_t va = (uintptr_t)addr;
 
@@ -211,6 +212,7 @@ void arch_mem_unmap(void *addr, size_t size)
 		pte_sync(pte);
 	}
 	tlb_flush();
+	return 0;
 }
 
 int arch_page_phys_get(void *virt, uintptr_t *phys)

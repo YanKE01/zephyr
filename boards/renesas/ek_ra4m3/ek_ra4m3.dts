@@ -1,13 +1,13 @@
 /*
- * Copyright (c) 2024-2025 Renesas Electronics Corporation
+ * Copyright (c) 2024-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /dts-v1/;
 
 #include <renesas/ra/ra4/r7fa4m3af3cfb.dtsi>
-#include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 #include "ek_ra4m3-pinctrl.dtsi"
 
@@ -17,23 +17,27 @@
 
 	chosen {
 		zephyr,sram = &sram0;
-		zephyr,flash-controller = &flash1;
-		zephyr,flash = &flash0;
+		zephyr,flash-controller = &code_flash_ctrl;
+		zephyr,flash = &code_flash;
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,entropy = &trng;
+		zephyr,crc = &crc;
 	};
 
 	leds {
 		compatible = "gpio-leds";
+
 		led1: led1 {
 			gpios = <&ioport4 15 GPIO_ACTIVE_HIGH>;
 			label = "LED1";
 		};
+
 		led2: led2 {
 			gpios = <&ioport4 4 GPIO_ACTIVE_HIGH>;
 			label = "LED2";
 		};
+
 		led3: led3 {
 			gpios = <&ioport4 0 GPIO_ACTIVE_HIGH>;
 			label = "LED3";
@@ -42,11 +46,13 @@
 
 	buttons {
 		compatible = "gpio-keys";
+
 		button0: s1 {
 			gpios = <&ioport0 5 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "Push button switch 1";
 			zephyr,code = <INPUT_KEY_0>;
 		};
+
 		button1: s2 {
 			gpios = <&ioport0 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "Push button switch 2";
@@ -59,6 +65,7 @@
 		sw0 = &button0;
 		sw1 = &button1;
 		watchdog0 = &wdt;
+		i2c-0 = &iic0;
 	};
 };
 
@@ -97,6 +104,7 @@
 	pinctrl-0 = <&sci0_default>;
 	pinctrl-names = "default";
 	status = "okay";
+
 	uart0: uart {
 		current-speed = <115200>;
 		status = "okay";
@@ -152,21 +160,22 @@
 	pinctrl-names = "default";
 	#address-cells = <1>;
 	#size-cells = <0>;
-	clock-frequency = <DT_FREQ_M(1)>;
+	clock-frequency = <I2C_BITRATE_FAST>;
 	interrupts = <87 1>, <88 1>, <89 1>, <90 1>;
 	interrupt-names = "rxi", "txi", "tei", "eri";
 	status = "okay";
 };
 
-&flash1 {
+&data_flash {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		storage_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
-			reg = <0X0 DT_SIZE_K(8)>;
+			reg = <0x0 DT_SIZE_K(8)>;
 		};
 	};
 };
@@ -180,11 +189,16 @@
 	pinctrl-names = "default";
 	maximum-speed = "full-speed";
 	status = "okay";
+
 	zephyr_udc0: udc {
 		status = "okay";
 	};
 };
 
 &wdt {
+	status = "okay";
+};
+
+&crc {
 	status = "okay";
 };

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2021 KT-Elektronik, Klaucke und Partner GmbH
- * Copyright (c) 2024 Renesas Electronics Corporation
+ * Copyright (c) 2024-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,6 +8,15 @@
 #include <zephyr/irq.h>
 #include <kswap.h>
 #include <zephyr/tracing/tracing.h>
+#include <zephyr/arch/rx/sw_nmi_table.h>
+
+/* RX74N/RX74M place OFS values via devicetree-driven linker sections (see ofsm.ld)
+ * instead of the static SOC_RX_MDE/OFS0/OFS1 macros from ofsm.h.
+ */
+#if !defined(CONFIG_SOC_SERIES_RX62N) && !defined(CONFIG_SOC_SERIES_RX74N) &&                      \
+	!defined(CONFIG_SOC_SERIES_RX74M)
+#include <ofsm.h>
+#endif
 
 typedef void (*fp)(void);
 extern void _start(void);
@@ -16,6 +25,16 @@ extern void z_rx_irq_exit(void);
 /* this is mainly to give Visual Studio Code peace of mind */
 #ifndef CONFIG_GEN_IRQ_START_VECTOR
 #define CONFIG_GEN_IRQ_START_VECTOR 0
+#endif
+
+#ifndef SOC_RX_MDE
+#define SOC_RX_MDE (0xFFFFFFFFUL)
+#endif
+#ifndef SOC_RX_OFS0
+#define SOC_RX_OFS0 (0xFFFFFFFFUL)
+#endif
+#ifndef SOC_RX_OFS1
+#define SOC_RX_OFS1 (0xFFFFFFFFUL)
 #endif
 
 #define EXVECT_SECT __attribute__((section(".exvectors")))
@@ -53,7 +72,7 @@ static ALWAYS_INLINE void REGISTER_RESTORE_EXIT(void)
 		"RTE\n");
 }
 
-/* Privileged instruction execption */
+/* Privileged instruction exception */
 static void __ISR__ INT_Excep_SuperVisorInst(void)
 {
 	REGISTER_SAVE();
@@ -97,9 +116,9 @@ static void __ISR__ INT_Excep_FloatingPoint(void)
 static void __ISR__ INT_NonMaskableInterrupt(void)
 {
 	REGISTER_SAVE();
-	ISR_DIRECT_HEADER();
-	z_fatal_error(K_ERR_CPU_EXCEPTION, NULL);
-	ISR_DIRECT_FOOTER(1);
+	int nmi_vector = get_nmi_request();
+
+	handle_nmi(nmi_vector);
 	REGISTER_RESTORE_EXIT();
 }
 
@@ -121,7 +140,12 @@ static void __ISR__ Dummy(void)
 static ALWAYS_INLINE void handle_interrupt(uint8_t irq)
 {
 	ISR_DIRECT_HEADER();
+#if defined(CONFIG_GEN_SW_ISR_TABLE)
 	_sw_isr_table[irq].isr(_sw_isr_table[irq].arg);
+#else
+	ARG_UNUSED(irq);
+	z_irq_spurious(NULL);
+#endif
 	ISR_DIRECT_FOOTER(1);
 }
 
@@ -416,13 +440,15 @@ INT_DEMUX(253);
 INT_DEMUX(254);
 INT_DEMUX(255);
 
+#if !CONFIG_HAS_EXCEPT_VECTOR_TABLE
+
 const void *FixedVectors[] FVECT_SECT = {
 	/* 0x00-0x4c: Reserved, must be 0xff (according to e2 studio example) */
 	/* Reserved for OFSM */
+	(fp)SOC_RX_MDE,
 	(fp)0xFFFFFFFF,
-	(fp)0xFFFFFFFF,
-	(fp)0xFFFFFFFF,
-	(fp)0xFFFFFFFF,
+	(fp)SOC_RX_OFS1,
+	(fp)SOC_RX_OFS0,
 	/* Reserved area */
 	(fp)0xFFFFFFFF,
 	(fp)0xFFFFFFFF,
@@ -464,6 +490,60 @@ const void *FixedVectors[] FVECT_SECT = {
 	INT_NonMaskableInterrupt,
 	_start,
 };
+
+#else
+
+/* The reset vector ALWAYS is at address 0xFFFFFFFC. Set it to point at
+ * the start routine (in reset.S)
+ */
+const FVECT_SECT void *resetVector = _start;
+
+/* Exception vector table
+ * (see rx-family-rxv2-instruction-set-architecture-users-manual-software)
+ */
+const void *ExceptVectors[] EXVECT_SECT = {
+	/* 0x00-0x4c: Reserved, must be 0xff (according to e2 studio example) */
+	(fp)SOC_RX_MDE,
+	(fp)0xFFFFFFFF,
+	(fp)SOC_RX_OFS1,
+	(fp)SOC_RX_OFS0,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	(fp)0xFFFFFFFF,
+	/* 0x50: Privileged instruction exception */
+	INT_Excep_SuperVisorInst,
+	/* 0x54: Access exception */
+	INT_Excep_AccessInst,
+	/* 0x58: Reserved */
+	Dummy,
+	/* 0x5c: Undefined Instruction Exception */
+	INT_Excep_UndefinedInst,
+	/* 0x60: Reserved */
+	Dummy,
+	/* 0x64: Floating Point Exception */
+	INT_Excep_FloatingPoint,
+	/* 0x68-0x74: Reserved */
+	Dummy,
+	Dummy,
+	Dummy,
+	Dummy,
+	/* 0x78: Non-maskable interrupt */
+	INT_NonMaskableInterrupt,
+};
+#endif
 
 const fp RelocatableVectors[] RVECT_SECT = {
 	reserved_isr,  switch_isr_wrapper, INT_RuntimeFatalInterrupt,

@@ -266,6 +266,13 @@ function(add_region)
 
   set_property(GLOBAL PROPERTY ${ADD_REGION_REGION}_PARENT ${ADD_REGION_OBJECT})
   set_property(GLOBAL APPEND PROPERTY ${ADD_REGION_OBJECT}_REGIONS ${ADD_REGION_REGION})
+
+  # Build lookup: <system>_REGION_BY_NAME_<NAME> -> <region object>
+  # (Used by armlink to grab FLASH without scanning all regions.)
+  get_property(_r_name GLOBAL PROPERTY ${ADD_REGION_REGION}_NAME)
+  if(_r_name STREQUAL "FLASH")
+    set_property(GLOBAL PROPERTY ${ADD_REGION_OBJECT}_REGION_BY_NAME_${_r_name} ${ADD_REGION_REGION})
+  endif()
 endfunction()
 
 # add_group OBJECT o GROUP g adds group g to object o
@@ -410,7 +417,7 @@ function(get_objects)
 
   if(${GET_TYPE} STREQUAL SECTION)
     # If we are retrieving sections, then we need to get _SECTIONS_FIXED,
-    # sections from sub-groups, and immediate setion children
+    # sections from sub-groups, and immediate section children
     get_property(sections GLOBAL PROPERTY ${GET_OBJECT}_SECTIONS_FIXED)
     list(APPEND out ${sections})
 

@@ -322,7 +322,7 @@ static int analog_init(const struct device *dev)
 	return 0;
 }
 
-static const struct audio_codec_api analog_api = {
+static DEVICE_API(audio_codec, analog_api) = {
 	.configure = analog_configure,
 	.start_output = analog_start_output,
 	.stop_output = analog_stop_output,

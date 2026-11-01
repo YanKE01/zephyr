@@ -229,11 +229,11 @@ static int sunxi_spi_configure(const struct device *dev,
 	uint32_t tc;
 	int ret;
 
-	if (SPI_OP_MODE_GET(config->operation) != SPI_OP_MODE_MASTER ||
+	if (SPI_OP_MODE_GET(config->operation) != SPI_OP_MODE_CONTROLLER ||
 	    (config->operation & SPI_MODE_LOOP) != 0U ||
 	    (config->operation & SPI_HOLD_ON_CS) != 0U ||
 	    SPI_WORD_SIZE_GET(config->operation) != 8U ||
-	    config->slave >= 4U) {
+	    config->peripheral >= 4U) {
 		return -ENOTSUP;
 	}
 #ifdef CONFIG_SPI_EXTENDED_MODES
@@ -261,7 +261,7 @@ static int sunxi_spi_configure(const struct device *dev,
 	tc &= ~(TC_CPHA | TC_CPOL | TC_SPOL | TC_SSCTL | TC_SS_SEL |
 		TC_SS_OWNER | TC_SS_LEVEL | TC_FBS | TC_SDC1);
 	tc &= ~TC_SDC;
-	tc |= TC_DDB | (config->slave << 4) | TC_SS_LEVEL;
+	tc |= TC_DDB | (config->peripheral << 4) | TC_SS_LEVEL;
 	if (data->sample_set) {
 		tc |= sample_mode_bits[data->sample_mode];
 	} else if (config->frequency > SPI_HIGH_FREQ) {
@@ -560,8 +560,8 @@ static int sunxi_spi_init(const struct device *dev)
 		(clock_control_subsys_t)(uintptr_t)cfg->bus_clock_id;
 	struct spi_config init_cfg = {
 		.frequency = cfg->clock_frequency,
-		.operation = SPI_OP_MODE_MASTER | SPI_WORD_SET(8),
-		.slave = 0,
+		.operation = SPI_OP_MODE_CONTROLLER | SPI_WORD_SET(8),
+		.peripheral = 0,
 	};
 	int ret;
 

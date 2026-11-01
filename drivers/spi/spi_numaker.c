@@ -12,7 +12,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/clock_control_numaker.h>
 #include <zephyr/drivers/pinctrl.h>
-#include <zephyr/drivers/spi/rtio.h>
+#include "spi_rtio.h"
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(spi_numaker, CONFIG_SPI_LOG_LEVEL);
@@ -71,8 +71,8 @@ static int spi_numaker_configure(const struct device *dev, const struct spi_conf
 		return -ENOTSUP;
 	}
 
-	if (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_SLAVE) {
-		LOG_ERR("Slave mode not support");
+	if (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_PERIPHERAL) {
+		LOG_ERR("Peripheral mode not support");
 		return -ENOTSUP;
 	}
 
@@ -89,16 +89,18 @@ static int spi_numaker_configure(const struct device *dev, const struct spi_conf
 	/* Make SPI module be ready to transfer */
 	if (dev_cfg->is_qspi) {
 		QSPI_Open((QSPI_T *)dev_cfg->spi,
-			  (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_SLAVE) ? QSPI_SLAVE
-										    : QSPI_MASTER,
+			  (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_PERIPHERAL)
+				  ? QSPI_SLAVE
+				  : QSPI_MASTER,
 			  qsmode_tbl[mode],
 			  SPI_WORD_SIZE_GET(config->operation), config->frequency);
 	} else {
 		/* Clear SPI CTL before set */
 		dev_cfg->spi->CTL &= ~SPI_NUMAKER_CTL_MSK;
 		SPI_Open(dev_cfg->spi,
-			 (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_SLAVE) ? SPI_SLAVE
-										   : SPI_MASTER,
+			 (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_PERIPHERAL)
+				 ? SPI_SLAVE
+				 : SPI_MASTER,
 			 smode_tbl[mode],
 			 SPI_WORD_SIZE_GET(config->operation), config->frequency);
 	}
@@ -126,10 +128,10 @@ static int spi_numaker_configure(const struct device *dev, const struct spi_conf
 		SPI_SET_SS_LOW(dev_cfg->spi);
 	}
 
-	/* Enable the automatic hardware slave select function. Select the SS pin and configure as
+	/* Enable the automatic hardware chip select function. Select the SS pin and configure as
 	 * low-active.
 	 */
-	if (data->ctx.num_cs_gpios == 0) {
+	if (UTIL_OR(IS_ENABLED(DT_SPI_CTX_HAS_NO_CS_GPIOS), (data->ctx.num_cs_gpios == 0))) {
 		SPI_EnableAutoSS(dev_cfg->spi, SPI_SS, SPI_SS_ACTIVE_LOW);
 	} else {
 		SPI_DisableAutoSS(dev_cfg->spi);
@@ -251,9 +253,7 @@ static int spi_numaker_transceive(const struct device *dev, const struct spi_con
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, spi_dfs);
 
 	/* if cs is defined: software cs control, set active true */
-	if (spi_cs_is_gpio(config)) {
-		spi_context_cs_control(&data->ctx, true);
-	}
+	spi_context_cs_control(&data->ctx, true);
 
 	/* transceive tx/rx data */
 	do {
@@ -264,9 +264,7 @@ static int spi_numaker_transceive(const struct device *dev, const struct spi_con
 	} while (spi_numaker_remain_words(data));
 
 	/* if cs is defined: software cs control, set active false */
-	if (spi_cs_is_gpio(config)) {
-		spi_context_cs_control(&data->ctx, false);
-	}
+	spi_context_cs_control(&data->ctx, false);
 	SPI_DISABLE(dev_cfg->spi);
 
 done:

@@ -4,6 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/ {
+	zephyr,user {
+		sck-gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+	};
+};
+
 &pinctrl {
 	spi3_default_alt: spi3_default_alt {
 		group1 {
@@ -40,7 +46,6 @@
 			low-power-enable;
 		};
 	};
-
 };
 
 &spi3 {
@@ -51,6 +56,7 @@
 	overrun-character = <0x00>;
 	cs-gpios = <&gpio1 11 GPIO_ACTIVE_LOW>;
 	zephyr,pm-device-runtime-auto;
+
 	dut_spi_dt: test-spi-dev@0 {
 		compatible = "vnd,spi-device";
 		spi-max-frequency = <DT_FREQ_M(8)>;

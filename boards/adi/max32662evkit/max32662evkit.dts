@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Analog Devices, Inc.
+ * Copyright (c) 2024-2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -10,7 +10,6 @@
 #include <adi/max32/max32662-pinctrl.dtsi>
 #include <zephyr/dt-bindings/gpio/adi-max32-gpio.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/dma/max32662_dma.h>
 #include <zephyr/dt-bindings/mipi_dbi/mipi_dbi.h>
 
 / {
@@ -18,6 +17,7 @@
 	compatible = "adi,max32662evkit";
 
 	chosen {
+		zephyr,code-partition = &code_partition;
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,sram = &sram2;
@@ -28,6 +28,7 @@
 
 	leds {
 		compatible = "gpio-leds";
+
 		led1: led_1 {
 			gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
 			label = "Red LED";
@@ -36,9 +37,10 @@
 
 	buttons {
 		compatible = "gpio-keys";
+
 		pb1: pb1 {
-			gpios = <&gpio0 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW
-						| MAX32_GPIO_VSEL_VDDIOH)>;
+			gpios = <&gpio0 6
+				 (GPIO_PULL_UP | GPIO_ACTIVE_LOW | MAX32_GPIO_VSEL_VDDIOH)>;
 			label = "SW3";
 			zephyr,code = <INPUT_KEY_0>;
 		};
@@ -139,11 +141,11 @@
 };
 
 &spi1a_mosi_p0_8 {
-	power-source=<MAX32_VSEL_VDDIOH>;
+	power-source = <MAX32_VSEL_VDDIOH>;
 };
 
 &spi1a_sck_p0_17 {
-	power-source=<MAX32_VSEL_VDDIOH>;
+	power-source = <MAX32_VSEL_VDDIOH>;
 };
 
 &spi1 {
@@ -157,4 +159,24 @@
 	status = "okay";
 	pinctrl-0 = <&can0b_tx_p0_16 &can0b_rx_p0_15>;
 	pinctrl-names = "default";
+};
+
+&flash0 {
+	partitions {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		code_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
+			reg = <0x0 DT_SIZE_K(192)>;
+			read-only;
+		};
+
+		storage_partition: partition@30000 {
+			compatible = "zephyr,mapped-partition";
+			label = "storage";
+			reg = <0x30000 DT_SIZE_K(64)>;
+		};
+	};
 };

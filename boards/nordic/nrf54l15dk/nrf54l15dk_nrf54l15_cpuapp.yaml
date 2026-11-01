@@ -9,16 +9,16 @@ toolchain:
   - gnuarmemb
   - zephyr
 sysbuild: true
-ram: 188
-flash: 1428
+ram: 255
+flash: 712
 supported:
   - adc
   - counter
   - dmic
   - gpio
   - i2c
+  - i2s
   - pwm
   - retained_mem
   - spi
   - watchdog
-  - i2s

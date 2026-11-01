@@ -45,6 +45,7 @@ static void start_drdy_cooldown_timer(const struct device *dev)
 
 static void pat9136_complete_result(struct rtio *ctx,
 				    const struct rtio_sqe *sqe,
+				    int result,
 				    void *arg)
 {
 	const struct device *dev = (const struct device *)arg;
@@ -74,11 +75,13 @@ static void pat9136_complete_result(struct rtio *ctx,
 
 	/** Attempt chip recovery if erratic behavior is detected  */
 	if (!REG_OBSERVATION_READ_IS_VALID(edata->observation)) {
-
 		LOG_WRN("CHIP OK register indicates issues. Attempting chip recovery: 0x%02X",
 			edata->observation);
+		result = -EAGAIN;
+	}
 
-		rtio_iodev_sqe_err(iodev_sqe, -EAGAIN);
+	if (result < 0) {
+		rtio_iodev_sqe_err(iodev_sqe, result);
 	} else {
 		rtio_iodev_sqe_ok(iodev_sqe, 0);
 	}
@@ -132,10 +135,14 @@ static void pat9136_stream_get_data(const struct device *dev)
 		return;
 	}
 
-	struct rtio_sqe *write_res_x_sqe = rtio_sqe_acquire(data->rtio.ctx);
-	struct rtio_sqe *read_res_x_sqe = rtio_sqe_acquire(data->rtio.ctx);
-	struct rtio_sqe *write_res_y_sqe = rtio_sqe_acquire(data->rtio.ctx);
-	struct rtio_sqe *read_res_y_sqe = rtio_sqe_acquire(data->rtio.ctx);
+	struct rtio_sqe *res_sqes[2 * sizeof(buf->header.resolution.buf)];
+	bool res_sqes_ok = true;
+
+	for (size_t i = 0 ; i < ARRAY_SIZE(res_sqes) ; i++) {
+		res_sqes[i] = rtio_sqe_acquire(data->rtio.ctx);
+		res_sqes_ok = res_sqes_ok && (res_sqes[i] != NULL);
+	}
+
 	struct rtio_sqe *write_sqe = rtio_sqe_acquire(data->rtio.ctx);
 	struct rtio_sqe *read_sqe = rtio_sqe_acquire(data->rtio.ctx);
 	struct rtio_sqe *cb_sqe = rtio_sqe_acquire(data->rtio.ctx);
@@ -153,57 +160,40 @@ static void pat9136_stream_get_data(const struct device *dev)
 	}
 	buf->header.timestamp = sensor_clock_cycles_to_ns(cycles);
 
-	CHECKIF(!write_res_x_sqe || !read_res_x_sqe ||
-		!write_res_y_sqe || !read_res_y_sqe ||
-		!write_sqe || !read_sqe || !cb_sqe) {
+	CHECKIF(!res_sqes_ok || !write_sqe || !read_sqe || !cb_sqe) {
+		struct rtio_iodev_sqe *iodev_sqe = data->stream.iodev_sqe;
+
 		LOG_ERR("Failed to acquire RTIO SQE's. Dropping all pending SQE's");
 		rtio_sqe_drop_all(data->rtio.ctx);
 
 		data->stream.iodev_sqe = NULL;
-		rtio_iodev_sqe_err(data->stream.iodev_sqe, -ENOMEM);
+		rtio_iodev_sqe_err(iodev_sqe, -ENOMEM);
 		return;
 	}
 
-	/* X Resolution used for decoding DXY in mm */
-	{
-		val = REG_RESOLUTION_X_LOWER | REG_SPI_READ_BIT;
+	/** X/Y Resolution used for decoding DXY in mm. Chip only supports
+	 * "burst reads" for the Data, and hence we can't just perform a
+	 * multi-byte read here. Hence, we're iterating over all resolution
+	 * registers.
+	 */
+	for (size_t i = 0 ; i < sizeof(buf->header.resolution.buf) ; i++) {
+		val = (REG_RESOLUTION_X_LOWER + i) | REG_SPI_READ_BIT;
 
-		rtio_sqe_prep_tiny_write(write_res_x_sqe,
+		rtio_sqe_prep_tiny_write(res_sqes[2 * i],
 					 data->rtio.iodev,
 					 RTIO_PRIO_HIGH,
 					 &val,
 					 1,
 					 NULL);
-		write_res_x_sqe->flags |= RTIO_SQE_TRANSACTION;
+		res_sqes[2 * i]->flags |= RTIO_SQE_TRANSACTION;
 
-		rtio_sqe_prep_read(read_res_x_sqe,
+		rtio_sqe_prep_read(res_sqes[(2 * i) + 1],
 				   data->rtio.iodev,
 				   RTIO_PRIO_HIGH,
-				   &buf->header.resolution.buf[0],
+				   &buf->header.resolution.buf[i],
 				   1,
 				   NULL);
-		read_res_x_sqe->flags |= RTIO_SQE_CHAINED;
-	}
-
-	/* Y Resolution used for decoding DY in mm */
-	{
-		val = REG_RESOLUTION_Y_LOWER | REG_SPI_READ_BIT;
-
-		rtio_sqe_prep_tiny_write(write_res_y_sqe,
-					 data->rtio.iodev,
-					 RTIO_PRIO_HIGH,
-					 &val,
-					 1,
-					 NULL);
-		write_res_y_sqe->flags |= RTIO_SQE_TRANSACTION;
-
-		rtio_sqe_prep_read(read_res_y_sqe,
-				   data->rtio.iodev,
-				   RTIO_PRIO_HIGH,
-				   &buf->header.resolution.buf[2],
-				   1,
-				   NULL);
-		read_res_y_sqe->flags |= RTIO_SQE_CHAINED;
+		res_sqes[(2 * i) + 1]->flags |= RTIO_SQE_CHAINED;
 	}
 
 	/* Pull out data */
@@ -329,7 +319,7 @@ void pat9136_stream_submit(const struct device *dev,
 	struct pat9136_stream stream = {0};
 
 	for (size_t i = 0 ; i < read_config->count ; i++) {
-		switch (read_config->channels[i].chan_type) {
+		switch (read_config->triggers[i].trigger) {
 		case SENSOR_TRIG_DATA_READY:
 			stream.settings.enabled.drdy = true;
 			stream.settings.opt.drdy = read_config->triggers[i].opt;
@@ -413,7 +403,7 @@ int pat9136_stream_init(const struct device *dev)
 	}
 
 	if (!gpio_is_ready_dt(&cfg->int_gpio)) {
-		LOG_ERR("Interrupt GPIO not ready");
+		LOG_ERR_DEVICE_NOT_READY(cfg->int_gpio.port);
 		return -ENODEV;
 	}
 

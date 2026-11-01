@@ -26,9 +26,7 @@ K_KERNEL_STACK_ARRAY_DECLARE(z_interrupt_stacks, CONFIG_MP_MAX_NUM_CPUS,
 
 static ALWAYS_INLINE void arch_kernel_init(void)
 {
-#ifdef CONFIG_SOC_PER_CORE_INIT_HOOK
 	soc_per_core_init_hook();
-#endif /* CONFIG_SOC_PER_CORE_INIT_HOOK */
 }
 
 void xtensa_switch(void *switch_to, void **switched_from);
@@ -121,19 +119,6 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 					     void *old_switch_handle,
 					     struct k_thread *new_thread)
 {
-#ifdef CONFIG_SCHED_CPU_MASK_PIN_ONLY
-	ARG_UNUSED(old_thread);
-	ARG_UNUSED(old_switch_handle);
-	ARG_UNUSED(new_thread);
-
-	/* This kconfig option ensures that a living thread will never
-	 * be executed in a different CPU so we can safely return without
-	 * invalidate and/or flush threads cache.
-	 */
-	return;
-#endif /* CONFIG_SCHED_CPU_MASK_PIN_ONLY */
-
-#if !defined(CONFIG_SCHED_CPU_MASK_PIN_ONLY)
 	int32_t curr_cpu = _current_cpu->id;
 
 	size_t ostack = old_thread->stack_info.start;
@@ -271,14 +256,30 @@ static ALWAYS_INLINE void arch_cohere_stacks(struct k_thread *old_thread,
 
 	flush_end = ROUND_DOWN(flush_end, XCHAL_DCACHE_LINESIZE);
 	__asm__ volatile("wsr %0, " ZSR_FLUSH_STR :: "r"(flush_end));
-
-#endif /* !CONFIG_SCHED_CPU_MASK_PIN_ONLY */
 }
 #endif
 
 static inline bool arch_is_in_isr(void)
 {
-	return arch_curr_cpu()->nested != 0U;
+	uint32_t nested;
+
+#if defined(CONFIG_SMP)
+	/*
+	 * Lock interrupts on SMP to ensure that the caller does not migrate
+	 * to another CPU before we get to read the nested field.
+	 */
+	unsigned int key;
+
+	key = arch_irq_lock();
+#endif
+
+	nested = arch_curr_cpu()->nested;
+
+#if defined(CONFIG_SMP)
+	arch_irq_unlock(key);
+#endif
+
+	return nested != 0U;
 }
 
 #ifdef __cplusplus

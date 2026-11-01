@@ -18,8 +18,49 @@
 
 LOG_MODULE_DECLARE(ext2);
 
-K_MEM_SLAB_DEFINE(file_struct_slab, sizeof(struct ext2_file), CONFIG_EXT2_MAX_FILES,
-		  sizeof(void *));
+K_MEM_SLAB_DEFINE_TYPE(file_struct_slab, struct ext2_file, CONFIG_EXT2_MAX_FILES);
+
+/* Root, "." and ".." are not valid unlink/rename targets. A root lookup
+ * also leaves parent NULL, which the backend must not dereference.
+ */
+static bool ext2_forbidden_path(const char *path)
+{
+	const char *name;
+
+	if (path == NULL) {
+		return true;
+	}
+
+	while (*path == '/') {
+		path++;
+	}
+
+	if (*path == '\0') {
+		return true;
+	}
+
+	name = path;
+	while (*path != '\0') {
+		if (*path == '/') {
+			name = path + 1;
+		}
+		path++;
+	}
+
+	if (name[0] == '\0') {
+		return true;
+	}
+
+	if (name[0] == '.' && name[1] == '\0') {
+		return true;
+	}
+
+	if (name[0] == '.' && name[1] == '.' && name[2] == '\0') {
+		return true;
+	}
+
+	return false;
+}
 
 /* File operations */
 
@@ -114,23 +155,22 @@ out:
 
 static int ext2_close(struct fs_file_t *filp)
 {
-	int rc;
 	struct ext2_file *f = filp->filep;
+	int sync_rc;
+	int drop_rc;
 
-	rc = ext2_inode_sync(f->f_inode);
-	if (rc < 0) {
-		goto out;
+	if (f == NULL) {
+		return 0;
 	}
 
-	rc = ext2_inode_drop(f->f_inode);
-	if (rc < 0) {
-		goto out;
-	}
+	sync_rc = ext2_inode_sync(f->f_inode);
+	drop_rc = ext2_inode_drop(f->f_inode);
 
 	k_mem_slab_free(&file_struct_slab, (void *)f);
 	filp->filep = NULL;
-out:
-	return rc;
+
+	/* Closing is terminal; a second fs_close() only clears the core handle. */
+	return sync_rc < 0 ? sync_rc : drop_rc;
 }
 
 static ssize_t ext2_read(struct fs_file_t *filp, void *dest, size_t nbytes)
@@ -510,6 +550,10 @@ static int ext2_unlink(struct fs_mount_t *mountp, const char *name)
 		.parent = NULL,
 	};
 
+	if (ext2_forbidden_path(path)) {
+		return -EINVAL;
+	}
+
 	args.flags = LOOKUP_ARG_UNLINK;
 
 	rc = ext2_lookup_inode(fs, &args);
@@ -539,6 +583,10 @@ static int ext2_rename(struct fs_mount_t *mountp, const char *from, const char *
 
 	const char *path_from = fs_impl_strip_prefix(from, mountp);
 	const char *path_to = fs_impl_strip_prefix(to, mountp);
+
+	if (ext2_forbidden_path(path_from) || ext2_forbidden_path(path_to)) {
+		return -EINVAL;
+	}
 
 	struct ext2_lookup_args args_from = {
 		.path = path_from,
@@ -646,6 +694,39 @@ static const struct fs_file_system_t ext2_fs = {
 #endif
 };
 
+#define DT_DRV_COMPAT zephyr_fstab_ext2
+
+#define DEFINE_FS(inst)                                                                            \
+	BUILD_ASSERT(DT_INST_PROP(inst, disk_access), "EXT2 needs disk-access");                   \
+	struct fs_mount_t FS_FSTAB_ENTRY(DT_DRV_INST(inst)) = {                                    \
+		.type = FS_EXT2,                                                                   \
+		.mnt_point = DT_INST_PROP(inst, mount_point),                                      \
+		.storage_dev = DT_INST_PROP(inst, disk_name),                                      \
+		.flags = FSTAB_ENTRY_DT_MOUNT_FLAGS(DT_DRV_INST(inst)),                            \
+	};
+
+DT_INST_FOREACH_STATUS_OKAY(DEFINE_FS);
+
+#ifdef CONFIG_EXT2_FSTAB_AUTOMOUNT
+#define REFERENCE_MOUNT(inst)                                                                      \
+	IF_ENABLED(DT_INST_PROP(inst, automount), ((&FS_FSTAB_ENTRY(DT_DRV_INST(inst))),))
+
+static void automount_if_enabled(struct fs_mount_t *mountp)
+{
+	int ret;
+
+	/* We already filter it during build. */
+	__ASSERT_NO_MSG((mountp->flags & FS_MOUNT_FLAG_AUTOMOUNT) != 0);
+
+	ret = fs_mount(mountp);
+	if (ret < 0) {
+		LOG_ERR("Error mounting filesystem: at %s: %d", mountp->mnt_point, ret);
+	} else {
+		LOG_DBG("EXT2 Filesystem \"%s\" initialized", mountp->mnt_point);
+	}
+}
+#endif /* CONFIG_EXT2_FSTAB_AUTOMOUNT */
+
 static int ext2_init(void)
 {
 	int rc = fs_register(FS_EXT2, &ext2_fs);
@@ -655,8 +736,19 @@ static int ext2_init(void)
 	} else {
 		LOG_DBG("Ext2 fs registered\n");
 	}
+#ifdef CONFIG_EXT2_FSTAB_AUTOMOUNT
+	if (rc == 0) {
+		struct fs_mount_t *partitions[] = {DT_INST_FOREACH_STATUS_OKAY(REFERENCE_MOUNT)};
+
+		for (size_t i = 0; i < ARRAY_SIZE(partitions); i++) {
+			struct fs_mount_t *mpi = partitions[i];
+
+			automount_if_enabled(mpi);
+		}
+	}
+#endif /* CONFIG_EXT2_FSTAB_AUTOMOUNT */
 
 	return rc;
 }
 
-SYS_INIT(ext2_init, POST_KERNEL, 99);
+SYS_INIT(ext2_init, POST_KERNEL, CONFIG_FILE_SYSTEM_INIT_PRIORITY);

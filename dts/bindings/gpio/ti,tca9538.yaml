@@ -13,7 +13,6 @@ properties:
     const: 2
 
   ngpios:
-    required: true
     const: 8
     description: |
       Number of GPIOs available on port expander.
@@ -37,6 +36,10 @@ properties:
       Interrupt mask register is set to logic 1 by default without
       enabling interrupts. Setting corresponding mask bits to logic
       0 to enable the interrupts.
+
+  has-pud:
+    type: boolean
+    description: Supports pull-up/pull-down resistors
 
 gpio-cells:
   - pin

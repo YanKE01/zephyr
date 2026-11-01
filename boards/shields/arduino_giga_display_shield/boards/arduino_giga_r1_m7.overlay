@@ -5,13 +5,9 @@
  */
 
 #include <zephyr/dt-bindings/display/panel.h>
+#include <zephyr/dt-bindings/led/led.h>
 
 / {
-	lvgl_pointer {
-		compatible = "zephyr,lvgl-pointer-input";
-		input = <&gt911>;
-	};
-
 	aliases {
 		accel0 = &gt911;
 	};
@@ -22,11 +18,6 @@
 	};
 };
 
-&sdram1 {
-	/* Frame buffer memory cache will cause screen flickering. */
-	zephyr,memory-attr = <( DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE) )>;
-};
-
 &zephyr_lcd_controller {
 	status = "okay";
 	ext-sdram = <&sdram1>;
@@ -35,7 +26,7 @@
 	def-back-color-red = <0>;
 	def-back-color-green = <0>;
 	def-back-color-blue = <0>;
-	pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+	pixel-format = <PANEL_PIXEL_FORMAT_RGB_888>;
 
 	disp-on-gpios = <&gpioc 6 GPIO_ACTIVE_HIGH>;
 	bl-ctrl-gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>;
@@ -47,12 +38,12 @@
 		vsync-active = <0>;
 		de-active = <0>;
 		pixelclk-active = <0>;
-		hback-porch = <40>;
-		hsync-len = <32>;
-		hfront-porch = <8>;
-		vback-porch = <6>;
-		vsync-len = <8>;
-		vfront-porch = <9>;
+		hback-porch = <6>;
+		hsync-len = <8>;
+		hfront-porch = <1>;
+		vback-porch = <40>;
+		vsync-len = <32>;
+		vfront-porch = <8>;
 	};
 };
 
@@ -60,11 +51,11 @@
 &pll3 {
 	status = "okay";
 	clocks = <&clk_hse>;
-	div-m = <16>;
+	div-m = <8>;
 	mul-n = <110>;
-	div-p = <2>;
-	div-q = <2>;
-	div-r = <4>; /* 27.5 MHz */
+	div-p = <4>;
+	div-q = <4>;
+	div-r = <8>; /* 27.5 MHz */
 };
 
 &zephyr_mipi_dsi {
@@ -83,6 +74,8 @@
 &i2c4 {
 	pinctrl-0 = <&i2c4_scl_pb6 &i2c4_sda_ph12>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 6 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpioh 12 GPIO_ACTIVE_HIGH>;
 	clock-frequency = <I2C_BITRATE_FAST>;
 	status = "okay";
 
@@ -92,5 +85,17 @@
 		alt-addr = <0x14>;
 		reset-gpios = <&gpioi 2 GPIO_ACTIVE_LOW>;
 		irq-gpios = <&gpioi 1 GPIO_ACTIVE_HIGH>;
+	};
+
+	is31fl3197@50 {
+		compatible = "issi,is31fl3197";
+		reg = <0x50>;
+
+		led_rgb {
+			label = "RGB LED";
+			color-mapping = <LED_COLOR_ID_RED>,
+					<LED_COLOR_ID_GREEN>,
+					<LED_COLOR_ID_BLUE>;
+		};
 	};
 };

@@ -5,7 +5,7 @@
  */
 
 #include <zephyr/devicetree.h>
-#include <zephyr/arch/arm/cortex_m/arm_mpu_mem_cfg.h>
+#include <zephyr/arch/arm/mpu/arm_mpu_mem_cfg.h>
 
 static const struct arm_mpu_region mpu_regions[] = {
 	MPU_REGION_ENTRY("FLASH",
@@ -13,8 +13,8 @@ static const struct arm_mpu_region mpu_regions[] = {
 			 REGION_FLASH_ATTR(CONFIG_FLASH_BASE_ADDRESS, CONFIG_FLASH_SIZE * 1024)),
 
 	MPU_REGION_ENTRY("SRAM",
-			 CONFIG_SRAM_BASE_ADDRESS,
-			 REGION_RAM_ATTR(CONFIG_SRAM_BASE_ADDRESS, CONFIG_SRAM_SIZE * 1024)),
+			 DT_CHOSEN_SRAM_ADDR,
+			 REGION_RAM_ATTR(DT_CHOSEN_SRAM_ADDR, DT_CHOSEN_SRAM_SIZE)),
 
 #if DT_NODE_EXISTS(DT_NODELABEL(itcm))
 	MPU_REGION_ENTRY("ITCM",

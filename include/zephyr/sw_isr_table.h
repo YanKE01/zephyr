@@ -41,14 +41,18 @@ struct _isr_table_entry {
 	void (*isr)(const void *);
 };
 
+#if defined(CONFIG_GEN_SW_ISR_TABLE_ARRAY)
 /* The software ISR table itself, an array of these structures indexed by the
  * irq line
  */
 extern
 #ifndef CONFIG_DYNAMIC_INTERRUPTS
-const
-#endif
-struct _isr_table_entry _sw_isr_table[];
+	const
+#endif /* CONFIG_DYNAMIC_INTERRUPTS */
+	struct _isr_table_entry _sw_isr_table[];
+#elif defined(CONFIG_GEN_SW_ISR_TABLE_SWITCH)
+extern void __sw_isr_table get_isr_entry(int irq_number, struct _isr_table_entry *entry);
+#endif /* CONFIG_GEN_SW_ISR_TABLE_ARRAY */
 
 struct _irq_parent_entry {
 	const struct device *dev;
@@ -208,7 +212,7 @@ struct z_shared_isr_table_entry z_shared_sw_isr_table[];
 /* Separated macro to create ISR table entry only.
  * Used by Z_ISR_DECLARE and ISR tables generation script.
  */
-#define _Z_ISR_TABLE_ENTRY(irq, func, param, sect) \
+#define _Z_ISR_TABLE_ENTRY(func, param, sect) \
 	static Z_DECL_ALIGN(struct _isr_table_entry)                                      \
 		__attribute__((section(sect)))                                            \
 		__used _MK_ISR_ELEMENT_NAME(func, __COUNTER__) = {                        \
@@ -220,7 +224,7 @@ struct z_shared_isr_table_entry z_shared_sw_isr_table[];
 	_Z_ISR_DECLARE_C(irq, flags, func, param, counter)
 
 #define _Z_ISR_DECLARE_C(irq, flags, func, param, counter)                                         \
-	_Z_ISR_TABLE_ENTRY(irq, func, param, _MK_ISR_ELEMENT_SECTION(counter));                    \
+	_Z_ISR_TABLE_ENTRY(func, param, _MK_ISR_ELEMENT_SECTION(counter));                         \
 	static Z_DECL_ALIGN(struct _isr_list_sname) Z_GENERIC_SECTION(.intList) __used             \
 	_MK_ISR_NAME(func, counter) = {irq, flags, {_MK_ISR_ELEMENT_SECTION(counter)}}
 
@@ -237,7 +241,7 @@ struct z_shared_isr_table_entry z_shared_sw_isr_table[];
 /* Separated macro to create ISR Direct table entry only.
  * Used by Z_ISR_DECLARE_DIRECT and ISR tables generation script.
  */
-#define _Z_ISR_DIRECT_TABLE_ENTRY(irq, func, sect)                                                 \
+#define _Z_ISR_DIRECT_TABLE_ENTRY(func, sect)                                                      \
 	COND_CODE_1(CONFIG_IRQ_VECTOR_TABLE_JUMP_BY_ADDRESS, (                                     \
 			static Z_DECL_ALIGN(uintptr_t)                                             \
 			__attribute__((section(sect)))                                             \
@@ -255,7 +259,7 @@ struct z_shared_isr_table_entry z_shared_sw_isr_table[];
 	_Z_ISR_DECLARE_DIRECT_C(irq, flags, func, counter)
 
 #define _Z_ISR_DECLARE_DIRECT_C(irq, flags, func, counter)                                         \
-	_Z_ISR_DIRECT_TABLE_ENTRY(irq, func, _MK_IRQ_ELEMENT_SECTION(counter));                    \
+	_Z_ISR_DIRECT_TABLE_ENTRY(func, _MK_IRQ_ELEMENT_SECTION(counter));                         \
 	static Z_DECL_ALIGN(struct _isr_list_sname) Z_GENERIC_SECTION(.intList)                    \
 		__used _MK_ISR_NAME(func, counter) = {                                             \
 			irq,                                                                       \
@@ -295,11 +299,11 @@ struct z_shared_isr_table_entry z_shared_sw_isr_table[];
 #define IRQ_TABLE_SIZE (CONFIG_NUM_IRQS - CONFIG_GEN_IRQ_START_VECTOR)
 
 #ifdef CONFIG_DYNAMIC_INTERRUPTS
-void z_isr_install(unsigned int irq, void (*routine)(const void *),
+void z_isr_install(unsigned int irq, void (*routine)(const void *parameter),
 		   const void *param);
 
 #ifdef CONFIG_SHARED_INTERRUPTS
-int z_isr_uninstall(unsigned int irq, void (*routine)(const void *),
+int z_isr_uninstall(unsigned int irq, void (*routine)(const void *parameter),
 		    const void *param);
 #endif /* CONFIG_SHARED_INTERRUPTS */
 #endif

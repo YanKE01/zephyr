@@ -19,7 +19,7 @@
 		test_ethernet: ethernet {
 			compatible = "vnd,ethernet";
 
-			test_mdio: mdio {
+			test_mdio0: mdio {
 				compatible = "zephyr,mdio-gpio";
 				mdc-gpios = <&test_gpio 0 0>;
 				mdio-gpios = <&test_gpio 0 0>;
@@ -52,20 +52,16 @@
 
 				ethernet-phy@3 {
 					reg = <0x3>;
-					compatible = "microchip,ksz8794";
-					status = "okay";
-					reset-gpios = <&test_gpio 0 0>;
-					int-gpios = <&test_gpio 0 0>;
-					microchip,interface-type = "rmii";
+					compatible = "microchip,vsc8541";
+					microchip,interface-type = "rgmii";
 				};
 
 				ethernet-phy@4 {
 					reg = <0x4>;
-					compatible = "microchip,ksz8863";
-					status = "okay";
-					reset-gpios = <&test_gpio 0 0>;
-					int-gpios = <&test_gpio 0 0>;
+					compatible = "microchip,vsc8541";
 					microchip,interface-type = "rmii";
+					vsc8531,vddmac = <3300>;
+					vsc8531,edge-slowdown = <7>;
 				};
 
 				ethernet-phy@5 {
@@ -79,6 +75,7 @@
 					compatible = "adi,adin2111-phy";
 					status = "okay";
 				};
+
 				ethernet-phy@7 {
 					reg = <0x7>;
 					compatible = "davicom,dm8806-phy";
@@ -95,8 +92,34 @@
 					status = "okay";
 					reset-gpios = <&test_gpio 0 0>;
 					int-gpios = <&test_gpio 0 0>;
+					ti,interface-type = "rgmii";
+				};
+
+				ethernet-phy@9 {
+					reg = <0x9>;
+					compatible = "microchip,ksz9131";
+					status = "okay";
+					int-gpios = <&test_gpio 0 0>;
+				};
+
+				ethernet-phy@a {
+					reg = <0xa>;
+					compatible = "ethernet-phy";
+					status = "okay";
+					reset-gpios = <&test_gpio 0 0>;
+					reset-assert-duration-us = <100>;
+					reset-deassertion-timeout-ms = <10>;
 				};
 			};
+		};
+
+		test_mdio1: mdio {
+			compatible = "zephyr,mdio-gpio";
+			mdc-gpios = <&test_gpio 0 0>;
+			mdio-gpios = <&test_gpio 0 0>;
+			status = "okay";
+			#address-cells = <1>;
+			#size-cells = <0>;
 		};
 	};
 };

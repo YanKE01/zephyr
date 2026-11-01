@@ -98,7 +98,7 @@ static void pat9136_convert_raw_to_q31(struct pat9136_encoded_data *edata,
 		intermediate = (((int64_t)reading * INT64_C(1000000) * 25.4));
 		intermediate /= resolution;
 
-		intermediate *= ((int64_t)INT32_MAX + 1) / ((1 << shift) * INT64_C(1000000));
+		intermediate = (intermediate * (INT64_C(1) << (31 - shift))) / INT64_C(1000000);
 
 		*out = CLAMP(intermediate, INT32_MIN, INT32_MAX);
 
@@ -331,8 +331,8 @@ int pat9136_encode(const struct device *dev,
 	int err;
 
 	edata->header.channels = 0;
-	edata->header.events.drdy = 0;
-	edata->header.events.motion = 0;
+	edata->header.events.drdy = false;
+	edata->header.events.motion = false;
 
 	for (size_t i = 0 ; i < num_channels; i++) {
 		edata->header.channels |= pat9136_encode_channel(channels[i].chan_type);

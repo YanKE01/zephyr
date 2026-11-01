@@ -14,8 +14,8 @@
 #include <zephyr/modem/pipe.h>
 #include <zephyr/modem/stats.h>
 
-#ifndef ZEPHYR_MODEM_BACKEND_UART_
-#define ZEPHYR_MODEM_BACKEND_UART_
+#ifndef ZEPHYR_INCLUDE_MODEM_BACKEND_UART_H_
+#define ZEPHYR_INCLUDE_MODEM_BACKEND_UART_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +68,7 @@ struct modem_backend_uart_async {
 
 struct modem_backend_uart {
 	const struct device *uart;
+	const struct gpio_dt_spec *dtr_gpio;
 	struct modem_pipe pipe;
 	struct k_work_delayable receive_ready_work;
 	struct k_work transmit_idle_work;
@@ -85,6 +86,7 @@ struct modem_backend_uart {
 
 struct modem_backend_uart_config {
 	const struct device *uart;
+	const struct gpio_dt_spec *dtr_gpio;
 	/* Address must be word-aligned when CONFIG_MODEM_BACKEND_UART_ASYNC_HWFC is enabled. */
 	uint8_t *receive_buf;
 	uint32_t receive_buf_size;
@@ -99,4 +101,4 @@ struct modem_pipe *modem_backend_uart_init(struct modem_backend_uart *backend,
 }
 #endif
 
-#endif /* ZEPHYR_MODEM_BACKEND_UART_ */
+#endif /* ZEPHYR_INCLUDE_MODEM_BACKEND_UART_H_ */

@@ -454,7 +454,7 @@ static int vdec_sunxi_init(const struct device *dev)
 	return 0;
 }
 
-static const struct vdec_driver_api vdec_sunxi_api = {
+static DEVICE_API(vdec, vdec_sunxi_api) = {
 	.decode_image = vdec_sunxi_decode_image,
 	.frame_release = vdec_sunxi_frame_release,
 	.stream_open = vdec_sunxi_stream_open,

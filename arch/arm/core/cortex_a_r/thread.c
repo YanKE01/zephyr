@@ -15,8 +15,8 @@
  */
 
 #include <zephyr/kernel.h>
+#include <kernel_internal.h>
 #include <zephyr/llext/symbol.h>
-#include <ksched.h>
 #include <zephyr/sys/barrier.h>
 #include <stdbool.h>
 #include <cmsis_core.h>
@@ -83,6 +83,16 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack,
 		     void *p1, void *p2, void *p3)
 {
 	struct __basic_sf *iframe;
+
+#if defined(CONFIG_FP_HARDABI) || defined(CONFIG_FP_SOFTABI)
+	/*
+	 * Both CONFIG_FP_HARDABI and CONFIG_FP_SOFTABI allow the compiler
+	 * to generate FP instructions--even without explicit use of FP types.
+	 * All threads must thus be considered as using FP registers and
+	 * tagged with K_FP_REGS.
+	 */
+	thread->base.user_options |= K_FP_REGS;
+#endif
 
 #ifdef CONFIG_MPU_STACK_GUARD
 #if defined(CONFIG_USERSPACE)
@@ -443,3 +453,12 @@ int arch_float_enable(struct k_thread *thread, unsigned int options)
 	return -ENOTSUP;
 }
 #endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
+
+int arch_coprocessors_disable(struct k_thread *thread)
+{
+#if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
+	return arch_float_disable(thread);
+#else
+	return -ENOTSUP;
+#endif
+}

@@ -45,9 +45,17 @@ LOG_MODULE_REGISTER(mb85rsxx, CONFIG_EEPROM_LOG_LEVEL);
  * MB85RSXX product ID (2 bytes); first byte provides memory size, so let's use a mask later when
  * checking it
  */
-#define EEPROM_MB85RSXX_PROD_ID		0x20U
-#define EEPROM_MB85RSXX_PROD_ID2	0x03U
-#define EEPROM_MB85RSXX_PROD_MASK	GENMASK(7, 5)
+#define EEPROM_MB85RSXX_PROD_ID1_MB85RS2MT	0x20U
+#define EEPROM_MB85RSXX_PROD_ID1_MB85RS2MTA	0x48U
+#define EEPROM_MB85RSXX_PROD_ID2	        0x03U
+#define EEPROM_MB85RSXX_PROD_MASK	        GENMASK(7, 5)
+
+/* MB85RS64V (64 Kbit) product ID */
+#define EEPROM_MB85RSXX_PROD_ID1_MB85RS64V	0x03U
+#define EEPROM_MB85RSXX_PROD_ID2_MB85RS64V	0x02U
+
+/* Up to 512 Kbit the address is 2 bytes, above that 3 */
+#define EEPROM_MB85RSXX_CMD_LEN(config)		((config)->size > 0x10000 ? 4U : 3U)
 
 struct eeprom_mb85rsxx_config {
 	struct spi_dt_spec spi;
@@ -63,6 +71,7 @@ static int eeprom_mb85rsxx_read(const struct device *dev, off_t offset, void *bu
 {
 	const struct eeprom_mb85rsxx_config *config = dev->config;
 	struct eeprom_mb85rsxx_data *data = dev->data;
+	const size_t cmd_len = EEPROM_MB85RSXX_CMD_LEN(config);
 	uint8_t cmd[4] = {EEPROM_MB85RSXX_READ, 0, 0, 0};
 	uint8_t *paddr = &cmd[1];
 	int err;
@@ -77,13 +86,15 @@ static int eeprom_mb85rsxx_read(const struct device *dev, off_t offset, void *bu
 	}
 
 	/* Populate address in command */
-	*paddr++ = (offset >> 16);
+	if (cmd_len == 4U) {
+		*paddr++ = (offset >> 16);
+	}
 	*paddr++ = (offset >> 8);
 	*paddr++ = offset;
 
 	const struct spi_buf tx_buf = {
 		.buf = cmd,
-		.len = sizeof(cmd),
+		.len = cmd_len,
 	};
 	const struct spi_buf_set tx = {
 		.buffers = &tx_buf,
@@ -92,7 +103,7 @@ static int eeprom_mb85rsxx_read(const struct device *dev, off_t offset, void *bu
 	const struct spi_buf rx_bufs[2] = {
 		{
 			.buf = NULL,
-			.len = sizeof(cmd),
+			.len = cmd_len,
 		},
 		{
 			.buf = buf,
@@ -154,6 +165,7 @@ static int eeprom_mb85rsxx_write(const struct device *dev, off_t offset, const v
 {
 	const struct eeprom_mb85rsxx_config *config = dev->config;
 	struct eeprom_mb85rsxx_data *data = dev->data;
+	const size_t cmd_len = EEPROM_MB85RSXX_CMD_LEN(config);
 	uint8_t cmd[4] = {EEPROM_MB85RSXX_WRITE, 0, 0, 0};
 	uint8_t *paddr = &cmd[1];
 	int err;
@@ -169,14 +181,16 @@ static int eeprom_mb85rsxx_write(const struct device *dev, off_t offset, const v
 	}
 
 	/* Populate address in command */
-	*paddr++ = (offset >> 16) & 0xFF;
+	if (cmd_len == 4U) {
+		*paddr++ = (offset >> 16) & 0xFF;
+	}
 	*paddr++ = (offset >> 8) & 0xFF;
 	*paddr++ = offset & 0xFF;
 
 	const struct spi_buf tx_bufs[2] = {
 		{
 			.buf = cmd,
-			.len = sizeof(cmd),
+			.len = cmd_len,
 		},
 		{
 			.buf = (void *)buf,
@@ -261,10 +275,12 @@ static int eeprom_mb85rsxx_rdid(const struct device *dev)
 	}
 
 	/* Validate Manufacturer ID and Product ID */
-	if (id[0] != EEPROM_MB85RSXX_MAN_ID
-		|| id[1] != EEPROM_MB85RSXX_CON_CODE
-		|| (id[2] & EEPROM_MB85RSXX_PROD_MASK) != EEPROM_MB85RSXX_PROD_ID
-		|| id[3] != EEPROM_MB85RSXX_PROD_ID2) {
+	if (id[0] != EEPROM_MB85RSXX_MAN_ID || id[1] != EEPROM_MB85RSXX_CON_CODE ||
+		(((((id[2] & EEPROM_MB85RSXX_PROD_MASK) != EEPROM_MB85RSXX_PROD_ID1_MB85RS2MT) &&
+		   (id[2] != EEPROM_MB85RSXX_PROD_ID1_MB85RS2MTA)) ||
+		  id[3] != EEPROM_MB85RSXX_PROD_ID2) &&
+		 (id[2] != EEPROM_MB85RSXX_PROD_ID1_MB85RS64V ||
+		  id[3] != EEPROM_MB85RSXX_PROD_ID2_MB85RS64V))) {
 		LOG_ERR("invalid device ID: %02X %02X %02X %02X", id[0], id[1], id[2], id[3]);
 		return -EIO;
 	}
@@ -306,7 +322,7 @@ static DEVICE_API(eeprom, mb85rsxx_driver_api) = {
                                                                                                    \
 	static const struct eeprom_mb85rsxx_config eeprom_mb85rsxx_config_##inst = {             \
 		.spi = SPI_DT_SPEC_INST_GET(                                                       \
-			inst, SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB | SPI_WORD_SET(8), 0),         \
+			inst, SPI_OP_MODE_CONTROLLER | SPI_TRANSFER_MSB | SPI_WORD_SET(8)),        \
 		.size = DT_INST_PROP(inst, size),                                                  \
 		.readonly = DT_INST_PROP(inst, read_only),                                         \
 	};                                                                                         \

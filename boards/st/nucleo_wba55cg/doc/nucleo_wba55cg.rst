@@ -12,13 +12,13 @@ easy expansion of the functionality of the STM32 Nucleo open development
 platform with a wide choice of specialized shields.
 
 - Ultra-low-power wireless STM32WBA55CG microcontroller based on the Arm®
-  Cortex®‑M33 core, featuring 1 Mbyte of flash memory and 128 Kbytes of SRAM in
+  Cortex®-M33 core, featuring 1 Mbyte of flash memory and 128 Kbytes of SRAM in
   a UFQFPN48 package
 
 - MCU RF board (MB1863):
 
   - 2.4 GHz RF transceiver supporting Bluetooth® specification v5.3
-  - Arm® Cortex® M33 CPU with TrustZone®, MPU, DSP, and FPU
+  - Arm® Cortex®-M33 CPU with TrustZone®, MPU, DSP, and FPU
   - Integrated PCB antenna
 
 - Three user LEDs
@@ -146,18 +146,45 @@ Supported Features
 
 .. zephyr:board-supported-hw::
 
-Bluetooh support
-----------------
+Bluetooth® and IEEE 802.15.4 support
+------------------------------------
 
-BLE support is enabled on nucleo_wba55cg. To build a zephyr sample using this board
-you first need to install Bluetooth Controller libraries available in Zephyr as binary
-blobs.
+Bluetooth® Low Energy and IEEE 802.15.4 support are enabled on nucleo_wba55cg. To build a Zephyr sample
+using this board you first need to install Bluetooth® and/or IEEE 802.15.4 Controller libraries available
+in Zephyr as binary blobs.
 
 To fetch Binary Blobs:
 
 .. code-block:: console
 
    west blobs fetch hal_stm32
+
+Secure bootloader
+=================
+
+Default Zephyr bootloader
+-------------------------
+
+.. |st_board_name| replace:: Nucleo WBA55CG
+.. |st_board_target| replace:: nucleo_wba55cg
+
+.. include:: ../../common/doc/stm32_common_doc.rst.inc
+  :start-after: stm32_default_zephyr_bootloader_start
+  :end-before: stm32_default_zephyr_bootloader_end
+
+.. include:: ../../common/doc/stm32_common_doc.rst.inc
+  :start-after: stm32wba_default_zephyr_fota_start
+  :end-before: stm32wba_default_zephyr_fota_end
+
+Low Power
+=========
+
+.. |stm32wba_lp_board_name| replace:: Nucleo WBA55CG
+.. |stm32wba_lp_board_target| replace:: nucleo_wba55cg
+
+.. include:: ../../common/doc/stm32_common_doc.rst.inc
+  :start-after: stm32wba_low_power_start
+  :end-before: stm32wba_low_power_end
 
 Connections and IOs
 ===================
@@ -232,7 +259,11 @@ Debugging
 Debugging using OpenOCD
 -----------------------
 
-You can debug an application in the usual way using OpenOCD. Here is an example for the
+OpenOCD added STM32WB6xx full support in September 2023 (`OpenOCD WBA5xx commit`_),
+after v0.12.0 release tag. Zephyr SDK fork of OpenOCD includes this STM32WBA5x support.
+
+Assuming your OpenOCD tool (local or from the Zephyr SDK) supports STM32WBA5x,
+you can debug an application in the usual way using OpenOCD. Here is an example for the
 :zephyr:code-sample:`blinky` application.
 
 .. zephyr-app-commands::
@@ -264,3 +295,6 @@ For that:
 
 .. _STM32CubeProgrammer:
    https://www.st.com/en/development-tools/stm32cubeprog.html
+
+.. _OpenOCD WBA5xx commit:
+   https://github.com/openocd-org/openocd/commit/870769b0ba9f4dae6ada9d8b1a40d75bd83aaa06

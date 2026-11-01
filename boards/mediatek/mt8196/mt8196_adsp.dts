@@ -4,15 +4,15 @@
 #include <mem.h>
 
 /dts-v1/;
-/ {
 
+/ {
 	#address-cells = <1>;
 	#size-cells = <1>;
 
 	sram0: memory@4e100000 {
-		 device_type = "memory";
-		 compatible = "mmio-sram";
-		 reg = <0x4e100000 DT_SIZE_K(512)>;
+		device_type = "memory";
+		compatible = "mmio-sram";
+		reg = <0x4e100000 DT_SIZE_K(512)>;
 	};
 
 	dram0: memory@90000000 {
@@ -103,11 +103,10 @@
 		};
 
 /* Generated code for AFE devices */
-#include "afe-mt8196.dts"
-
+#include "afe-mt8196.dtsi"
 	}; /* soc */
 
-	chosen { };
-	aliases { };
+	chosen {};
 
+	aliases {};
 };

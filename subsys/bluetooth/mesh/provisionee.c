@@ -18,6 +18,7 @@
 #include <zephyr/bluetooth/uuid.h>
 
 #include "common/bt_str.h"
+#include "common/long_wq.h"
 
 #include "crypto.h"
 #include "mesh.h"
@@ -390,7 +391,7 @@ static void prov_pub_key(const uint8_t *data)
 		       PDU_LEN_PUB_KEY);
 	}
 
-	k_work_submit(&dh_gen_work);
+	bt_long_wq_submit(&dh_gen_work);
 }
 
 static void notify_input_complete(void)
@@ -800,6 +801,78 @@ int bt_mesh_prov_disable(bt_mesh_prov_bearer_t bearers)
 	}
 
 	active_bearers &= ~bearers;
+
+	return 0;
+}
+
+int bt_mesh_provisionee_suspend(void)
+{
+	int err;
+
+	if (bt_mesh_is_provisioned()) {
+		/* When provisioned, only PB-Remote may be active (reprovisioning). */
+		if (IS_ENABLED(CONFIG_BT_MESH_RPR_SRV) &&
+		    (active_bearers & BT_MESH_PROV_REMOTE)) {
+			pb_remote_srv.link_cancel();
+		}
+		return 0;
+	}
+
+	/* Suspend only previously requested bearers (link_cancel / disable). */
+	if (IS_ENABLED(CONFIG_BT_MESH_PB_GATT) &&
+	    (active_bearers & BT_MESH_PROV_GATT)) {
+		err = bt_mesh_pb_gatt_srv_disable();
+		if (err && err != -EALREADY) {
+			LOG_WRN("Disabling PB-GATT failed (err %d)", err);
+			return err;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_BT_MESH_PB_ADV) &&
+	    (active_bearers & BT_MESH_PROV_ADV)) {
+		bt_mesh_pb_adv.link_cancel();
+	}
+
+	if (IS_ENABLED(CONFIG_BT_MESH_RPR_SRV) &&
+	    (active_bearers & BT_MESH_PROV_REMOTE)) {
+		pb_remote_srv.link_cancel();
+	}
+
+	return 0;
+}
+
+int bt_mesh_provisionee_resume(void)
+{
+	int err;
+
+	if (bt_mesh_is_provisioned()) {
+		/* When provisioned, only re-enable PB-Remote if it was active. */
+		if (IS_ENABLED(CONFIG_BT_MESH_RPR_SRV) &&
+		    (active_bearers & BT_MESH_PROV_REMOTE)) {
+			pb_remote_srv.link_accept(bt_mesh_prov_bearer_cb_get(), NULL);
+		}
+		return 0;
+	}
+
+	/* Re-enable only previously requested bearers (link_accept / enable). */
+	if (IS_ENABLED(CONFIG_BT_MESH_PB_GATT) &&
+	    (active_bearers & BT_MESH_PROV_GATT)) {
+		err = bt_mesh_pb_gatt_srv_enable();
+		if (err) {
+			LOG_WRN("Re-enabling PB-GATT failed (err %d)", err);
+			return err;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_BT_MESH_PB_ADV) &&
+	    (active_bearers & BT_MESH_PROV_ADV)) {
+		bt_mesh_pb_adv.link_accept(bt_mesh_prov_bearer_cb_get(), NULL);
+	}
+
+	if (IS_ENABLED(CONFIG_BT_MESH_RPR_SRV) &&
+	    (active_bearers & BT_MESH_PROV_REMOTE)) {
+		pb_remote_srv.link_accept(bt_mesh_prov_bearer_cb_get(), NULL);
+	}
 
 	return 0;
 }

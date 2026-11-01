@@ -24,13 +24,17 @@ static ALWAYS_INLINE void pin_delay_asm(uint32_t delay)
 #endif
 }
 
-#if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF53X)
+#if defined(CONFIG_SOC_SERIES_NRF52) || defined(CONFIG_SOC_SERIES_NRF53)
 
 #include "swdp_ll_pin_nrf.h"
 
 #elif defined(CONFIG_SOC_FAMILY_STM32)
 
 #include "swdp_ll_pin_stm32.h"
+
+#elif defined(CONFIG_SOC_FAMILY_MCXA)
+
+#include "swdp_ll_pin_mcx.h"
 
 #else
 

@@ -1,13 +1,13 @@
 /*
- * Copyright (c) 2025 Renesas Electronics Corporation
+ * Copyright (c) 2025-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /dts-v1/;
 
 #include <renesas/ra/ra4/r7fa4e10d2cne.dtsi>
-#include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 #include "voice_ra4e1-pinctrl.dtsi"
 
@@ -17,11 +17,12 @@
 
 	chosen {
 		zephyr,sram = &sram0;
-		zephyr,flash-controller = &flash1;
-		zephyr,flash = &flash0;
+		zephyr,flash-controller = &code_flash_ctrl;
+		zephyr,flash = &code_flash;
 		zephyr,console = &uart3;
 		zephyr,shell-uart = &uart3;
 		zephyr,entropy = &trng;
+		zephyr,crc = &crc;
 	};
 
 	leds {
@@ -112,15 +113,16 @@
 	status = "okay";
 };
 
-&flash1 {
+&data_flash {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		storage_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
-			reg = <0X0 DT_SIZE_K(8)>;
+			reg = <0x0 DT_SIZE_K(8)>;
 		};
 	};
 };
@@ -130,6 +132,7 @@
 	pinctrl-names = "default";
 	maximum-speed = "full-speed";
 	status = "okay";
+
 	zephyr_udc0: udc {
 		status = "okay";
 	};
@@ -142,5 +145,9 @@
 &dac0 {
 	pinctrl-0 = <&dac0_default>;
 	pinctrl-names = "default";
+	status = "okay";
+};
+
+&crc {
 	status = "okay";
 };

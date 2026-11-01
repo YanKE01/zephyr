@@ -7,6 +7,7 @@
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/net/net_log.h>
 
 #include "zperf_internal.h"
 #include "zperf_session.h"
@@ -21,24 +22,24 @@ LOG_MODULE_REGISTER(net_zperf, CONFIG_NET_ZPERF_LOG_LEVEL);
 
 #include "ipv6.h" /* to get infinite lifetime */
 
-static struct sockaddr_in6 in6_addr_my = {
-	.sin6_family = AF_INET6,
-	.sin6_port = htons(MY_SRC_PORT),
+static struct net_sockaddr_in6 ipv6_addr_my = {
+	.sin6_family = NET_AF_INET6,
+	.sin6_port = net_htons(MY_SRC_PORT),
 };
 
-static struct sockaddr_in in4_addr_my = {
-	.sin_family = AF_INET,
-	.sin_port = htons(MY_SRC_PORT),
+static struct net_sockaddr_in ipv4_addr_my = {
+	.sin_family = NET_AF_INET,
+	.sin_port = net_htons(MY_SRC_PORT),
 };
 
-struct sockaddr_in6 *zperf_get_sin6(void)
+struct net_sockaddr_in6 *zperf_get_sin6(void)
 {
-	return &in6_addr_my;
+	return &ipv6_addr_my;
 }
 
-struct sockaddr_in *zperf_get_sin(void)
+struct net_sockaddr_in *zperf_get_sin(void)
 {
-	return &in4_addr_my;
+	return &ipv4_addr_my;
 }
 
 #define ZPERF_WORK_Q_THREAD_PRIORITY					\
@@ -106,7 +107,7 @@ static struct k_work_q zperf_work_q;
 
 #endif /* CONFIG_ZPERF_SESSION_PER_THREAD */
 
-int zperf_get_ipv6_addr(char *host, char *prefix_str, struct in6_addr *addr)
+int zperf_get_ipv6_addr(char *host, char *prefix_str, struct net_in6_addr *addr)
 {
 	struct net_if_ipv6_prefix *prefix;
 	struct net_if_addr *ifaddr;
@@ -117,7 +118,7 @@ int zperf_get_ipv6_addr(char *host, char *prefix_str, struct in6_addr *addr)
 		return -EINVAL;
 	}
 
-	ret = net_addr_pton(AF_INET6, host, addr);
+	ret = net_addr_pton(NET_AF_INET6, host, addr);
 	if (ret < 0) {
 		return -EINVAL;
 	}
@@ -143,7 +144,7 @@ int zperf_get_ipv6_addr(char *host, char *prefix_str, struct in6_addr *addr)
 }
 
 
-int zperf_get_ipv4_addr(char *host, struct in_addr *addr)
+int zperf_get_ipv4_addr(char *host, struct net_in_addr *addr)
 {
 	struct net_if_addr *ifaddr;
 	int ret;
@@ -152,7 +153,7 @@ int zperf_get_ipv4_addr(char *host, struct in_addr *addr)
 		return -EINVAL;
 	}
 
-	ret = net_addr_pton(AF_INET, host, addr);
+	ret = net_addr_pton(NET_AF_INET, host, addr);
 	if (ret < 0) {
 		return -EINVAL;
 	}
@@ -167,24 +168,24 @@ int zperf_get_ipv4_addr(char *host, struct in_addr *addr)
 	return 0;
 }
 
-int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
-			      int priority, int tcp_nodelay, int proto)
+int zperf_prepare_upload_sock(const struct net_sockaddr *peer_addr, uint8_t tos,
+			      int priority, int tcp_nodelay, int proto, const char *if_name)
 {
-	socklen_t addrlen = peer_addr->sa_family == AF_INET6 ?
-			    sizeof(struct sockaddr_in6) :
-			    sizeof(struct sockaddr_in);
-	int type = (proto == IPPROTO_UDP) ? SOCK_DGRAM : SOCK_STREAM;
+	net_socklen_t addrlen = peer_addr->sa_family == NET_AF_INET6 ?
+			    sizeof(struct net_sockaddr_in6) :
+			    sizeof(struct net_sockaddr_in);
+	int type = (proto == NET_IPPROTO_UDP) ? NET_SOCK_DGRAM : NET_SOCK_STREAM;
 	int sock = -1;
 	int ret;
 
 	switch (peer_addr->sa_family) {
-	case AF_INET:
+	case NET_AF_INET:
 		if (!IS_ENABLED(CONFIG_NET_IPV4)) {
 			NET_ERR("IPv4 not available.");
 			return -EINVAL;
 		}
 
-		sock = zsock_socket(AF_INET, type, proto);
+		sock = zsock_socket(NET_AF_INET, type, proto);
 		if (sock < 0) {
 			NET_ERR("Cannot create IPv4 network socket (%d)",
 				errno);
@@ -192,7 +193,7 @@ int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
 		}
 
 		if (tos > 0) {
-			if (zsock_setsockopt(sock, IPPROTO_IP, IP_TOS,
+			if (zsock_setsockopt(sock, NET_IPPROTO_IP, ZSOCK_IP_TOS,
 					     &tos, sizeof(tos)) != 0) {
 				NET_WARN("Failed to set IP_TOS socket option. "
 					 "Please enable CONFIG_NET_CONTEXT_DSCP_ECN.");
@@ -201,13 +202,13 @@ int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
 
 		break;
 
-	case AF_INET6:
+	case NET_AF_INET6:
 		if (!IS_ENABLED(CONFIG_NET_IPV6)) {
 			NET_ERR("IPv6 not available.");
 			return -EINVAL;
 		}
 
-		sock = zsock_socket(AF_INET6, type, proto);
+		sock = zsock_socket(NET_AF_INET6, type, proto);
 		if (sock < 0) {
 			NET_ERR("Cannot create IPv6 network socket (%d)",
 				errno);
@@ -215,7 +216,7 @@ int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
 		}
 
 		if (tos >= 0) {
-			if (zsock_setsockopt(sock, IPPROTO_IPV6, IPV6_TCLASS,
+			if (zsock_setsockopt(sock, NET_IPPROTO_IPV6, ZSOCK_IPV6_TCLASS,
 					     &tos, sizeof(tos)) != 0) {
 				NET_WARN("Failed to set IPV6_TCLASS socket option. "
 					 "Please enable CONFIG_NET_CONTEXT_DSCP_ECN.");
@@ -240,7 +241,7 @@ int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
 			goto error;
 		}
 
-		if (zsock_setsockopt(sock, SOL_SOCKET, SO_PRIORITY,
+		if (zsock_setsockopt(sock, ZSOCK_SOL_SOCKET, ZSOCK_SO_PRIORITY,
 				     &prio,
 				     sizeof(prio)) != 0) {
 			NET_WARN("Failed to set SOL_SOCKET - SO_PRIORITY socket option.");
@@ -249,13 +250,25 @@ int zperf_prepare_upload_sock(const struct sockaddr *peer_addr, uint8_t tos,
 		}
 	}
 
-	if (proto == IPPROTO_TCP && tcp_nodelay &&
-	    zsock_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+	if (proto == NET_IPPROTO_TCP && tcp_nodelay &&
+	    zsock_setsockopt(sock, NET_IPPROTO_TCP, ZSOCK_TCP_NODELAY,
 			     &tcp_nodelay,
 			     sizeof(tcp_nodelay)) != 0) {
-		NET_WARN("Failed to set IPPROTO_TCP - TCP_NODELAY socket option.");
+		NET_WARN("Failed to set NET_IPPROTO_TCP - TCP_NODELAY socket option.");
 		ret = -errno;
 		goto error;
+	}
+
+	if (if_name != NULL && if_name[0] != '\0') {
+		struct net_ifreq req = { 0 };
+
+		/* Before connecting, which is when a TCP socket picks its route */
+		strncpy(req.ifr_name, if_name, sizeof(req.ifr_name) - 1);
+
+		if (zsock_setsockopt(sock, ZSOCK_SOL_SOCKET, ZSOCK_SO_BINDTODEVICE, &req,
+				     sizeof(req)) != 0) {
+			NET_WARN("setsockopt SO_BINDTODEVICE error (%d)", -errno);
+		}
 	}
 
 	ret = zsock_connect(sock, peer_addr, addrlen);
@@ -274,14 +287,25 @@ error:
 
 uint32_t zperf_packet_duration(uint32_t packet_size, uint32_t rate_in_kbps)
 {
+	/* A rate of 0 means send as fast as possible, matching iperf -b 0. */
+	if (rate_in_kbps == 0U) {
+		return 0U;
+	}
+
 	return (uint32_t)(((uint64_t)packet_size * 8U * USEC_PER_SEC) /
-			  (rate_in_kbps * 1024U));
+			  ((uint64_t)rate_in_kbps * 1024U));
 }
 
 void zperf_async_work_submit(enum session_proto proto, int session_id, struct k_work *work)
 {
 #if defined(CONFIG_ZPERF_SESSION_PER_THREAD)
-	k_work_submit_to_queue(zperf_work_q[proto * SESSION_INDEX + session_id].queue, work);
+	/* Raw TX doesn't support per-thread sessions, use first available queue */
+	if (proto == SESSION_RAW || session_id < 0) {
+		k_work_submit_to_queue(zperf_work_q[0].queue, work);
+	} else {
+		k_work_submit_to_queue(zperf_work_q[proto * SESSION_INDEX + session_id].queue,
+				       work);
+	}
 #else
 	ARG_UNUSED(proto);
 	ARG_UNUSED(session_id);
@@ -304,7 +328,7 @@ static int zperf_init(void)
 #define MAX_NAME_LEN sizeof("zperf_work_q[xxx]")
 		char name[MAX_NAME_LEN];
 
-		snprintk(name, sizeof(name), "zperf_work_q[%d]", i);
+		snprintk(name, sizeof(name), "zperf_work_q[%zd]", i);
 		cfg.name = name;
 
 		k_work_queue_init(zperf_work_q[i].queue);
@@ -323,7 +347,7 @@ static int zperf_init(void)
 			   K_THREAD_STACK_SIZEOF(zperf_work_q_stack),
 			   ZPERF_WORK_Q_THREAD_PRIORITY,
 			   NULL);
-	k_thread_name_set(&zperf_work_q.thread, "zperf_work_q");
+	k_thread_name_set(zperf_work_q.thread_id, "zperf_work_q");
 
 #endif /* CONFIG_ZPERF_SESSION_PER_THREAD */
 
@@ -333,9 +357,14 @@ static int zperf_init(void)
 	if (IS_ENABLED(CONFIG_NET_TCP)) {
 		zperf_tcp_uploader_init();
 	}
+	if (IS_ENABLED(CONFIG_NET_ZPERF_RAW_TX)) {
+		zperf_raw_uploader_init();
+	}
 
-	if (IS_ENABLED(CONFIG_NET_ZPERF_SERVER) ||
-	    IS_ENABLED(CONFIG_ZPERF_SESSION_PER_THREAD)) {
+	/* The session table belongs to the iperf2 receivers and uploaders */
+	if (IS_ENABLED(CONFIG_NET_ZPERF_IPERF2) &&
+	    (IS_ENABLED(CONFIG_NET_ZPERF_SERVER) ||
+	     IS_ENABLED(CONFIG_ZPERF_SESSION_PER_THREAD))) {
 		zperf_session_init();
 	}
 

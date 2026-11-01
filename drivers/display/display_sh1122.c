@@ -113,16 +113,17 @@ static inline int sh1122_write_bus_cmd_i2c(const struct device *dev, const uint8
 					   const uint8_t *data, size_t len)
 {
 	const struct sh1122_config *config = dev->config;
-	static uint8_t buf[SH1122_MAXIMUM_CMD_LENGTH];
+	static uint8_t buf[SH1122_MAXIMUM_CMD_LENGTH + 1];
 
 	if (len > SH1122_MAXIMUM_CMD_LENGTH - 1) {
 		return -EINVAL;
 	}
 
-	buf[0] = cmd;
-	memcpy(&(buf[1]), data, len);
+	buf[0] = SH1122_CONTROL_ALL_BYTES_CMD;
+	buf[1] = cmd;
+	memcpy(&(buf[2]), data, len);
 
-	return i2c_burst_write_dt(&config->i2c, SH1122_CONTROL_ALL_BYTES_CMD, buf, len + 1);
+	return i2c_write_dt(&config->i2c, buf, len + 2);
 }
 
 static inline int sh1122_set_hardware_config(const struct device *dev)
@@ -277,7 +278,12 @@ static int sh1122_write(const struct device *dev, const uint16_t x, const uint16
 		return -EINVAL;
 	}
 
-	LOG_DBG("x %u, y %u, pitch %u, width %u, height %u, buf_len %u", x, y, desc->pitch,
+	if ((desc->width & 1) != 0U) {
+		LOG_ERR("Unsupported width");
+		return -EINVAL;
+	}
+
+	LOG_DBG("x %u, y %u, pitch %u, width %u, height %u, buf_len %zu", x, y, desc->pitch,
 		desc->width, desc->height, buf_len);
 
 	while (pixel_count > total) {
@@ -331,7 +337,6 @@ static void sh1122_get_capabilities(const struct device *dev, struct display_cap
 {
 	const struct sh1122_config *config = dev->config;
 
-	memset(caps, 0, sizeof(struct display_capabilities));
 	caps->x_resolution = config->width;
 	caps->y_resolution = config->height;
 	caps->supported_pixel_formats = PIXEL_FORMAT_L_8;
@@ -485,7 +490,7 @@ static DEVICE_API(display, sh1122_driver_api) = {
 	static const struct sh1122_config config##node_id = {                                      \
 		.mipi_dev = DEVICE_DT_GET(DT_PARENT(node_id)),                                     \
 		.dbi_config = MIPI_DBI_CONFIG_DT(                                                  \
-			node_id, SH1122_WORD_SIZE(node_id) | SPI_OP_MODE_MASTER, 0),               \
+			node_id, SH1122_WORD_SIZE(node_id) | SPI_OP_MODE_CONTROLLER, 0),           \
 		.height = DT_PROP(node_id, height),                                                \
 		.width = DT_PROP(node_id, width),                                                  \
 		.oscillator_freq = DT_PROP(node_id, oscillator_freq),                              \

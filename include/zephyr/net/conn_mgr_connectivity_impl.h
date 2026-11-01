@@ -10,8 +10,8 @@
  * conn_mgr_connectivity).
  */
 
-#ifndef ZEPHYR_INCLUDE_CONN_MGR_CONNECTIVITY_IMPL_H_
-#define ZEPHYR_INCLUDE_CONN_MGR_CONNECTIVITY_IMPL_H_
+#ifndef ZEPHYR_INCLUDE_NET_CONN_MGR_CONNECTIVITY_IMPL_H_
+#define ZEPHYR_INCLUDE_NET_CONN_MGR_CONNECTIVITY_IMPL_H_
 
 #include <zephyr/device.h>
 #include <zephyr/net/net_if.h>
@@ -41,6 +41,22 @@ struct conn_mgr_conn_binding;
  * Used to provide generic access to network association parameters and procedures
  */
 struct conn_mgr_conn_api {
+	/**
+	 * @brief When called, the connectivity implementation should return whether it
+	 * has the configuration needed to attempt a connection.
+	 *
+	 * If this check fails on a non-persistent connection, the interface is never
+	 * brought up and @a connect is never called.
+	 *
+	 * An example of this check is whether a WiFi connectivity binding has been configured
+	 * with an SSID to connect to.
+	 *
+	 * Must be non-blocking.
+	 *
+	 * Called by @ref conn_mgr_if_connect.
+	 */
+	bool (*has_connection_config)(struct conn_mgr_conn_binding *const binding);
+
 	/**
 	 * @brief When called, the connectivity implementation should start attempting to
 	 * establish connectivity (association with a network) for the bound iface pointed
@@ -193,9 +209,22 @@ struct conn_mgr_conn_binding {
 	 */
 	int timeout;
 
+	/**
+	 * Usage timeout (seconds)
+	 *
+	 * Indicates to the connectivity implementation how long the interface can be idle
+	 * for before automatically taking the interface down.
+	 *
+	 * Set to @ref CONN_MGR_IF_NO_TIMEOUT to indicate that no idle timeout should be used.
+	 */
+	int idle_timeout;
+
 	/** @} */
 
 /** @cond INTERNAL_HIDDEN */
+	/* Internal-use work item for tracking interface idle timeouts */
+	struct k_work_delayable idle_worker;
+
 	/* Internal-use mutex for protecting access to the binding and API functions. */
 	struct k_mutex *mutex;
 /** @endcond */
@@ -343,4 +372,4 @@ static inline bool conn_mgr_binding_get_flag(struct conn_mgr_conn_binding *bindi
 }
 #endif
 
-#endif /* ZEPHYR_INCLUDE_CONN_MGR_CONNECTIVITY_IMPL_H_ */
+#endif /* ZEPHYR_INCLUDE_NET_CONN_MGR_CONNECTIVITY_IMPL_H_ */

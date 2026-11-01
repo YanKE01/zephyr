@@ -369,7 +369,7 @@ Sensors
         op-mode = "high-perf";
         power-mode = "normal";
         events-interrupt-gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
-        drdy-interrupt-gpios = < &gpio1 2 GPIO_ACTIVE_HIGH >;
+        drdy-interrupt-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
       };
     };
 
@@ -469,8 +469,9 @@ Video
   size on a per driver basis. Existing applications will not be broken by this change but can be
   simplified as performed in the sample in the commit ``33dcbe37cfd3593e8c6e9cfd218dd31fdd533598``.
 
-* Samples and projects using the :ref:`native simulator <native_sim>` now require specifying the
-  ``--snippet`` :ref:`video-sw-generator <snippet-video-sw-generator>` to build correctly.
+* Samples and projects using the :zephyr:board:`native simulator <native_sim>` now require
+  specifying the ``--snippet`` :ref:`video-sw-generator <snippet-video-sw-generator>` to build
+  correctly.
 
 * :c:func:`video_query_ctrl` now takes a single argument with the :c:struct:`video_ctrl_query`,
   which now contains a ``video_ctrl_query.dev`` field to specify and read back which device is
@@ -504,7 +505,7 @@ Bluetooth Audio
 ===============
 
 * ``CONFIG_BT_CSIP_SET_MEMBER_NOTIFIABLE`` has been renamed to
-  :kconfig:option:`CONFIG_BT_CSIP_SET_MEMBER_SIRK_NOTIFIABLE``. (:github:`86763``)
+  :kconfig:option:`CONFIG_BT_CSIP_SET_MEMBER_SIRK_NOTIFIABLE`. (:github:`86763`)
 
 * ``bt_csip_set_member_get_sirk`` has been removed. Use :c:func:`bt_csip_set_member_get_info` to get
   the SIRK (and other information). (:github:`86996`)

@@ -231,7 +231,7 @@ static int rza2m_set_ppoc(const pinctrl_soc_pin_t pin)
 
 		/* Set POC0 and POCSEL0 */
 		reg_32 = sys_read32(RZA2M_PPOC);
-		reg_32 &= ~(RZA2M_PPOC_POC0 & RZA2M_PPOC_POCSEL0);
+		reg_32 &= ~(RZA2M_PPOC_POC0 | RZA2M_PPOC_POCSEL0);
 		reg_32 |= ppoc_val;
 		sys_write32(reg_32, RZA2M_PPOC);
 
@@ -460,6 +460,7 @@ static int pinctrl_configure_pin(const pinctrl_soc_pin_t pin)
 		ret = rza2m_set_output_current_ckio(pin.drive_strength);
 	} else if (pin.port == PORT_PPOC) {
 		ret = rza2m_set_ppoc(pin);
+		return ret;
 	}
 
 	if (ret) {

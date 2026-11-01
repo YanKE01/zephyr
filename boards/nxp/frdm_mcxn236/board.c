@@ -1,5 +1,5 @@
 /*
- * Copyright 2024  NXP
+ * Copyright 2024-2026 NXP
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <zephyr/init.h>
@@ -8,9 +8,12 @@
 #include <fsl_clock.h>
 #include <fsl_spc.h>
 #include <soc.h>
+#if defined(CONFIG_PM) || defined(CONFIG_POWEROFF)
+#include <fsl_vbat.h>
+#endif
 #if CONFIG_USB_DC_NXP_EHCI
-#include "usb_phy.h"
-#include "usb.h"
+#include <usb_phy.h>
+#include <usb.h>
 
 /* USB PHY configuration */
 #define BOARD_USB_PHY_D_CAL     (0x04U)
@@ -103,23 +106,32 @@ void board_early_init_hook(void)
 
 	CLOCK_SetupExtClocking(BOARD_XTAL0_CLK_HZ);
 
-#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(flexcan1))
-	/* Set up PLL1 for 80 MHz FlexCAN clock */
-	const pll_setup_t pll1Setup = {
-		.pllctrl = SCG_SPLLCTRL_SOURCE(1U) | SCG_SPLLCTRL_SELI(27U) |
-			   SCG_SPLLCTRL_SELP(13U),
-		.pllndiv = SCG_SPLLNDIV_NDIV(3U),
-		.pllpdiv = SCG_SPLLPDIV_PDIV(1U),
-		.pllmdiv = SCG_SPLLMDIV_MDIV(10U),
-		.pllRate = 80000000U
-	};
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai0)) || \
+	DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai1)) || \
+	DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(micfil))
+/* PLL fractional M divider: 86.016 */
+#define PLL1_SS_MDIV_LSB_VALUE 2886218023U
+
+	/* < Set up PLL1 */
+	const pll_setup_t pll1_Setup = {
+		.pllctrl = SCG_SPLLCTRL_SOURCE(1U) | SCG_SPLLCTRL_LIMUPOFF(1U) |
+			   SCG_SPLLCTRL_SELR(4U) | SCG_SPLLCTRL_SELI(4U) | SCG_SPLLCTRL_SELP(3U),
+		.pllndiv = SCG_SPLLNDIV_NDIV(12U),
+		.pllpdiv = SCG_SPLLPDIV_PDIV(7U),
+		.pllsscg[0] = PLL1_SS_MDIV_LSB_VALUE,
+		.pllsscg[1] = SCG_SPLLSSCG1_SEL_SS_MDIV(1U),
+		.pllRate = 24576000U};
 
 	/* Configure PLL1 to the desired values */
-	CLOCK_SetPLL1Freq(&pll1Setup);
-	/* PLL1 Monitor is disabled */
-	CLOCK_SetPll1MonitorMode(kSCG_Pll1MonitorDisable);
-	/* Set PLL1 CLK0 divider to value 1 */
-	CLOCK_SetClkDiv(kCLOCK_DivPLL1Clk0, 1U);
+	CLOCK_SetPLL1Freq(&pll1_Setup);
+	/* Set PLL1 CLK0 divider to value 2, then the clock is 12288000Hz. */
+	CLOCK_SetClkDiv(kCLOCK_DivPLL1Clk0, 2U);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(flexcomm0))
+	/* Configure input clock to be able to reach the datasheet specified SPI band rate. */
+	CLOCK_SetClkDiv(kCLOCK_DivFlexcom0Clk, 1u);
+	CLOCK_AttachClk(kFRO_HF_DIV_to_FLEXCOMM0);
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(flexcomm1))
@@ -175,10 +187,6 @@ void board_early_init_hook(void)
 	CLOCK_EnableClock(kCLOCK_Gpio4);
 #endif
 
-#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio5))
-	CLOCK_EnableClock(kCLOCK_Gpio5);
-#endif
-
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(wwdt0))
 	CLOCK_SetClkDiv(kCLOCK_DivWdt0Clk, 1u);
 #endif
@@ -209,8 +217,8 @@ void board_early_init_hook(void)
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(flexcan1))
-	CLOCK_SetClkDiv(kCLOCK_DivFlexcan1Clk, 1U);
-	CLOCK_AttachClk(kPLL1_CLK0_to_FLEXCAN1);
+	CLOCK_SetClkDiv(kCLOCK_DivFlexcan1Clk, 3U);
+	CLOCK_AttachClk(kPLL0_to_FLEXCAN1);
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(vref))
@@ -289,6 +297,9 @@ void board_early_init_hook(void)
 	CLOCK_SetupClockCtrl(kCLOCK_FRO12MHZ_ENA);
 #elif DT_PROP(DT_NODELABEL(lptmr0), clk_source) == 0x1
 	CLOCK_SetupClk16KClocking(kCLOCK_Clk16KToVsys);
+#if defined(CONFIG_PM) || defined(CONFIG_POWEROFF)
+	VBAT_EnableFRO16k(VBAT0, true);
+#endif
 #elif DT_PROP(DT_NODELABEL(lptmr0), clk_source) == 0x2
 	CLOCK_SetupOsc32KClocking(kCLOCK_Osc32kToVsys);
 #elif DT_PROP(DT_NODELABEL(lptmr0), clk_source) == 0x3
@@ -303,6 +314,43 @@ void board_early_init_hook(void)
 	CLOCK_SetClkDiv(kCLOCK_DivI3c1FClk, DT_PROP(DT_NODELABEL(i3c1), clk_divider));
 	/* Attach PLL0 clock to I3C, 150MHz / 6 = 25MHz. */
 	CLOCK_AttachClk(kPLL0_to_I3C1FCLK);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(smartdma))
+	CLOCK_EnableClock(kCLOCK_Smartdma);
+	RESET_PeripheralReset(kSMART_DMA_RST_SHIFT_RSTn);
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(video_sdma))
+	/* Drive CLKOUT from FROHF 48M, divided by 2 to yield 24MHz clock
+	 * The camera will use this clock signal to generate
+	 * PCLK, HSYNC, and VSYNC
+	 */
+	CLOCK_AttachClk(kFRO_HF_to_CLKOUT);
+	CLOCK_SetClkDiv(kCLOCK_DivClkOut, 2U);
+#endif
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ewm0))
+	CLOCK_SetupClk16KClocking(kCLOCK_Clk16KToWake);
+	CLOCK_AttachClk(kCLK_16K2_to_EWM0);
+	CLOCK_EnableClock(kCLOCK_Ewm0);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai0))
+	CLOCK_SetClkDiv(kCLOCK_DivSai0Clk, 1u);
+	CLOCK_AttachClk(kPLL1_CLK0_to_SAI0);
+	CLOCK_EnableClock(kCLOCK_Sai0);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(sai1))
+	CLOCK_SetClkDiv(kCLOCK_DivSai1Clk, 1u);
+	CLOCK_AttachClk(kPLL1_CLK0_to_SAI1);
+	CLOCK_EnableClock(kCLOCK_Sai1);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(micfil))
+	CLOCK_SetClkDiv(kCLOCK_DivMicfilFClk, 1U);
+	CLOCK_AttachClk(kPLL1_CLK0_to_MICFILF);
+	CLOCK_EnableClock(kCLOCK_Micfil);
 #endif
 
 	/* Set SystemCoreClock variable. */

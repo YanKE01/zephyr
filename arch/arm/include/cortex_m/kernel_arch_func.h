@@ -28,6 +28,8 @@ extern "C" {
 #endif
 
 #ifndef _ASMLANGUAGE
+#include <zephyr/arch/arm/arm-m-switch.h>
+
 extern void z_arm_fault_init(void);
 extern void z_arm_cpu_idle_init(void);
 #ifdef CONFIG_ARM_MPU
@@ -35,9 +37,6 @@ extern void z_arm_configure_static_mpu_regions(void);
 extern void z_arm_configure_dynamic_mpu_regions(struct k_thread *thread);
 extern int z_arm_mpu_init(void);
 #endif /* CONFIG_ARM_MPU */
-#ifdef CONFIG_ARM_AARCH32_MMU
-extern int z_arm_mmu_init(void);
-#endif /* CONFIG_ARM_AARCH32_MMU */
 
 static ALWAYS_INLINE void arch_kernel_init(void)
 {
@@ -57,15 +56,15 @@ static ALWAYS_INLINE void arch_kernel_init(void)
 	z_arm_configure_static_mpu_regions();
 #endif /* CONFIG_ARM_MPU */
 
-#ifdef CONFIG_SOC_PER_CORE_INIT_HOOK
 	soc_per_core_init_hook();
-#endif /* CONFIG_SOC_PER_CORE_INIT_HOOK */
 }
 
+#ifndef CONFIG_USE_SWITCH
 static ALWAYS_INLINE void arch_thread_return_value_set(struct k_thread *thread, unsigned int value)
 {
 	thread->arch.swap_return_value = value;
 }
+#endif
 
 #if !defined(CONFIG_MULTITHREADING)
 extern FUNC_NORETURN void z_arm_switch_to_main_no_multithreading(k_thread_entry_t main_func,
@@ -81,23 +80,36 @@ extern FUNC_NORETURN void z_arm_userspace_enter(k_thread_entry_t user_entry, voi
 
 extern void z_arm_fatal_error(unsigned int reason, const struct arch_esf *esf);
 
+#ifndef CONFIG_USE_SWITCH
 static ALWAYS_INLINE int arch_swap(unsigned int key)
 {
 	/* store off key and return value */
 	_current->arch.basepri = key;
 	_current->arch.swap_return_value = -EAGAIN;
 
-	/* set pending bit to make sure we will take a PendSV exception */
-	SCB->ICSR |= SCB_ICSR_PENDSVSET_Msk;
+	/* Set the pending bit to make sure we will take a PendSV exception.
+	 * PENDSVSET is write-one-to-set and writing zero to the other ICSR
+	 * bits has no effect, so a plain store is sufficient (and avoids a
+	 * read-modify-write that could write back stale state bits).
+	 */
+	SCB->ICSR = SCB_ICSR_PENDSVSET_Msk;
 
 	/* clear mask or enable all irqs to take a pendsv */
 	irq_unlock(0);
+
+	/* The ISB guarantees the now-unmasked PendSV is recognized here,
+	 * and not a couple of instructions later, which could otherwise
+	 * let the return value load below execute before the context
+	 * switch and read a stale -EAGAIN when the thread resumes.
+	 */
+	__ISB();
 
 	/* Context switch is performed here. Returning implies the
 	 * thread has been context-switched-in again.
 	 */
 	return _current->arch.swap_return_value;
 }
+#endif
 
 #endif /* _ASMLANGUAGE */
 

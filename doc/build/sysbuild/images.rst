@@ -151,13 +151,13 @@ more complex to create but is the preferred method for adding images to upstream
 
          config OTHER_APP_IMAGE_PATH
                  string
-                 default "${ZEPHYR_MY_IMAGE_MODULE_DIR}/path/to/my_image" if OTHER_APP_IMAGE_MY_IMAGE
+                 default "$(ZEPHYR_MY_IMAGE_MODULE_DIR)/path/to/my_image" if OTHER_APP_IMAGE_MY_IMAGE
                  help
                    Source directory of other app image.
 
       .. note::
 
-         Remember to have ``source "${ZEPHYR_BASE}/share/sysbuild/Kconfig"`` in the file if this
+         Remember to have ``source "$(ZEPHYR_BASE)/share/sysbuild/Kconfig"`` in the file if this
          is being applied in an application ``Kconfig.sysbuild`` file.
 
    .. group-tab:: ``sysbuild.cmake``
@@ -212,7 +212,7 @@ This can then be extended by :ref:`modules` like so:
                  default "my_second_image" if OTHER_APP_IMAGE_MY_SECOND_IMAGE
 
          config OTHER_APP_IMAGE_PATH
-                 default "${ZEPHYR_MY_SECOND_IMAGE_MODULE_DIR}/path/to/my_second_image" if OTHER_APP_IMAGE_MY_SECOND_IMAGE
+                 default "$(ZEPHYR_MY_SECOND_IMAGE_MODULE_DIR)/path/to/my_second_image" if OTHER_APP_IMAGE_MY_SECOND_IMAGE
 
 As can be seen, no additional CMake changes are needed to add an alternative image as the base
 CMake code will add the replacement image instead of the original image, if selected.
@@ -279,11 +279,12 @@ Image configuration script
 ==========================
 
 An image configuration script is a CMake file that can be used to configure an image with common
-configuration values, multiple can be used per image, the configuration should be transferrable to
+configuration values, multiple can be used per image, the configuration should be transferable to
 different images to correctly configure them based upon options set in sysbuild. MCUboot
 configuration options are configured in both the application the MCUboot image using this method
 which allows sysbuild to be the central location for things like the signing key which are then
-kept in-sync in the main application bootloader images.
+kept in-sync in the main application bootloader images. See :ref:`build-signing-keys` for setting
+the key to an absolute path or a CMake variable such as ``${APP_DIR}``.
 
 Inside image configuration scripts, the ``ZCMAKE_APPLICATION`` variable is set to the name of the
 application being configured, the ``set_config_*`` sysbuild CMake functions can be used to set
@@ -333,15 +334,15 @@ Image configuration script (Zephyr-wide)
 ----------------------------------------
 
 Global Zephyr provided image configuration scripts, which allow specifying the type when using
-``ExternalZephyrProject_Add()`` require changes to sysbuild code in Zephyr. This should only be
-added to when adding a new type that any project should be able to select, generally this should
-only be needed for upstream Zephyr though forked versions of Zephyr might use this to add
-additional types without restriction.
+:cmake:command:`ExternalZephyrProject_Add` require changes to sysbuild code in Zephyr. This
+should only be added to when adding a new type that any project should be able to select,
+generally this should only be needed for upstream Zephyr though forked versions of Zephyr might
+use this to add additional types without restriction.
 
 Image configuration has an allow-list of names which must be set in the Zephyr file
 :zephyr_file:`share/sysbuild/cmake/modules/sysbuild_extensions.cmake` in the
-``ExternalZephyrProject_Add`` function. After adding a new type, it can be used when adding a
-sysbuild image, for example:
+:cmake:command:`ExternalZephyrProject_Add` function. After adding a new type, it can be used
+when adding a sysbuild image, for example:
 
 .. tabs::
 

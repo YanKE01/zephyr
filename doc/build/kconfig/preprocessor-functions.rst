@@ -39,6 +39,8 @@ while the ``*_hex`` version returns a hexadecimal value starting with ``0x``.
    $(dt_chosen_reg_addr_int,<property in /chosen>[,<index>,<unit>])
    $(dt_chosen_reg_size_hex,<property in /chosen>[,<index>,<unit>])
    $(dt_chosen_reg_size_int,<property in /chosen>[,<index>,<unit>])
+   $(dt_class_enabled,<class name>)
+   $(dt_compat_all_has_prop,<compatible string>,<prop>[,<value>])
    $(dt_compat_any_has_prop,<compatible string>,<prop>[,<value>])
    $(dt_compat_any_on_bus,<compatible string>,<prop>)
    $(dt_compat_enabled,<compatible string>)
@@ -46,6 +48,8 @@ while the ``*_hex`` version returns a hexadecimal value starting with ``0x``.
    $(dt_compat_on_bus,<compatible string>,<bus>)
    $(dt_gpio_hogs_enabled)
    $(dt_has_compat,<compatible string>)
+   $(dt_highest_controller_irq_number,<node path>,<cell>)
+   $(dt_node_array_prop_has_val,<node path>,<prop>,<value>)
    $(dt_node_array_prop_hex,<node path>,<prop>,<index>[,<unit>])
    $(dt_node_array_prop_int,<node path>,<prop>,<index>[,<unit>])
    $(dt_node_bool_prop,<node path>,<prop>)
@@ -75,6 +79,7 @@ while the ``*_hex`` version returns a hexadecimal value starting with ``0x``.
    $(dt_nodelabel_reg_size_hex,<node label>[,<index>,<unit>])
    $(dt_nodelabel_reg_size_int,<node label>[,<index>,<unit>])
    $(dt_path_enabled,<node path>)
+   $(dt_partition_mtd,<node path>)
 
 
 Integer functions
@@ -127,6 +132,10 @@ name is specified.
 .. code-block:: none
 
    $(shields_list_contains,<shield name>)
+
+Shield names cannot contain whitespace. A space after the comma, as in
+``$(shields_list_contains, foo)``, is stripped and a warning is printed
+so the lookup still matches ``foo``.
 
 
 Example Usage

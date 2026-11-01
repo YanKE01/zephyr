@@ -176,10 +176,7 @@ SECTIONS
 {
 
 #include <zephyr/linker/rel-sections.ld>
-
-#ifdef CONFIG_LLEXT
 #include <zephyr/linker/llext-sections.ld>
-#endif
 
 #ifdef CONFIG_GEN_ISR_TABLES
 #include <zephyr/linker/intlist.ld>
@@ -656,5 +653,4 @@ SECTIONS
     KEEP (*(.debug.xt.callgraph .debug.xt.callgraph.* .gnu.linkonce.xt.callgraph.*))
   }
 
-  /DISCARD/ : { *(.note.GNU-stack) }
 }

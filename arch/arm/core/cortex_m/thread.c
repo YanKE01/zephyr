@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2013-2014 Wind River Systems, Inc.
  * Copyright (c) 2021 Lexmark International, Inc.
- * Copyright (c) 2023 Arm Limited
+ * Copyright (c) 2023, 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -15,11 +15,12 @@
  */
 
 #include <zephyr/kernel.h>
+#include <kernel_internal.h>
 #include <zephyr/llext/symbol.h>
-#include <ksched.h>
 #include <zephyr/sys/barrier.h>
 #include <stdbool.h>
 #include <cmsis_core.h>
+#include <zephyr/random/random.h>
 
 #if (MPU_GUARD_ALIGN_AND_SIZE_FLOAT > MPU_GUARD_ALIGN_AND_SIZE)
 #define FP_GUARD_EXTRA_SIZE (MPU_GUARD_ALIGN_AND_SIZE_FLOAT - MPU_GUARD_ALIGN_AND_SIZE)
@@ -89,7 +90,17 @@ static void setup_priv_stack(struct k_thread *thread)
 void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack, char *stack_ptr,
 		     k_thread_entry_t entry, void *p1, void *p2, void *p3)
 {
-	struct __basic_sf *iframe;
+
+#if defined(CONFIG_FP_HARDABI) || defined(CONFIG_FP_SOFTABI)
+	/*
+	 * Both CONFIG_FP_HARDABI and CONFIG_FP_SOFTABI allow the compiler
+	 * to generate FP instructions--even without explicit use of FP types.
+	 * All threads must thus be considered as using FP registers and
+	 * tagged with K_FP_REGS.
+	 */
+	thread->base.user_options |= K_FP_REGS;
+#endif
+
 
 #ifdef CONFIG_MPU_STACK_GUARD
 #if defined(CONFIG_USERSPACE)
@@ -126,19 +137,29 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack, char *sta
 #endif
 #endif
 
-	iframe = Z_STACK_PTR_TO_FRAME(struct __basic_sf, stack_ptr);
+	void *entry_wrapper = z_thread_entry;
+
 #if defined(CONFIG_USERSPACE)
 	thread->arch.priv_stack_start = 0;
 	if ((thread->base.user_options & K_USER) != 0) {
+		entry_wrapper = (void *)arch_user_mode_enter;
+	}
+#endif
+
+#ifdef CONFIG_USE_SWITCH
+	thread->switch_handle = arm_m_new_stack((char *)stack, stack_ptr - (char *)stack,
+						entry_wrapper, entry, p1, p2, p3);
+	thread->arch.iciit_pc = 0;
+#else
+	struct __basic_sf *iframe = Z_STACK_PTR_TO_FRAME(struct __basic_sf, stack_ptr);
+
+#if defined(CONFIG_USERSPACE)
+	if ((thread->base.user_options & K_USER) != 0) {
 		setup_priv_stack(thread);
 		iframe = Z_STACK_PTR_TO_FRAME(struct __basic_sf, thread->arch.priv_stack_end);
-		iframe->pc = (uint32_t)arch_user_mode_enter;
-	} else {
-		iframe->pc = (uint32_t)z_thread_entry;
 	}
-#else
-	iframe->pc = (uint32_t)z_thread_entry;
 #endif
+	iframe->pc = (uint32_t)entry_wrapper;
 
 	/* force ARM mode by clearing LSB of address */
 	iframe->pc &= 0xfffffffe;
@@ -150,8 +171,18 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack, char *sta
 	iframe->xpsr = 0x01000000UL; /* clear all, thumb bit is 1, even if RO */
 
 	thread->callee_saved.psp = (uint32_t)iframe;
-	thread->arch.basepri = 0;
+#endif
 
+#ifndef CONFIG_USE_SWITCH
+	thread->arch.basepri = 0;
+#endif
+
+#ifdef CONFIG_ARM_PAC_PER_THREAD
+	/* Generate PAC key and save it in thread context to be set later
+	 * when the thread is actually switched in
+	 */
+	sys_csrand_get(&thread->arch.pac_keys, sizeof(struct pac_keys));
+#endif
 	/*
 	 * initial values in all other registers/thread entries are
 	 * irrelevant.
@@ -387,7 +418,7 @@ void configure_builtin_stack_guard(struct k_thread *thread)
  * @return The lowest allowed stack frame pointer, if error is a
  *         thread stack corruption, otherwise return 0.
  */
-uint32_t z_check_thread_stack_fail(const uint32_t fault_addr, const uint32_t psp)
+static uint32_t min_stack(const uint32_t fault_addr, const uint32_t psp)
 {
 #if defined(CONFIG_MULTITHREADING)
 	const struct k_thread *thread = _current;
@@ -450,6 +481,19 @@ uint32_t z_check_thread_stack_fail(const uint32_t fault_addr, const uint32_t psp
 
 	return 0;
 }
+
+uint32_t z_check_thread_stack_fail(const uint32_t fault_addr, const uint32_t psp)
+{
+	uint32_t sp = min_stack(fault_addr, psp);
+
+#if defined(CONFIG_USE_SWITCH)
+	if (sp != 0) {
+		sp += arm_m_switch_stack_buffer;
+	}
+#endif
+	return sp;
+}
+
 #endif /* CONFIG_MPU_STACK_GUARD || CONFIG_USERSPACE */
 
 #if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
@@ -493,6 +537,15 @@ int arch_float_enable(struct k_thread *thread, unsigned int options)
 	return -ENOTSUP;
 }
 #endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
+
+int arch_coprocessors_disable(struct k_thread *thread)
+{
+#if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
+	return arch_float_disable(thread);
+#else
+	return -ENOTSUP;
+#endif
+}
 
 /* Internal function for Cortex-M initialization,
  * applicable to either case of running Zephyr
@@ -564,6 +617,9 @@ void arch_switch_to_main_thread(struct k_thread *main_thread, char *stack_ptr,
 #endif
 #endif /* CONFIG_BUILTIN_STACK_GUARD */
 
+#ifdef CONFIG_ARM_PAC_PER_THREAD
+	__set_PAC_KEY_P((uint32_t *)&main_thread->arch.pac_keys);
+#endif
 	/*
 	 * Set PSP to the highest address of the main stack
 	 * before enabling interrupts and jumping to main.
@@ -581,14 +637,25 @@ void arch_switch_to_main_thread(struct k_thread *main_thread, char *stack_ptr,
 			 "msr   PSP, %1\n" /* __set_PSP(stack_ptr) */
 
 			 "movs  r0,  #0\n" /* arch_irq_unlock(0) */
+#ifdef CONFIG_SLOW_FLASH_DATA
+			 "movw  r3, #:lower16:arch_irq_unlock_outlined\n"
+			 "movt  r3, #:upper16:arch_irq_unlock_outlined\n"
+#else
 			 "ldr   r3, =arch_irq_unlock_outlined\n"
+#endif
 			 "blx   r3\n"
 
 			 "mov   r0, r4\n" /* z_thread_entry(_main, NULL, NULL, NULL) */
 			 "movs  r1, #0\n"
 			 "movs  r2, #0\n"
 			 "movs  r3, #0\n"
+#ifdef CONFIG_SLOW_FLASH_DATA
+			 "movw  r4, #:lower16:z_thread_entry\n"
+			 "movt  r4, #:upper16:z_thread_entry\n"
+#else
 			 "ldr   r4, =z_thread_entry\n"
+#endif
+
 			 /* We don’t intend to return, so there is no need to link. */
 			 "bx    r4\n"
 			 /* Force a literal pool placement for the addresses referenced above */
@@ -623,8 +690,28 @@ FUNC_NORETURN void z_arm_switch_to_main_no_multithreading(k_thread_entry_t main_
 {
 	z_arm_prepare_switch_to_main();
 
+#ifdef CONFIG_INIT_STACKS
+	(void)memset(K_THREAD_STACK_BUFFER(z_main_stack), 0xaa,
+		     K_THREAD_STACK_SIZEOF(z_main_stack));
+#endif /* CONFIG_INIT_STACKS */
+
 	/* Set PSP to the highest address of the main stack. */
 	char *psp = K_THREAD_STACK_BUFFER(z_main_stack) + K_THREAD_STACK_SIZEOF(z_main_stack);
+
+#if defined(CONFIG_THREAD_LOCAL_STORAGE)
+	/* On Cortex-M, TLS uses a global variable as pointer to
+	 * the thread local storage area. With multithreading disabled
+	 * there is no context switch to set it, so it must be
+	 * initialized here, carving the TLS area out of the top of
+	 * the main stack.
+	 */
+	extern uintptr_t z_arm_tls_ptr;
+	size_t tls_size;
+
+	tls_size = arch_tls_stack_setup(NULL, psp);
+	psp -= tls_size;
+	z_arm_tls_ptr = POINTER_TO_UINT(psp);
+#endif
 
 #if defined(CONFIG_BUILTIN_STACK_GUARD)
 	char *psplim = (K_THREAD_STACK_BUFFER(z_main_stack));
@@ -672,7 +759,7 @@ FUNC_NORETURN void z_arm_switch_to_main_no_multithreading(k_thread_entry_t main_
 			  ,
 		  [_psplim] "r"(psplim)
 #endif
-		: "r0", "r1", "r2", "ip", "lr");
+		: "r0", "r1", "r2", "ip", "lr", "memory");
 
 	CODE_UNREACHABLE; /* LCOV_EXCL_LINE */
 }

@@ -19,7 +19,7 @@
 		zephyr,console = &uart2;
 		zephyr,shell-uart = &uart2;
 		zephyr,sram = &sram0;
-		zephyr,flash = &flash0;
+		zephyr,flash = &code_flash;
 		zephyr,entropy = &trng;
 		zephyr,code-partition = &code_partition;
 	};
@@ -37,7 +37,6 @@
 		status = "okay";
 	};
 };
-
 
 &ioport0 {
 	status = "okay";
@@ -84,27 +83,29 @@
 	pinctrl-names = "default";
 	#address-cells = <1>;
 	#size-cells = <0>;
-	clock-frequency = <DT_FREQ_M(1)>;
+	clock-frequency = <DT_FREQ_K(400)>;
 	interrupts = <10 1>, <11 1>, <12 1>, <13 1>;
 	interrupt-names = "rxi", "txi", "tei", "eri";
 	status = "okay";
 };
 
-&flash0 {
+&code_flash {
 	partitions {
-		compatible = "fixed-partitions";
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
 		boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "bootloader";
 			reg = <0x00000000 0x4000>;
 			read-only;
 		};
 
 		code_partition: partition@4000 {
+			compatible = "zephyr,mapped-partition";
 			label = "code";
-			reg = <0x4000 0x3C000>;
+			reg = <0x4000 0x3c000>;
 			read-only;
 		};
 	};

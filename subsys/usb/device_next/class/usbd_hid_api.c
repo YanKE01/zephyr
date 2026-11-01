@@ -34,15 +34,37 @@ int hid_device_register(const struct device *dev,
 	return api->dev_register(dev, rdesc, rsize, ops);
 }
 
+int hid_device_set_in_polling(const struct device *dev, const unsigned int period_us)
+{
+	const struct hid_device_driver_api *const api = dev->api;
+
+	if (IS_ENABLED(CONFIG_USBD_HID_SET_POLLING_PERIOD)) {
+		return api->set_in_polling(dev, period_us);
+	}
+
+	return -ENOTSUP;
+}
+
+int hid_device_set_out_polling(const struct device *dev, const unsigned int period_us)
+{
+	const struct hid_device_driver_api *const api = dev->api;
+
+	if (IS_ENABLED(CONFIG_USBD_HID_SET_POLLING_PERIOD)) {
+		return api->set_out_polling(dev, period_us);
+	}
+
+	return -ENOTSUP;
+}
+
 /* Legacy HID API wrapper below */
 
 struct legacy_wrapper {
 	const struct device *dev;
 	const struct hid_ops *legacy_ops;
-	struct hid_device_ops *ops;
+	const struct hid_device_ops *ops;
 };
 
-static struct hid_device_ops wrapper_ops;
+static const struct hid_device_ops wrapper_ops;
 
 #define DT_DRV_COMPAT zephyr_hid_device
 
@@ -151,7 +173,7 @@ void wrapper_output_report(const struct device *dev,
 	__ASSERT(false, "Output report callback is not supported");
 }
 
-static struct hid_device_ops wrapper_ops = {
+static const struct hid_device_ops wrapper_ops = {
 	.get_report = wrapper_get_report,
 	.set_report = wrapper_set_report,
 	.set_idle = wrapper_set_idle,

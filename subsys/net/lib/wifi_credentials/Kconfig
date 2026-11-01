@@ -6,7 +6,6 @@
 
 menuconfig WIFI_CREDENTIALS
 	bool "WIFI credentials management"
-	select EXPERIMENTAL
 	help
 	  Enable WiFi credentials management subsystem.
 
@@ -44,7 +43,7 @@ config WIFI_CREDENTIALS_MAX_ENTRIES
 	int "Number of supported WiFi credentials"
 	default 2
 	help
-	  This detemines how many different WiFi networks can be configured at a time.
+	  This determines how many different WiFi networks can be configured at a time.
 
 config WIFI_CREDENTIALS_SAE_PASSWORD_LENGTH
 	int "Max. length of SAE password"
@@ -121,6 +120,9 @@ choice WIFI_CREDENTIALS_STATIC_TYPE
 
 config WIFI_CREDENTIALS_STATIC_TYPE_OPEN
 	bool "OPEN"
+
+config WIFI_CREDENTIALS_STATIC_TYPE_OWE
+	bool "OWE"
 
 config WIFI_CREDENTIALS_STATIC_TYPE_PSK
 	bool "WPA2-PSK"

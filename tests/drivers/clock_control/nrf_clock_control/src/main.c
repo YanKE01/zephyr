@@ -17,7 +17,8 @@ struct test_clk_context {
 	size_t clk_specs_size;
 };
 
-#if defined(CONFIG_CLOCK_CONTROL_NRF_HSFLL_LOCAL)
+#if defined(CONFIG_CLOCK_CONTROL_NRF_HSFLL_LOCAL) ||                                               \
+	defined(CONFIG_CLOCK_CONTROL_NRF_IRON_HSFLL_LOCAL)
 const struct nrf_clock_spec test_clk_specs_hsfll[] = {
 	{
 		.frequency = MHZ(128),
@@ -37,7 +38,7 @@ const struct nrf_clock_spec test_clk_specs_hsfll[] = {
 };
 #endif
 
-#if CONFIG_BOARD_NRF54H20DK_NRF54H20_CPUAPP
+#if defined(CONFIG_TEST_FLL16M)
 const struct nrf_clock_spec test_clk_specs_fll16m[] = {
 	{
 		.frequency = MHZ(16),
@@ -84,7 +85,9 @@ static const struct test_clk_context invalid_fll16m_test_clk_contexts[] = {
 		.clk_specs_size = ARRAY_SIZE(invalid_test_clk_specs_fll16m),
 	},
 };
+#endif
 
+#if defined(CONFIG_TEST_HSFLL_APP)
 static const struct test_clk_context cpuapp_hsfll_test_clk_contexts[] = {
 	{
 		.clk_dev = DEVICE_DT_GET(DT_NODELABEL(cpuapp_hsfll)),
@@ -92,7 +95,9 @@ static const struct test_clk_context cpuapp_hsfll_test_clk_contexts[] = {
 		.clk_specs_size = ARRAY_SIZE(test_clk_specs_hsfll),
 	},
 };
-#elif defined(CONFIG_BOARD_NRF54H20DK_NRF54H20_CPURAD)
+#endif
+
+#if defined(CONFIG_TEST_HSFLL_RAD)
 static const struct test_clk_context cpurad_hsfll_test_clk_contexts[] = {
 	{
 		.clk_dev = DEVICE_DT_GET(DT_NODELABEL(cpurad_hsfll)),
@@ -127,7 +132,7 @@ static const struct test_clk_context global_hsfll_test_clk_contexts[] = {
 };
 #endif
 
-#if defined(CONFIG_CLOCK_CONTROL_NRF_LFCLK)
+#if defined(CONFIG_CLOCK_CONTROL_NRFS_LFCLK)
 const struct nrf_clock_spec test_clk_specs_lfclk[] = {
 	{
 		.frequency = 32768,
@@ -161,17 +166,10 @@ static const struct test_clk_context lfclk_test_clk_contexts[] = {
 #define AUXPLL_NODE DT_INST(0, AUXPLL_COMPAT)
 #define AUXPLL_FREQ DT_PROP(AUXPLL_NODE, nordic_frequency)
 
-/* Gets selected AUXPLL DIV and selects the expected frequency */
-#if AUXPLL_FREQ == NRF_AUXPLL_FREQUENCY_DIV_MIN
-#define AUXPLL_FREQ_OUT 80000000
-#elif AUXPLL_FREQ == NRF_AUXPLL_FREQ_DIV_AUDIO_44K1
-#define AUXPLL_FREQ_OUT 11289591
-#elif AUXPLL_FREQ == NRF_AUXPLL_FREQ_DIV_USB_24M
-#define AUXPLL_FREQ_OUT 24000000
-#elif AUXPLL_FREQ == NRF_AUXPLL_FREQ_DIV_AUDIO_48K
-#define AUXPLL_FREQ_OUT 12287963
-#else
-/*No use case for NRF_AUXPLL_FREQ_DIV_MAX or others yet*/
+
+/* Gets expected AUXPLL frequency */
+#define AUXPLL_FREQ_OUT CLOCK_CONTROL_NRF_AUXPLL_GET_FREQ(AUXPLL_NODE)
+#if AUXPLL_FREQ_OUT == 0
 #error "Unsupported AUXPLL frequency selection"
 #endif
 
@@ -225,10 +223,13 @@ static void test_request_release_clock_spec(const struct device *clk_dev,
 static void test_clock_control_request(const struct test_clk_context *clk_contexts,
 				       size_t contexts_size)
 {
+	int ret;
 	const struct test_clk_context *clk_context;
 	size_t clk_specs_size;
 	const struct device *clk_dev;
-	const struct nrf_clock_spec *clk_spec;
+	const struct nrf_clock_spec *req_spec;
+	struct nrf_clock_spec res_spec;
+	uint32_t startup_time_us;
 
 	for (size_t i = 0; i < contexts_size; i++) {
 		clk_context = &clk_contexts[i];
@@ -236,36 +237,69 @@ static void test_clock_control_request(const struct test_clk_context *clk_contex
 
 		for (size_t u = 0; u < clk_specs_size; u++) {
 			clk_dev = clk_context->clk_dev;
-			clk_spec = &clk_context->clk_specs[u];
+			req_spec = &clk_context->clk_specs[u];
 
-			zassert_true(device_is_ready(clk_dev),
-				     "%s is not ready", clk_dev->name);
+			zassert_true(device_is_ready(clk_dev), "%s is not ready", clk_dev->name);
 
-			TC_PRINT("Applying clock (%s) spec: frequency %d, accuracy %d, precision "
+			TC_PRINT("Requested clock (%s) spec: frequency %d, accuracy %d, precision "
 				 "%d\n",
-				 clk_dev->name, clk_spec->frequency, clk_spec->accuracy,
-				 clk_spec->precision);
-			test_request_release_clock_spec(clk_dev, clk_spec);
+				 clk_dev->name, req_spec->frequency, req_spec->accuracy,
+				 req_spec->precision);
+
+			ret = nrf_clock_control_resolve(clk_dev, req_spec, &res_spec);
+			zassert(ret == 0 || ret == -ENOSYS,
+				"minimum clock specs could not be resolved");
+			if (ret == 0) {
+				TC_PRINT("Resolved spec: frequency %d, accuracy %d, precision "
+					 "%d\n",
+					 res_spec.frequency, res_spec.accuracy, res_spec.precision);
+			} else if (ret == -ENOSYS) {
+				TC_PRINT("resolve not supported\n");
+				res_spec.frequency = req_spec->frequency;
+				res_spec.accuracy = req_spec->accuracy;
+				res_spec.precision = req_spec->precision;
+			}
+
+			ret = nrf_clock_control_get_startup_time(clk_dev, &res_spec,
+								 &startup_time_us);
+			zassert(ret == 0 || ret == -ENOSYS, "failed to get startup time");
+			if (ret == 0) {
+				TC_PRINT("startup time for resolved spec: %uus\n", startup_time_us);
+			} else if (ret == -ENOSYS) {
+				TC_PRINT("get startup time not supported\n");
+			}
+
+			TC_PRINT("Applying spec: frequency %d, accuracy %d, precision "
+				 "%d\n",
+				 res_spec.frequency, res_spec.accuracy, res_spec.precision);
+			test_request_release_clock_spec(clk_dev, &res_spec);
 		}
 	}
 }
 
-#if CONFIG_BOARD_NRF54H20DK_NRF54H20_CPUAPP
 ZTEST(nrf2_clock_control, test_cpuapp_hsfll_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_TEST_HSFLL_APP);
+#if defined(CONFIG_TEST_HSFLL_APP)
 	TC_PRINT("APPLICATION DOMAIN HSFLL test\n");
 	test_clock_control_request(cpuapp_hsfll_test_clk_contexts,
 				   ARRAY_SIZE(cpuapp_hsfll_test_clk_contexts));
+#endif
 }
 
 ZTEST(nrf2_clock_control, test_fll16m_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_TEST_FLL16M);
+#if defined(CONFIG_TEST_FLL16M)
 	TC_PRINT("FLL16M test\n");
 	test_clock_control_request(fll16m_test_clk_contexts, ARRAY_SIZE(fll16m_test_clk_contexts));
+#endif
 }
 
 ZTEST(nrf2_clock_control, test_invalid_fll16m_clock_spec_response)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_TEST_FLL16M);
+#if defined(CONFIG_TEST_FLL16M)
 	int ret = 0;
 	int res = 0;
 	struct onoff_client cli;
@@ -300,36 +334,42 @@ ZTEST(nrf2_clock_control, test_invalid_fll16m_clock_spec_response)
 			zassert_ok(res);
 		}
 	}
+#endif
 }
-#elif defined(CONFIG_BOARD_NRF54H20DK_NRF54H20_CPURAD)
+
 ZTEST(nrf2_clock_control, test_cpurad_hsfll_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_TEST_HSFLL_RAD);
+#if defined(CONFIG_TEST_HSFLL_RAD)
 	TC_PRINT("RADIO DOMAIN HSFLL test\n");
 	test_clock_control_request(cpurad_hsfll_test_clk_contexts,
 				   ARRAY_SIZE(cpurad_hsfll_test_clk_contexts));
-}
 #endif
+}
 
-
-
-#if defined(CONFIG_CLOCK_CONTROL_NRF_HSFLL_GLOBAL)
 ZTEST(nrf2_clock_control, test_global_hsfll_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_CLOCK_CONTROL_NRF_HSFLL_GLOBAL);
+#if defined(CONFIG_CLOCK_CONTROL_NRF_HSFLL_GLOBAL)
 	TC_PRINT("Global HSFLL test\n");
 	test_clock_control_request(global_hsfll_test_clk_contexts,
 				   ARRAY_SIZE(global_hsfll_test_clk_contexts));
-}
 #endif
+}
 
-#if defined(CONFIG_CLOCK_CONTROL_NRF_LFCLK)
 ZTEST(nrf2_clock_control, test_lfclk_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_CLOCK_CONTROL_NRFS_LFCLK);
+#if defined(CONFIG_CLOCK_CONTROL_NRFS_LFCLK)
 	TC_PRINT("LFCLK test\n");
 	test_clock_control_request(lfclk_test_clk_contexts, ARRAY_SIZE(lfclk_test_clk_contexts));
+#endif
 }
 
 ZTEST(nrf2_clock_control, test_safe_request_cancellation)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_CLOCK_CONTROL_NRFS_LFCLK);
+#if defined(CONFIG_CLOCK_CONTROL_NRFS_LFCLK)
 	int ret = 0;
 	int res = 0;
 	struct onoff_client cli;
@@ -351,21 +391,22 @@ ZTEST(nrf2_clock_control, test_safe_request_cancellation)
 	ret = nrf_clock_control_cancel_or_release(clk_dev, clk_spec, &cli);
 	TC_PRINT("Clock control safe cancellation return value: %d\n", ret);
 	zassert_between_inclusive(ret, ONOFF_STATE_ON, ONOFF_STATE_TO_ON);
-}
 #endif
+}
 
-#if defined(CONFIG_CLOCK_CONTROL_NRF_AUXPLL)
 ZTEST(nrf2_clock_control, test_auxpll_control)
 {
+	Z_TEST_SKIP_IFNDEF(CONFIG_CLOCK_CONTROL_NRF_AUXPLL);
+#if defined(CONFIG_CLOCK_CONTROL_NRF_AUXPLL)
 	TC_PRINT("AUXPLL control test\n");
 	test_clock_control_request(auxpll_test_clk_contexts,
 				   ARRAY_SIZE(auxpll_test_clk_contexts));
-}
 #endif
+}
 
 static void *setup(void)
 {
-#if defined(CONFIG_BOARD_NRF54H20DK_NRF54H20_CPUAPP)
+#if defined(CONFIG_TEST_DVFS_INIT)
 	const struct device *clk_dev = DEVICE_DT_GET(DT_NODELABEL(cpuapp_hsfll));
 	const struct nrf_clock_spec clk_spec = {
 		.frequency = MHZ(64),
@@ -380,7 +421,7 @@ static void *setup(void)
 	/* Constantly make requests to DVFS until one is successful (what also
 	 * means that the service has finished its initialization). This loop
 	 * also verifies that the clock control driver is able to recover after
-	 * an unsuccesful attempt to start a clock (at least one initial request
+	 * an unsuccessful attempt to start a clock (at least one initial request
 	 * is expected to fail here due to DFVS not being initialized yet).
 	 */
 	TC_PRINT("Polling DVFS until it is ready\n");

@@ -261,6 +261,11 @@ static int nrf_wifi_util_show_cfg(const struct shell *sh,
 		      "rate_flag = %d,  rate_val = %d\n",
 		      ctx->conf_params.tx_pkt_tput_mode,
 		      ctx->conf_params.tx_pkt_rate);
+
+	shell_fprintf(sh,
+		      SHELL_INFO,
+		      "extended_sleep_sec = %u seconds\n",
+		      ctx->extended_sleep_sec);
 	return 0;
 }
 
@@ -494,7 +499,7 @@ static int nrf_wifi_util_dump_rpu_stats(const struct shell *sh,
 	fmac_dev_ctx = ctx->rpu_ctx;
 
 	memset(&stats, 0, sizeof(struct rpu_sys_op_stats));
-	status = nrf_wifi_sys_fmac_stats_get(fmac_dev_ctx, 0, &stats);
+	status = nrf_wifi_sys_fmac_stats_get(fmac_dev_ctx, stats_type, &stats);
 
 	if (status != NRF_WIFI_STATUS_SUCCESS) {
 		shell_fprintf(sh,
@@ -938,10 +943,20 @@ static int nrf_wifi_util_rpu_recovery_info(const struct shell *sh,
 	}
 
 	fmac_dev_ctx = ctx->rpu_ctx;
-	hal_dev_ctx = fmac_dev_ctx->hal_dev_ctx;
+	if (!fmac_dev_ctx) {
+		shell_fprintf(sh, SHELL_ERROR, "FMAC context not initialized\n");
+		ret = -ENOEXEC;
+		goto unlock;
+	}
 
-	shell_fprintf(sh,
-		      SHELL_INFO,
+	hal_dev_ctx = fmac_dev_ctx->hal_dev_ctx;
+	if (!hal_dev_ctx) {
+		shell_fprintf(sh, SHELL_ERROR, "HAL context not initialized\n");
+		ret = -ENOEXEC;
+		goto unlock;
+	}
+
+	shell_fprintf(sh, SHELL_INFO,
 		      "wdt_irq_received: %d\n"
 		      "wdt_irq_ignored: %d\n"
 		      "last_wakeup_now_asserted_time_ms: %lu milliseconds\n"
@@ -950,14 +965,11 @@ static int nrf_wifi_util_rpu_recovery_info(const struct shell *sh,
 		      "current time: %lu milliseconds\n"
 		      "rpu_recovery_success: %d\n"
 		      "rpu_recovery_failure: %d\n\n",
-		      hal_dev_ctx->wdt_irq_received,
-		      hal_dev_ctx->wdt_irq_ignored,
+		      ctx->wdt_irq_received, ctx->wdt_irq_ignored,
 		      hal_dev_ctx->last_wakeup_now_asserted_time_ms,
 		      hal_dev_ctx->last_wakeup_now_deasserted_time_ms,
-		      hal_dev_ctx->last_rpu_sleep_opp_time_ms,
-		      current_time_ms,
-		      ctx->rpu_recovery_success,
-		      ctx->rpu_recovery_failure);
+		      hal_dev_ctx->last_rpu_sleep_opp_time_ms, current_time_ms,
+		      ctx->rpu_recovery_success, ctx->rpu_recovery_failure);
 
 	ret = 0;
 unlock:
@@ -1002,6 +1014,7 @@ static int nrf_wifi_dump_stats(const struct shell *sh,
 
 	return ret;
 }
+
 
 static int nrf_wifi_util_dump_rpu_stats_mem(const struct shell *sh,
 					size_t argc,
@@ -1087,6 +1100,41 @@ static int nrf_wifi_util_dump_rpu_stats_mem(const struct shell *sh,
 unlock:
 	k_mutex_unlock(&ctx->rpu_lock);
 	return ret;
+}
+
+static int nrf_wifi_util_req_extended_sleep(const struct shell *sh,
+					    size_t argc,
+					    const char *argv[])
+{
+	enum nrf_wifi_status status = NRF_WIFI_STATUS_FAIL;
+	char *ptr = NULL;
+	unsigned long val = 0;
+
+	val = strtoul(argv[1], &ptr, 10);
+
+	if (val > UINT_MAX) {
+		shell_fprintf(sh,
+			      SHELL_ERROR,
+			      "Invalid value(%lu).\n",
+			      val);
+		shell_help(sh);
+		return -ENOEXEC;
+	}
+
+	status = nrf_wifi_fmac_req_extended_sleep(ctx->rpu_ctx,
+						  0,
+						  (unsigned int)val);
+
+	if (status != NRF_WIFI_STATUS_SUCCESS) {
+		shell_fprintf(sh,
+			      SHELL_ERROR,
+			      "Programming extended_sleep failed\n");
+		return -ENOEXEC;
+	}
+
+	ctx->extended_sleep_sec = (unsigned int)val;
+
+	return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
@@ -1199,6 +1247,14 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      nrf_wifi_util_dump_rpu_stats_mem,
 		      1,
 		      1),
+	SHELL_CMD_ARG(extended_sleep,
+		      NULL,
+		      "<duration_sec> - Extended sleep interval in seconds.\n"
+		      "During this interval the nRF70 remains in deep sleep without\n"
+		      "waking for DTIM beacons. Inbound traffic will be lost.",
+		      nrf_wifi_util_req_extended_sleep,
+		      2,
+		      0),
 	SHELL_SUBCMD_SET_END);
 
 

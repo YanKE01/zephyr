@@ -11,7 +11,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/init.h>
 
@@ -19,8 +19,8 @@ LOG_MODULE_REGISTER(NRFS_BACKEND, CONFIG_NRFS_BACKEND_LOG_LEVEL);
 
 #define MAX_PACKET_DATA_SIZE (CONFIG_NRFS_MAX_BACKEND_PACKET_SIZE)
 
-K_MSGQ_DEFINE(ipc_transmit_msgq, sizeof(struct ipc_data_packet),
-							CONFIG_NRFS_BACKEND_TX_MSG_QUEUE_SIZE, 4);
+K_MSGQ_DEFINE_STATIC_TYPE(ipc_transmit_msgq, struct ipc_data_packet,
+			  CONFIG_NRFS_BACKEND_TX_MSG_QUEUE_SIZE);
 
 static struct k_work backend_send_work;
 
@@ -279,5 +279,7 @@ __weak void nrfs_backend_fatal_error_handler(enum nrfs_backend_error error_id)
 	LOG_ERR("Fatal error: %d rebooting...", error_id);
 	sys_reboot(SYS_REBOOT_WARM);
 }
+
+BUILD_ASSERT(CONFIG_NRFS_BACKEND_IPC_SERVICE_INIT_PRIO > CONFIG_IPC_SERVICE_REG_BACKEND_PRIORITY);
 
 SYS_INIT(ipc_channel_init, POST_KERNEL, CONFIG_NRFS_BACKEND_IPC_SERVICE_INIT_PRIO);

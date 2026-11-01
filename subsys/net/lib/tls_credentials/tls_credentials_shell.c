@@ -4,6 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* _POSIX_C_SOURCE is required to expose gmtime_r declaration in glibc headers */
+#undef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(tls_credentials_shell, CONFIG_TLS_CREDENTIALS_LOG_LEVEL);
 
@@ -49,6 +53,9 @@ static const struct cred_type_string type_strings[] = {
 
 	{"PRIVATE_KEY",		TLS_CREDENTIAL_PRIVATE_KEY},
 	{"PK",			TLS_CREDENTIAL_PRIVATE_KEY},
+
+	{"PRIVATE_KEY_PSA",	TLS_CREDENTIAL_PRIVATE_KEY_PSA},
+	{"PK_PSA",		TLS_CREDENTIAL_PRIVATE_KEY_PSA},
 
 	{"PRE_SHARED_KEY",	TLS_CREDENTIAL_PSK},
 	{"PSK",			TLS_CREDENTIAL_PSK},
@@ -461,7 +468,7 @@ static int tls_cred_cmd_add(const struct shell *sh, size_t argc, char *argv[])
 		cred_copy = k_malloc(cred_written);
 		if (!cred_copy) {
 			shell_fprintf(sh, SHELL_ERROR, "Not enough heap for TLS credential of "
-						       "size %d.\n", cred_written);
+						       "size %zu.\n", cred_written);
 			err = -ENOMEM;
 			goto cleanup;
 		}
@@ -488,8 +495,8 @@ static int tls_cred_cmd_add(const struct shell *sh, size_t argc, char *argv[])
 	/* Do not free the copied key during cleanup, since it was successfully written. */
 	keep_copy = true;
 
-	shell_fprintf(sh, SHELL_NORMAL, "Added TLS credential of type %s, sectag %d, and length %d "
-					"bytes.\n", cred_type_name(type), sectag, cred_written);
+	shell_fprintf(sh, SHELL_NORMAL, "Added TLS credential of type %s, sectag %d, and length "
+					"%zu bytes.\n", cred_type_name(type), sectag, cred_written);
 
 cleanup:
 	/* Unlock credentials since we are done interacting with internal state. */
@@ -517,11 +524,14 @@ cleanup:
 
 #define ASCII_CTRL_C 0x03
 
-static void tls_cred_cmd_load_bypass(const struct shell *sh, uint8_t *data, size_t len)
+static void tls_cred_cmd_load_bypass(const struct shell *sh, uint8_t *data, size_t len,
+				     void *user_data)
 {
 	bool terminate = false;
 	int res;
 	size_t write_len = len;
+
+	ARG_UNUSED(user_data);
 
 	for (size_t i = 0; i < len; i++) {
 		if (data[i] == ASCII_CTRL_C) {
@@ -533,7 +543,7 @@ static void tls_cred_cmd_load_bypass(const struct shell *sh, uint8_t *data, size
 
 	res = cred_buf_write(data, write_len);
 	if (res == -ENOMEM) {
-		shell_set_bypass(sh, NULL);
+		shell_set_bypass(sh, NULL, NULL);
 		shell_fprintf(sh, SHELL_ERROR, "Not enough room in credential buffer for "
 					       "provided data. Increase "
 					       "CONFIG_TLS_CREDENTIALS_SHELL_CRED_BUF_SIZE.\n");
@@ -542,8 +552,8 @@ static void tls_cred_cmd_load_bypass(const struct shell *sh, uint8_t *data, size
 	}
 
 	if (terminate) {
-		shell_set_bypass(sh, NULL);
-		shell_fprintf(sh, SHELL_NORMAL, "Stored %d bytes.\n", cred_written);
+		shell_set_bypass(sh, NULL, NULL);
+		shell_fprintf(sh, SHELL_NORMAL, "Stored %zu bytes.\n", cred_written);
 	}
 }
 
@@ -561,7 +571,7 @@ static int tls_cred_cmd_buf_load(const struct shell *sh, size_t argc, char *argv
 	shell_clear_cred_buf(sh);
 
 	shell_fprintf(sh, SHELL_NORMAL, "Input credential, finish with CTRL+C.\n");
-	shell_set_bypass(sh, tls_cred_cmd_load_bypass);
+	shell_set_bypass(sh, tls_cred_cmd_load_bypass, NULL);
 	return 0;
 }
 
@@ -642,7 +652,7 @@ static int tls_cred_cmd_get(const struct shell *sh, size_t argc, char *argv[])
 {
 	int i;
 	int remaining;
-	int written;
+	size_t written;
 	int err = 0;
 	size_t cred_len;
 	sec_tag_t sectag;
@@ -763,6 +773,45 @@ cleanup:
 	return err;
 }
 
+static int tls_cred_cmd_expiry(const struct shell *sh, size_t argc, char *argv[])
+{
+	int err = 0;
+	char buf[32];
+	struct tm tm_expiry;
+	sec_tag_t sectag;
+	enum tls_credential_type type;
+
+	err = shell_parse_cred_sectag(sh, argv[1], &sectag, false);
+	if (err) {
+		goto cleanup;
+	}
+
+	err = shell_parse_cred_type(sh, argv[2], &type, false);
+	if (err) {
+		goto cleanup;
+	}
+
+	time_t expiry;
+
+	err = tls_credential_expiry(sectag, type, &expiry);
+	if (err) {
+		shell_fprintf(sh, SHELL_ERROR, "Could not retrieve expiry for TLS credential with "
+					       "sectag %d and type %s due to error: %d.\n",
+					       sectag, cred_type_name(type), err);
+		goto cleanup;
+	}
+
+	gmtime_r(&expiry, &tm_expiry);
+	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_expiry);
+
+	shell_fprintf(sh, SHELL_NORMAL, "Expiry for TLS credential with sectag %d and type %s "
+					"is %s (%lld).\n",
+					sectag, cred_type_name(type), buf, (long long)expiry);
+
+cleanup:
+	return err;
+}
+
 /* Lists credentials in credential store. */
 static int tls_cred_cmd_list(const struct shell *sh, size_t argc, char *argv[])
 {
@@ -853,6 +902,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(tls_cred_cmds,
 		      tls_cred_cmd_del, 3, 0),
 	SHELL_CMD_ARG(get, NULL, "Retrieve the contents of a TLS credential",
 		      tls_cred_cmd_get, 4, 0),
+	SHELL_CMD_ARG(expiry, NULL, "Retrieve the expiry of a TLS credential",
+		      tls_cred_cmd_expiry, 3, 0),
 	SHELL_CMD_ARG(list, NULL, "List stored TLS credentials, optionally filtering by type "
 				  "or sectag.",
 		      tls_cred_cmd_list, 1, 2),

@@ -350,36 +350,47 @@ static int ism330dhcx_sample_fetch_shub(const struct device *dev)
 static int ism330dhcx_sample_fetch(const struct device *dev,
 				   enum sensor_channel chan)
 {
+	int ret = 0;
+
 	switch (chan) {
 	case SENSOR_CHAN_ACCEL_XYZ:
-		ism330dhcx_sample_fetch_accel(dev);
+		ret = ism330dhcx_sample_fetch_accel(dev);
 #if defined(CONFIG_ISM330DHCX_SENSORHUB)
 		ism330dhcx_sample_fetch_shub(dev);
 #endif
 		break;
 	case SENSOR_CHAN_GYRO_XYZ:
-		ism330dhcx_sample_fetch_gyro(dev);
+		ret = ism330dhcx_sample_fetch_gyro(dev);
 		break;
 #if defined(CONFIG_ISM330DHCX_ENABLE_TEMP)
 	case SENSOR_CHAN_DIE_TEMP:
-		ism330dhcx_sample_fetch_temp(dev);
+		ret = ism330dhcx_sample_fetch_temp(dev);
 		break;
 #endif
 	case SENSOR_CHAN_ALL:
-		ism330dhcx_sample_fetch_accel(dev);
-		ism330dhcx_sample_fetch_gyro(dev);
+		ret = ism330dhcx_sample_fetch_accel(dev);
+		if (ret != 0) {
+			break;
+		}
+		ret = ism330dhcx_sample_fetch_gyro(dev);
+		if (ret != 0) {
+			break;
+		}
 #if defined(CONFIG_ISM330DHCX_ENABLE_TEMP)
-		ism330dhcx_sample_fetch_temp(dev);
+		ret = ism330dhcx_sample_fetch_temp(dev);
+		if (ret != 0) {
+			break;
+		}
 #endif
 #if defined(CONFIG_ISM330DHCX_SENSORHUB)
-		ism330dhcx_sample_fetch_shub(dev);
+		ret = ism330dhcx_sample_fetch_shub(dev);
 #endif
 		break;
 	default:
 		return -ENOTSUP;
 	}
 
-	return 0;
+	return ret;
 }
 
 static inline void ism330dhcx_accel_convert(struct sensor_value *val, int raw_val,
@@ -566,8 +577,7 @@ static inline void ism330dhcx_hum_convert(const struct device *dev, struct senso
 	rh /= (ht->x1 - ht->x0);
 
 	/* convert humidity to integer and fractional part */
-	val->val1 = rh;
-	val->val2 = rh * 1000000;
+	sensor_value_from_float(val, rh);
 }
 
 static inline void ism330dhcx_press_convert(const struct device *dev, struct sensor_value *val)
@@ -787,9 +797,9 @@ static int ism330dhcx_init(const struct device *dev)
 		.gyro_range = DT_INST_PROP(inst, gyro_range),					\
 		COND_CODE_1(DT_INST_ON_BUS(inst, spi),						\
 			    (.bus_init = ism330dhcx_spi_init,					\
-			     .spi = SPI_DT_SPEC_INST_GET(inst, SPI_OP_MODE_MASTER |		\
+			     .spi = SPI_DT_SPEC_INST_GET(inst, SPI_OP_MODE_CONTROLLER |		\
 							 SPI_MODE_CPOL | SPI_MODE_CPHA |	\
-							 SPI_WORD_SET(8), 0),),			\
+							 SPI_WORD_SET(8)),),			\
 			    ())									\
 		COND_CODE_1(DT_INST_ON_BUS(inst, i2c),						\
 			    (.bus_init = ism330dhcx_i2c_init,					\

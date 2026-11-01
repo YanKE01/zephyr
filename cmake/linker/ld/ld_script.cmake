@@ -1,6 +1,6 @@
 # ToDo:
 # - Ensure LMA / VMA sections are correctly grouped similar to scatter file creation.
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 
 set(SORT_TYPE_NAME SORT_BY_NAME)
 
@@ -357,6 +357,10 @@ function(section_to_string)
   if(${parent_type} STREQUAL GROUP)
     get_property(vma GLOBAL PROPERTY ${parent}_VMA)
     get_property(lma GLOBAL PROPERTY ${parent}_LMA)
+  elseif(${parent_type} STREQUAL REGION)
+    if(NOT DEFINED vma)
+      get_property(vma GLOBAL PROPERTY ${parent}_NAME)
+    endif()
   endif()
 
   if(DEFINED vma)

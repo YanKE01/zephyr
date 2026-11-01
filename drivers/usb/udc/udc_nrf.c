@@ -43,8 +43,8 @@ enum udc_nrf_event_type {
 	UDC_NRF_EVT_RESUME,
 	/* Remote Wakeup initiated */
 	UDC_NRF_EVT_WUREQ,
-	/* Let controller perform status stage */
-	UDC_NRF_EVT_STATUS_IN,
+	/* Endpoint dequeue requested */
+	UDC_NRF_EVT_DEQUEUE,
 };
 
 /* Main events the driver thread waits for */
@@ -70,6 +70,7 @@ static struct udc_ep_config ep_cfg_in[CFG_EPIN_CNT + CFG_EP_ISOIN_CNT + 1];
 static bool udc_nrf_setup_set_addr, udc_nrf_fake_setup;
 static uint8_t udc_nrf_address;
 const static struct device *udc_nrf_dev;
+static bool vbus_present;
 
 #define NRF_USBD_COMMON_EPIN_CNT      9
 #define NRF_USBD_COMMON_EPOUT_CNT     9
@@ -167,6 +168,11 @@ static uint32_t m_ep_dma_waiting;
  * IN endpoint armed means that device will respond with DATA packet.
  */
 static uint32_t m_ep_armed;
+
+/* Set bit indicates that endpoint is requested to be dequeued. */
+static uint32_t m_ep_dequeue;
+
+static K_CONDVAR_DEFINE(ep_dequeued);
 
 /* Semaphore to guard EasyDMA access.
  * In USBD there is only one DMA channel working in background, and new transfer
@@ -420,6 +426,15 @@ static void nrf_usbd_dma_finished(nrf_usbd_common_ep_t ep)
 		m_ep_armed |= BIT(ep2bit(ep));
 	}
 
+	/* Set default dma_ep value that has no special meaning, so we do not
+	 * need to have separate dma_ep_valid flag (in the hot interrupt path).
+	 * This is necessary to avoid false positives in ev_sof_handler() and
+	 * on EVENTS_EP0SETUP check when dma_available is held in thread context
+	 * (e.g. when thread wants to call usbd_ep_abort()), i.e. when thread
+	 * prevents DMA operation.
+	 */
+	dma_ep = NRF_USBD_COMMON_EPIN1;
+
 	k_sem_give(&dma_available);
 }
 
@@ -432,6 +447,15 @@ static void ev_sof_handler(void)
 	if (NRF_USBD->SIZE.ISOOUT) {
 		iso_ready_mask |= (1U << ep2bit(NRF_USBD_COMMON_EPOUT8));
 	}
+
+	if (k_sem_count_get(&dma_available) == 0) {
+		/* DMA may have been active across SOF which means that endpoint
+		 * data may be corrupted (if DMA was to isochronous endpoint).
+		 * Do not mark the endpoint as ready if this is the case.
+		 */
+		iso_ready_mask &= ~BIT(ep2bit(dma_ep));
+	}
+
 	m_ep_ready |= iso_ready_mask;
 
 	m_ep_armed &= ~USBD_EPISO_BIT_MASK;
@@ -1160,12 +1184,18 @@ static void nrf_usbd_legacy_transfer_out_drop(nrf_usbd_common_ep_t ep)
 }
 
 struct udc_nrf_config {
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	clock_control_subsys_t clock;
+#else
+	const struct device *clk_dev;
+#endif
 	nrfx_power_config_t pwr;
 	nrfx_power_usbevt_config_t evt;
 };
 
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 static struct onoff_manager *hfxo_mgr;
+#endif
 static struct onoff_client hfxo_cli;
 
 static void udc_event_xfer_in_next(const struct device *dev, const uint8_t ep)
@@ -1178,52 +1208,34 @@ static void udc_event_xfer_in_next(const struct device *dev, const uint8_t ep)
 	}
 
 	buf = udc_buf_peek(ep_cfg);
-	if (buf != NULL) {
-		nrf_usbd_start_transfer(ep);
-		udc_ep_set_busy(ep_cfg, true);
-	}
-}
-
-static void udc_event_xfer_ctrl_in(const struct device *dev,
-				   struct net_buf *const buf)
-{
-	if (udc_ctrl_stage_is_status_in(dev) ||
-	    udc_ctrl_stage_is_no_data(dev)) {
-		/* Status stage finished, notify upper layer */
-		udc_ctrl_submit_status(dev, buf);
-	}
-
-	if (udc_ctrl_stage_is_data_in(dev)) {
-		/*
-		 * s-in-[status] finished, release buffer.
-		 * Since the controller supports auto-status we cannot use
-		 * if (udc_ctrl_stage_is_status_out()) after state update.
-		 */
-		net_buf_unref(buf);
-	}
-
-	/* Update to next stage of control transfer */
-	udc_ctrl_update_stage(dev, buf);
-
-	if (!udc_nrf_setup_set_addr) {
-		/* Allow status stage */
-		NRF_USBD->TASKS_EP0STATUS = 1;
-	}
-}
-
-static void udc_event_fake_status_in(const struct device *dev)
-{
-	struct udc_ep_config *ep_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
-	struct net_buf *buf;
-
-	buf = udc_buf_get(ep_cfg);
-	if (unlikely(buf == NULL)) {
-		LOG_DBG("ep 0x%02x queue is empty", USB_CONTROL_EP_IN);
+	if (buf == NULL) {
 		return;
 	}
 
-	LOG_DBG("Fake status IN %p", buf);
-	udc_event_xfer_ctrl_in(dev, buf);
+	if (ep == USB_CONTROL_EP_IN) {
+		const struct udc_buf_info *bi = udc_get_buf_info(buf);
+
+		if (bi->data) {
+			m_ep0_data_dir = USB_CONTROL_EP_IN;
+		}
+
+		if (bi->status) {
+			if (!udc_nrf_setup_set_addr) {
+				/* Allow status stage */
+				NRF_USBD->TASKS_EP0STATUS = 1;
+			}
+
+			/* Controller automatically performs status IN
+			 * stage and SW cannot know when it is done.
+			 */
+			buf = udc_buf_get(ep_cfg);
+			udc_submit_ep_event(dev, buf, 0);
+			return;
+		}
+	}
+
+	nrf_usbd_start_transfer(ep);
+	udc_ep_set_busy(ep_cfg, true);
 }
 
 static void udc_event_xfer_in(const struct device *dev, const uint8_t ep)
@@ -1241,26 +1253,13 @@ static void udc_event_xfer_in(const struct device *dev, const uint8_t ep)
 	}
 
 	udc_ep_set_busy(ep_cfg, false);
+	udc_submit_ep_event(dev, buf, 0);
+
 	if (ep == USB_CONTROL_EP_IN) {
-		udc_event_xfer_ctrl_in(dev, buf);
-	} else {
-		udc_submit_ep_event(dev, buf, 0);
-	}
-}
+		__ASSERT(udc_get_buf_info(buf)->data, "EP0IN buf is not data");
 
-static void udc_event_xfer_ctrl_out(const struct device *dev,
-				    struct net_buf *const buf)
-{
-	/*
-	 * In case s-in-status, controller supports auto-status therefore we
-	 * do not have to call udc_ctrl_stage_is_status_out().
-	 */
-
-	/* Update to next stage of control transfer */
-	udc_ctrl_update_stage(dev, buf);
-
-	if (udc_ctrl_stage_is_status_in(dev)) {
-		udc_ctrl_submit_s_out_status(dev, buf);
+		/* STALL any further IN tokens, allow status stage */
+		NRF_USBD->TASKS_EP0STATUS = 1;
 	}
 }
 
@@ -1275,6 +1274,22 @@ static void udc_event_xfer_out_next(const struct device *dev, const uint8_t ep)
 
 	buf = udc_buf_peek(ep_cfg);
 	if (buf != NULL) {
+		if (ep == USB_CONTROL_EP_OUT) {
+			struct udc_buf_info *bi = udc_get_buf_info(buf);
+
+			if (bi->setup) {
+				/* SETUP can be received without any action */
+				return;
+			}
+
+			if (bi->data) {
+				m_ep0_data_dir = USB_CONTROL_EP_OUT;
+
+				/* Allow receiving first OUT Data Stage packet */
+				NRF_USBD->TASKS_EP0RCVOUT = 1;
+			}
+		}
+
 		nrf_usbd_start_transfer(ep);
 		udc_ep_set_busy(ep_cfg, true);
 	} else {
@@ -1295,71 +1310,18 @@ static void udc_event_xfer_out(const struct device *dev, const uint8_t ep)
 	}
 
 	udc_ep_set_busy(ep_cfg, false);
-	if (ep == USB_CONTROL_EP_OUT) {
-		udc_event_xfer_ctrl_out(dev, buf);
-	} else {
-		udc_submit_ep_event(dev, buf, 0);
-	}
-}
-
-static int usbd_ctrl_feed_dout(const struct device *dev,
-			       const size_t length)
-{
-	struct udc_ep_config *cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-	struct net_buf *buf;
-
-	buf = udc_ctrl_alloc(dev, USB_CONTROL_EP_OUT, length);
-	if (buf == NULL) {
-		return -ENOMEM;
-	}
-
-	udc_buf_put(cfg, buf);
-
-	__ASSERT_NO_MSG(k_current_get() == &drv_stack_data);
-	udc_event_xfer_out_next(dev, USB_CONTROL_EP_OUT);
-
-	/* Allow receiving first OUT Data Stage packet */
-	NRF_USBD->TASKS_EP0RCVOUT = 1;
-
-	return 0;
+	udc_submit_ep_event(dev, buf, 0);
 }
 
 static int udc_event_xfer_setup(const struct device *dev)
 {
-	struct udc_ep_config *cfg_out = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-	struct udc_ep_config *cfg_in = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
-	struct usb_setup_packet *setup;
-	struct net_buf *buf;
-	int err;
+	struct usb_setup_packet setup;
 
-	/* Make sure there isn't any obsolete data stage buffer queued */
-	buf = udc_buf_get_all(cfg_out);
-	if (buf) {
-		net_buf_unref(buf);
-	}
-
-	buf = udc_buf_get_all(cfg_in);
-	if (buf) {
-		net_buf_unref(buf);
-	}
-
-	udc_ep_set_busy(cfg_out, false);
-	udc_ep_set_busy(cfg_in, false);
-
-	buf = udc_ctrl_alloc(dev, USB_CONTROL_EP_OUT,
-			     sizeof(struct usb_setup_packet));
-	if (buf == NULL) {
-		LOG_ERR("Failed to allocate for setup");
-		return -ENOMEM;
-	}
-
-	udc_ep_buf_set_setup(buf);
-	setup = (struct usb_setup_packet *)buf->data;
-	setup->bmRequestType = NRF_USBD->BMREQUESTTYPE;
-	setup->bRequest = NRF_USBD->BREQUEST;
-	setup->wValue = NRF_USBD->WVALUEL | (NRF_USBD->WVALUEH << 8);
-	setup->wIndex = NRF_USBD->WINDEXL | (NRF_USBD->WINDEXH << 8);
-	setup->wLength = NRF_USBD->WLENGTHL | (NRF_USBD->WLENGTHH << 8);
+	setup.bmRequestType = NRF_USBD->BMREQUESTTYPE;
+	setup.bRequest = NRF_USBD->BREQUEST;
+	setup.wValue = NRF_USBD->WVALUEL | (NRF_USBD->WVALUEH << 8);
+	setup.wIndex = NRF_USBD->WINDEXL | (NRF_USBD->WINDEXH << 8);
+	setup.wLength = NRF_USBD->WLENGTHL | (NRF_USBD->WLENGTHH << 8);
 
 	/* USBD peripheral automatically handles Set Address in slightly
 	 * different manner than the USB stack.
@@ -1385,10 +1347,10 @@ static int udc_event_xfer_setup(const struct device *dev)
 	 * device STALLs status stage and address remains unchanged.
 	 */
 	udc_nrf_setup_set_addr =
-		setup->bmRequestType == 0 &&
-		setup->bRequest == USB_SREQ_SET_ADDRESS;
+		setup.bmRequestType == 0 &&
+		setup.bRequest == USB_SREQ_SET_ADDRESS;
 	if (udc_nrf_setup_set_addr) {
-		if (setup->wLength) {
+		if (setup.wLength) {
 			/* Currently USB stack only STALLs OUT Data Stage when
 			 * buffer allocation fails. To prevent the device from
 			 * ACKing the Data Stage, simply ignore the request
@@ -1399,7 +1361,6 @@ static int udc_event_xfer_setup(const struct device *dev)
 			 * equal to current device address). If host does not
 			 * issue IN token then the mismatch will be avoided.
 			 */
-			net_buf_unref(buf);
 			return 0;
 		}
 
@@ -1409,8 +1370,8 @@ static int udc_event_xfer_setup(const struct device *dev)
 		 * Just clear the bits so stack will handle the request in the
 		 * same way as USBD peripheral does, avoiding the mismatch.
 		 */
-		setup->wValue &= 0x7F;
-		setup->wIndex = 0;
+		setup.wValue &= 0x7F;
+		setup.wIndex = 0;
 	}
 
 	if (!udc_nrf_setup_set_addr && udc_nrf_address != NRF_USBD->USBADDR) {
@@ -1420,36 +1381,28 @@ static int udc_event_xfer_setup(const struct device *dev)
 		udc_nrf_fake_setup = true;
 		udc_nrf_setup_set_addr = true;
 
-		setup->bmRequestType = 0;
-		setup->bRequest = USB_SREQ_SET_ADDRESS;
-		setup->wValue = NRF_USBD->USBADDR;
-		setup->wIndex = 0;
-		setup->wLength = 0;
+		setup.bmRequestType = 0;
+		setup.bRequest = USB_SREQ_SET_ADDRESS;
+		setup.wValue = NRF_USBD->USBADDR;
+		setup.wIndex = 0;
+		setup.wLength = 0;
 	} else {
 		udc_nrf_fake_setup = false;
 	}
 
-	net_buf_add(buf, sizeof(nrf_usbd_common_setup_t));
+	udc_setup_received(dev, &setup);
 
-	/* Update to next stage of control transfer */
-	udc_ctrl_update_stage(dev, buf);
+	return 0;
+}
 
-	if (udc_ctrl_stage_is_data_out(dev)) {
-		/*  Allocate and feed buffer for data OUT stage */
-		LOG_DBG("s:%p|feed for -out-", buf);
-		m_ep0_data_dir = USB_CONTROL_EP_OUT;
-		err = usbd_ctrl_feed_dout(dev, udc_data_stage_length(buf));
-		if (err == -ENOMEM) {
-			err = udc_submit_ep_event(dev, buf, err);
-		}
-	} else if (udc_ctrl_stage_is_data_in(dev)) {
-		m_ep0_data_dir = USB_CONTROL_EP_IN;
-		err = udc_ctrl_submit_s_in_status(dev);
-	} else {
-		err = udc_ctrl_submit_s_status(dev);
-	}
+static void udc_handle_ep_dequeue(const struct device *dev,
+				  struct udc_ep_config *cfg)
+{
+	nrf_usbd_legacy_ep_abort(cfg->addr);
 
-	return err;
+	udc_ep_cancel_queued(dev, cfg);
+
+	udc_ep_set_busy(cfg, false);
 }
 
 static void udc_nrf_thread_handler(const struct device *dev)
@@ -1517,12 +1470,32 @@ static void udc_nrf_thread_handler(const struct device *dev)
 		}
 	}
 
-	if (evt & BIT(UDC_NRF_EVT_STATUS_IN)) {
-		udc_event_fake_status_in(dev);
-	}
-
 	if (evt & BIT(UDC_NRF_EVT_SETUP)) {
 		udc_event_xfer_setup(dev);
+	}
+
+	if (evt & BIT(UDC_NRF_EVT_DEQUEUE)) {
+		udc_lock_internal(dev, K_FOREVER);
+
+		while (m_ep_dequeue) {
+			struct udc_ep_config *ep_cfg;
+			uint8_t bitpos = NRF_CTZ(m_ep_dequeue);
+
+			ep_cfg = udc_get_ep_cfg(dev, bit2ep(bitpos));
+			udc_handle_ep_dequeue(dev, ep_cfg);
+
+			/* If transfer actually finished before dequeue, then
+			 * xfer_finished bit may be set. Just clear it.
+			 */
+			atomic_clear_bit(&xfer_finished, bitpos);
+
+			m_ep_dequeue &= ~BIT(bitpos);
+		}
+
+		/* Notify requestors that requested endpoints are dequeued */
+		k_condvar_broadcast(&ep_dequeued);
+
+		udc_unlock_internal(dev);
 	}
 }
 
@@ -1544,6 +1517,7 @@ static void udc_nrf_power_handler(nrfx_power_usb_evt_t pwr_evt)
 	case NRFX_POWER_USB_EVT_DETECTED:
 		LOG_DBG("POWER event detected");
 		udc_submit_event(udc_nrf_dev, UDC_EVT_VBUS_READY, 0);
+		vbus_present = true;
 		break;
 	case NRFX_POWER_USB_EVT_READY:
 		LOG_DBG("POWER event ready");
@@ -1552,6 +1526,7 @@ static void udc_nrf_power_handler(nrfx_power_usb_evt_t pwr_evt)
 	case NRFX_POWER_USB_EVT_REMOVED:
 		LOG_DBG("POWER event removed");
 		udc_submit_event(udc_nrf_dev, UDC_EVT_VBUS_REMOVED, 0);
+		vbus_present = false;
 		break;
 	default:
 		LOG_ERR("Unknown power event %d", pwr_evt);
@@ -1564,16 +1539,6 @@ static int udc_nrf_ep_enqueue(const struct device *dev,
 {
 	udc_buf_put(cfg, buf);
 
-	if (cfg->addr == USB_CONTROL_EP_IN && buf->len == 0) {
-		const struct udc_buf_info *bi = udc_get_buf_info(buf);
-
-		if (bi->status) {
-			/* Controller automatically performs status IN stage */
-			k_event_post(&drv_evt, BIT(UDC_NRF_EVT_STATUS_IN));
-			return 0;
-		}
-	}
-
 	atomic_set_bit(&xfer_new, ep2bit(cfg->addr));
 	k_event_post(&drv_evt, BIT(UDC_NRF_EVT_XFER));
 
@@ -1583,18 +1548,23 @@ static int udc_nrf_ep_enqueue(const struct device *dev,
 static int udc_nrf_ep_dequeue(const struct device *dev,
 			      struct udc_ep_config *cfg)
 {
-	struct net_buf *buf;
+	struct udc_data *data = dev->data;
 
-	nrf_usbd_legacy_ep_abort(cfg->addr);
+	/* Signal that we want to dequeue, variable is protected by UDC mutex */
+	m_ep_dequeue |= BIT(ep2bit(cfg->addr));
 
-	buf = udc_buf_get_all(cfg);
-	if (buf) {
-		udc_submit_ep_event(dev, buf, -ECONNABORTED);
-	} else {
-		LOG_INF("ep 0x%02x queue is empty", cfg->addr);
-	}
+	/* Avoid context switch immediately after posting event */
+	k_sched_lock();
 
-	udc_ep_set_busy(cfg, false);
+	/* Inform nRF UDC driver that there are endpoints to be dequeued */
+	k_event_post(&drv_evt, BIT(UDC_NRF_EVT_DEQUEUE));
+
+	/* Wait for endpoints to be dequeued, UDC mutex was acquired via
+	 * api->lock() called in udc_ep_dequeue().
+	 */
+	k_condvar_wait(&ep_dequeued, &data->mutex, K_FOREVER);
+
+	k_sched_unlock();
 
 	return 0;
 }
@@ -1702,6 +1672,10 @@ static int udc_nrf_host_wakeup(const struct device *dev)
 
 static int udc_nrf_enable(const struct device *dev)
 {
+#if defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK192M) || defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK) || \
+	defined(CONFIG_CLOCK_CONTROL_NRF_XO)
+	const struct udc_nrf_config *cfg = dev->config;
+#endif
 	unsigned int key;
 	int ret;
 
@@ -1718,7 +1692,12 @@ static int udc_nrf_enable(const struct device *dev)
 	}
 
 	sys_notify_init_spinwait(&hfxo_cli.notify);
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	ret = onoff_request(hfxo_mgr, &hfxo_cli);
+#elif defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK192M) || defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK) || \
+	defined(CONFIG_CLOCK_CONTROL_NRF_XO)
+	ret = nrf_clock_control_request(cfg->clk_dev, NULL, &hfxo_cli);
+#endif
 	if (ret < 0) {
 		LOG_ERR("Failed to start HFXO %d", ret);
 		return ret;
@@ -1734,6 +1713,10 @@ static int udc_nrf_enable(const struct device *dev)
 
 static int udc_nrf_disable(const struct device *dev)
 {
+#if defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK192M) || defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK) || \
+	defined(CONFIG_CLOCK_CONTROL_NRF_XO)
+	const struct udc_nrf_config *cfg = dev->config;
+#endif
 	int ret;
 
 	nrf_usbd_legacy_disable();
@@ -1748,7 +1731,12 @@ static int udc_nrf_disable(const struct device *dev)
 		return -EIO;
 	}
 
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	ret = onoff_cancel_or_release(hfxo_mgr, &hfxo_cli);
+#elif defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK192M) || defined(CONFIG_CLOCK_CONTROL_NRF_HFCLK) || \
+	defined(CONFIG_CLOCK_CONTROL_NRF_XO)
+	ret = nrf_clock_control_cancel_or_release(cfg->clk_dev, NULL, &hfxo_cli);
+#endif
 	if (ret < 0) {
 		LOG_ERR("Failed to stop HFXO %d", ret);
 		return ret;
@@ -1761,15 +1749,27 @@ static int udc_nrf_init(const struct device *dev)
 {
 	const struct udc_nrf_config *cfg = dev->config;
 
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	hfxo_mgr = z_nrf_clock_control_get_onoff(cfg->clock);
+#endif
+
+	if (vbus_present) {
+		udc_submit_event(udc_nrf_dev, UDC_EVT_VBUS_READY, 0);
+	}
 
 #ifdef CONFIG_HAS_HW_NRF_USBREG
 	/* Use CLOCK/POWER priority for compatibility with other series where
 	 * USB events are handled by CLOCK interrupt handler.
 	 */
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	IRQ_CONNECT(USBREGULATOR_IRQn,
 		    DT_IRQ(DT_INST(0, nordic_nrf_clock), priority),
 		    nrfx_isr, nrfx_usbreg_irq_handler, 0);
+#else
+	IRQ_CONNECT(USBREGULATOR_IRQn,
+		    DT_IRQ(DT_INST(0, nordic_nrf_clock), priority),
+		    nrfx_isr, nrfx_usbreg_irq_handler, 0);
+#endif
 #endif
 
 	IRQ_CONNECT(DT_INST_IRQN(0), DT_INST_IRQ(0, priority),
@@ -1855,9 +1855,9 @@ static int udc_nrf_driver_init(const struct device *dev)
 	}
 
 	data->caps.rwup = true;
-	data->caps.out_ack = true;
 	data->caps.mps0 = UDC_NRF_MPS0;
 	data->caps.can_detect_vbus = true;
+	data->caps.out_ack = true;
 
 	return 0;
 }
@@ -1873,14 +1873,22 @@ static void udc_nrf_unlock(const struct device *dev)
 }
 
 static const struct udc_nrf_config udc_nrf_cfg = {
+#if defined(CONFIG_CLOCK_CONTROL_NRF)
 	.clock = COND_CODE_1(NRF_CLOCK_HAS_HFCLK192M,
 			     (CLOCK_CONTROL_NRF_SUBSYS_HF192M),
 			     (CLOCK_CONTROL_NRF_SUBSYS_HF)),
+#else
+	.clk_dev = DEVICE_DT_GET_ONE(COND_CODE_1(NRF_CLOCK_HAS_HFCLK192M,
+						 (nordic_nrf_clock_hfclk192m),
+						 (COND_CODE_1(NRF_CLOCK_HAS_HFCLK,
+							      (nordic_nrf_clock_hfclk),
+							      (nordic_nrf_clock_xo))))),
+#endif
 	.pwr = {
 		.dcdcen = (DT_PROP(DT_INST(0, nordic_nrf5x_regulator), regulator_initial_mode)
 			   == NRF5X_REG_MODE_DCDC),
 #if NRFX_POWER_SUPPORTS_DCDCEN_VDDH
-		.dcdcenhv = COND_CODE_1(CONFIG_SOC_SERIES_NRF52X,
+		.dcdcenhv = COND_CODE_1(CONFIG_SOC_SERIES_NRF52,
 			(DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf52x_regulator_hv))),
 			(DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf53x_regulator_hv)))),
 #endif

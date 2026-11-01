@@ -124,6 +124,10 @@ ZTEST(lib_stream_flash, test_stream_flash_init)
 		      FLASH_AVAILABLE + 4, NULL);
 	zassert_true(rc < 0, "should fail as size is more than available");
 
+	/* End address overflows `size_t` */
+	rc = stream_flash_init(&ctx, fdev, generic_buf, BUF_LEN, FLASH_BASE, SIZE_MAX, NULL);
+	zassert_equal(rc, -EFAULT, "should fail as offset + size overflows");
+
 	rc = stream_flash_init(NULL, fdev, generic_buf, BUF_LEN, FLASH_BASE, 0, NULL);
 	zassert_true(rc < 0, "should fail as ctx is NULL");
 
@@ -276,12 +280,50 @@ ZTEST(lib_stream_flash, test_stream_flash_bytes_written)
 	VERIFY_WRITTEN(BUF_LEN, BUF_LEN);
 }
 
+ZTEST(lib_stream_flash, test_stream_flash_bytes_buffered)
+{
+	int rc;
+	size_t buffered;
+
+	init_target();
+
+	/* Initially no bytes should be buffered */
+	buffered = stream_flash_bytes_buffered(&ctx);
+	zassert_equal(buffered, 0, "expected no buffered bytes");
+
+	/* Write partial buffer */
+	rc = stream_flash_buffered_write(&ctx, write_buf, BUF_LEN - 128, false);
+	zassert_equal(rc, 0, "expected success");
+
+	/* Verify buffered bytes */
+	buffered = stream_flash_bytes_buffered(&ctx);
+	zassert_equal(buffered, BUF_LEN - 128, "expected buffered bytes");
+
+	/* Write remaining buffer */
+	rc = stream_flash_buffered_write(&ctx, write_buf, 128, false);
+	zassert_equal(rc, 0, "expected success");
+
+	/* After auto-flush, no bytes should be buffered */
+	buffered = stream_flash_bytes_buffered(&ctx);
+	zassert_equal(buffered, 0, "expected no buffered bytes");
+
+	/* Write more than buffer size to trigger auto-flush */
+	rc = stream_flash_buffered_write(&ctx, write_buf, BUF_LEN + 128, false);
+	zassert_equal(rc, 0, "expected success");
+
+	/* Verify buffered bytes */
+	buffered = stream_flash_bytes_buffered(&ctx);
+	zassert_equal(buffered, 128, "expected remaining buffered bytes after auto-flush");
+}
+
 ZTEST(lib_stream_flash, test_stream_flash_buf_size_greater_than_page_size)
 {
 	int rc;
+	const struct flash_parameters *fparam = flash_get_parameters(fdev);
 
 	/* To illustrate that other params does not trigger error */
-	rc = stream_flash_init(&ctx, fdev, generic_buf, 0x10, 0, FLASH_AVAILABLE, NULL);
+	rc = stream_flash_init(&ctx, fdev, generic_buf, fparam->write_block_size, 0,
+			       FLASH_AVAILABLE, NULL);
 	zassert_equal(rc, 0, "expected success");
 
 	/* Only change buf_len param */
@@ -303,6 +345,54 @@ static int bad_write(const struct device *dev, off_t off, const void *data, size
 {
 	return -EINVAL;
 }
+
+/* Forwarders that delegate to the real flash driver API for callbacks not under test.
+ */
+static int forward_erase(const struct device *dev, off_t off, size_t len)
+{
+	ARG_UNUSED(dev);
+	return api->erase(fdev, off, len);
+}
+
+static const struct flash_parameters *forward_get_parameters(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+	return api->get_parameters(fdev);
+}
+
+#if defined(CONFIG_FLASH_PAGE_LAYOUT)
+static void forward_page_layout(const struct device *dev,
+				const struct flash_pages_layout **lay,
+				size_t *lay_size)
+{
+	ARG_UNUSED(dev);
+	api->page_layout(fdev, lay, lay_size);
+}
+#endif
+
+/* Fake flash APIs used by test_stream_flash_buffered_write_callback. The instances must live in
+ * the flash driver API iterable section (declared via DEVICE_API) so that DEVICE_API_GET passes
+ * its class assertion when the test routes flash_* calls through a fake device.
+ */
+static DEVICE_API(flash, fake_api_fake_write) = {
+	.read = bad_read,
+	.write = fake_write,
+	.erase = forward_erase,
+	.get_parameters = forward_get_parameters,
+#if defined(CONFIG_FLASH_PAGE_LAYOUT)
+	.page_layout = forward_page_layout,
+#endif
+};
+
+static DEVICE_API(flash, fake_api_bad_write) = {
+	.read = bad_read,
+	.write = bad_write,
+	.erase = forward_erase,
+	.get_parameters = forward_get_parameters,
+#if defined(CONFIG_FLASH_PAGE_LAYOUT)
+	.page_layout = forward_page_layout,
+#endif
+};
 
 ZTEST(lib_stream_flash, test_stream_flash_buffered_write_callback)
 {
@@ -344,16 +434,13 @@ ZTEST(lib_stream_flash, test_stream_flash_buffered_write_callback)
 	zassert_equal(ctx.buf_bytes, BUF_LEN, "Expected bytes to be left in buffer");
 
 	struct device fake_dev = *ctx.fdev;
-	struct flash_driver_api fake_api = *(struct flash_driver_api *)ctx.fdev->api;
 	struct stream_flash_ctx bad_ctx = ctx;
 	struct stream_flash_ctx cmp_ctx;
 
-	fake_api.read = bad_read;
 	/* Using fake write here because after previous write, with faked callback failure,
 	 * the flash is already written and real flash_write would cause failure.
 	 */
-	fake_api.write = fake_write;
-	fake_dev.api = &fake_api;
+	fake_dev.api = &fake_api_fake_write;
 	bad_ctx.fdev = &fake_dev;
 	/* Trigger erase attempt */
 	cmp_ctx = bad_ctx;
@@ -365,7 +452,7 @@ ZTEST(lib_stream_flash, test_stream_flash_buffered_write_callback)
 	/* Pretend flashed context and attempt write write block - 1 bytes to trigger unaligned
 	 * write; the write needs to fail so that we could check that context does not get modified.
 	 */
-	fake_api.write = bad_write;
+	fake_dev.api = &fake_api_bad_write;
 	bad_ctx.callback = NULL;
 	bad_ctx.buf_bytes = 0;
 	cmp_ctx = bad_ctx;

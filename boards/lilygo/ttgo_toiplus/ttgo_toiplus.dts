@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include <espressif/esp32c3/esp32c3_common.dtsi>
+#include <espressif/esp32c3/esp32c3.dtsi>
 #include "ttgo_toiplus-pinctrl.dtsi"
 #include <espressif/partitions_0x0_default.dtsi>
 
@@ -34,7 +34,7 @@
 		compatible = "gpio-leds";
 
 		green_led: led_0 {
-			gpios =  <&gpio0 3 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 			label = "Green - LED0";
 		};
 	};
@@ -42,6 +42,7 @@
 
 &flash0 {
 	reg = <0x0 DT_SIZE_M(4)>;
+	ranges = <0x0 0x0 DT_SIZE_M(4)>;
 };
 
 &uart0 {

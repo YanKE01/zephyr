@@ -41,17 +41,40 @@ int dns_msg_pack_qname(uint16_t *len, uint8_t *buf, uint16_t size,
 
 	/* traverse the domain name str, including the null-terminator :) */
 	for (i = 0U; i < dn_size + 1; i++) {
+		if (lb_index >= DNS_NAME_MAX_SIZE) {
+			/* RFC 1035 ch. 3.1: a name is at most 255 octets */
+			return -EINVAL;
+		}
+
 		if (lb_index >= size) {
 			return -ENOMEM;
 		}
 
 		switch (domain_name[i]) {
 		default:
+			if (lb_size >= DNS_LABEL_MAX_SIZE) {
+				/* RFC 1035 ch. 3.1: a label is at most 63 octets */
+				return -EINVAL;
+			}
+
 			buf[lb_index] = domain_name[i];
 			lb_size += 1U;
 			break;
 		case '.':
+			if (lb_size == 0U && dn_size != 1U) {
+				/* Only the root, ".", has an empty label */
+				return -EINVAL;
+			}
+
 			buf[lb_start] = lb_size;
+			if (i == (dn_size - 1U)) {
+				/* A trailing dot explicitly represents the root label. */
+				if (lb_size > 0U) {
+					buf[lb_index++] = 0U;
+				}
+				*len = lb_index;
+				return 0;
+			}
 			lb_size = 0U;
 			lb_start = lb_index;
 			break;
@@ -108,6 +131,12 @@ static int skip_fqdn(uint8_t *answer, int buf_sz)
 	return i;
 }
 
+static inline bool handle_private_dns_query_type(uint16_t rr_type)
+{
+	return (IS_ENABLED(CONFIG_DNS_RESOLVER_PRIVATE_RR_SUPPORT) &&
+		dns_query_type_is_private((enum dns_query_type)rr_type));
+}
+
 int dns_unpack_answer(struct dns_msg_t *dns_msg, int dname_ptr, uint32_t *ttl,
 		      enum dns_rr_type *type)
 {
@@ -160,6 +189,11 @@ int dns_unpack_answer(struct dns_msg_t *dns_msg, int dname_ptr, uint32_t *ttl,
 		DNS_RDLENGTH_LEN;
 	*type = dns_answer_type(dname_len, answer);
 
+	/* Reject records whose declared rdata extends past the packet. */
+	if ((uint32_t)pos + len > dns_msg->msg_size) {
+		return -EINVAL;
+	}
+
 	switch (*type) {
 	case DNS_RR_TYPE_A:
 	case DNS_RR_TYPE_AAAA:
@@ -170,12 +204,25 @@ int dns_unpack_answer(struct dns_msg_t *dns_msg, int dname_ptr, uint32_t *ttl,
 		set_dns_msg_response(dns_msg, DNS_RESPONSE_DATA, pos, len);
 		return 0;
 
+	case DNS_RR_TYPE_TXT:
+		set_dns_msg_response(dns_msg, DNS_RESPONSE_TXT, pos, len);
+		return 0;
+
+	case DNS_RR_TYPE_SRV:
+		set_dns_msg_response(dns_msg, DNS_RESPONSE_SRV, pos, len);
+		return 0;
+
 	case DNS_RR_TYPE_CNAME:
 		set_dns_msg_response(dns_msg, DNS_RESPONSE_CNAME_NO_IP,
 				     pos, len);
 		return 0;
 
 	default:
+		/* Check if this is a private use RR (65280-65534) */
+		if (handle_private_dns_query_type(*type)) {
+			set_dns_msg_response(dns_msg, DNS_RESPONSE_PRIVATE, pos, len);
+			return 0;
+		}
 		/* malformed dns answer */
 		return -EINVAL;
 	}
@@ -187,8 +234,6 @@ int dns_unpack_response_header(struct dns_msg_t *msg, int src_id)
 {
 	uint8_t *dns_header;
 	uint16_t size;
-	int qdcount;
-	int ancount;
 	int rc;
 
 	dns_header = msg->msg;
@@ -223,16 +268,6 @@ int dns_unpack_response_header(struct dns_msg_t *msg, int src_id)
 
 	}
 
-	qdcount = dns_unpack_header_qdcount(dns_header);
-	ancount = dns_unpack_header_ancount(dns_header);
-
-	/* For mDNS (when src_id == 0) the query count is 0 so accept
-	 * the packet in that case.
-	 */
-	if ((qdcount < 1 && src_id > 0) || ancount < 1) {
-		return -EINVAL;
-	}
-
 	return 0;
 }
 
@@ -244,7 +279,7 @@ static int dns_msg_pack_query_header(uint8_t *buf, uint16_t size, uint16_t id)
 		return -ENOMEM;
 	}
 
-	UNALIGNED_PUT(htons(id), (uint16_t *)(buf));
+	UNALIGNED_PUT(net_htons(id), (uint16_t *)(buf));
 
 	/* RD = 1, TC = 0, AA = 0, Opcode = 0, QR = 0 <-> 0x01 (1B)
 	 * RCode = 0, Z = 0, RA = 0		      <-> 0x00 (1B)
@@ -261,7 +296,7 @@ static int dns_msg_pack_query_header(uint8_t *buf, uint16_t size, uint16_t id)
 
 	offset += DNS_HEADER_FLAGS_LEN;
 	/* set question counter */
-	UNALIGNED_PUT(htons(1), (uint16_t *)(buf + offset));
+	UNALIGNED_PUT(net_htons(1), (uint16_t *)(buf + offset));
 
 	offset += DNS_QDCOUNT_LEN;
 	/* set answer and ns rr */
@@ -298,11 +333,11 @@ int dns_msg_pack_query(uint8_t *buf, uint16_t *len, uint16_t size,
 	offset += qname_len;
 
 	/* QType */
-	UNALIGNED_PUT(htons(qtype), (uint16_t *)(buf + offset + 0));
+	UNALIGNED_PUT(net_htons(qtype), (uint16_t *)(buf + offset + 0));
 	offset += DNS_QTYPE_LEN;
 
 	/* QClass */
-	UNALIGNED_PUT(htons(DNS_CLASS_IN), (uint16_t *)(buf + offset));
+	UNALIGNED_PUT(net_htons(DNS_CLASS_IN), (uint16_t *)(buf + offset));
 
 	*len = offset + DNS_QCLASS_LEN;
 
@@ -351,7 +386,8 @@ int dns_unpack_response_query(struct dns_msg_t *dns_msg)
 	buf = dns_query + qname_size;
 	if (dns_unpack_query_qtype(buf) != DNS_RR_TYPE_A &&
 	    dns_unpack_query_qtype(buf) != DNS_RR_TYPE_AAAA &&
-	    dns_unpack_query_qtype(buf) != DNS_RR_TYPE_PTR) {
+	    dns_unpack_query_qtype(buf) != DNS_RR_TYPE_PTR &&
+	    !handle_private_dns_query_type(dns_unpack_query_qtype(buf))) {
 		return -EINVAL;
 	}
 
@@ -513,7 +549,10 @@ int dns_unpack_name(const uint8_t *msg, int maxlen, const uint8_t *src,
 				len = curr_src - src + 1;
 			}
 
-			end_of_label = curr_src + 1;
+			if (end_of_label == NULL) {
+				/* First pointer entry, set end_of_label */
+				end_of_label = curr_src + 1;
+			}
 
 			/* Strip compress bits from length calculation */
 			pos = ((val & 0x3f) << 8) | (*curr_src & 0xff);
@@ -545,7 +584,10 @@ int dns_unpack_name(const uint8_t *msg, int maxlen, const uint8_t *src,
 
 			loop_check += label_len + 1;
 
-			net_buf_add_u8(buf, '.');
+			/* separate labels by periods */
+			if (buf->len > 0) {
+				net_buf_add_u8(buf, '.');
+			}
 			net_buf_add_mem(buf, curr_src, label_len);
 
 			curr_src += label_len;
@@ -617,7 +659,8 @@ int dns_unpack_query(struct dns_msg_t *dns_msg, struct net_buf *buf,
 		&& query_type != DNS_RR_TYPE_SRV
 		&& query_type != DNS_RR_TYPE_TXT
 		&& query_type != DNS_RR_TYPE_HTTPS
-		&& query_type != DNS_RR_TYPE_ANY) {
+		&& query_type != DNS_RR_TYPE_ANY
+		&& !handle_private_dns_query_type(query_type)) {
 		return -EINVAL;
 	}
 
@@ -634,7 +677,7 @@ int dns_unpack_query(struct dns_msg_t *dns_msg, struct net_buf *buf,
 		*qclass = query_class;
 	}
 
-	dns_msg->query_offset = end_of_label - dns_msg->msg + 2 + 2;
+	dns_msg->query_offset += end_of_label - dns_query + 2 + 2;
 
 	return ret;
 }

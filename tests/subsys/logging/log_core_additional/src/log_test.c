@@ -166,6 +166,14 @@ static void log_setup(bool backend2_enable)
 	log_thread_set(k_current_get());
 #endif
 
+	/* Drain any log messages queued before this test (e.g. a boot-time
+	 * LOG_WRN from the kernel) so they are dispatched to whichever
+	 * backends were already active.  Without this, the freshly enabled
+	 * test backend below would also receive those pre-test messages on
+	 * its first dispatch and the counter would start above zero.
+	 */
+	log_flush();
+
 	memset(&backend1_cb, 0, sizeof(backend1_cb));
 
 	log_backend_enable(&backend1, &backend1_cb, LOG_LEVEL_DBG);
@@ -300,7 +308,7 @@ ZTEST(test_log_core_additional, test_log_early_logging)
 		}
 
 		zassert_equal(backend1_cb.total_logs, backend1_cb.counter,
-			      "Unexpected amount of messages received. %d",
+			      "Unexpected amount of messages received. %zu",
 			      backend1_cb.counter);
 	}
 }

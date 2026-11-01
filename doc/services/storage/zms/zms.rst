@@ -2,6 +2,7 @@
 
 Zephyr Memory Storage (ZMS)
 ###########################
+
 Zephyr Memory Storage is a new key-value storage system that is designed to work with all types
 of non-volatile storage technologies. It supports classical on-chip NOR flash as well as new
 technologies like RRAM and MRAM that do not require a separate erase operation at all, that is,
@@ -9,6 +10,7 @@ data on these types of devices can be overwritten directly at any time.
 
 General behavior
 ****************
+
 ZMS divides the memory space into sectors (minimum 2), and each sector is filled with key-value
 pairs until it is full.
 
@@ -32,6 +34,7 @@ the first sector after garbage collecting it and erasing its content.
 
 Composition of a sector
 =======================
+
 A sector is organized in this form (example with 3 sectors):
 
 .. list-table::
@@ -88,7 +91,7 @@ Definition of each element in the sector
 ``GC_done ATE`` is written to indicate that the next sector has already been garbage-collected.
 This ATE could be at any position of the sector.
 
-``ID ATE`` are entries that contain a 32-bit key and describe where the data is stored, its
+``ID ATE`` contains a key of type :c:type:`zms_id_t` and describes where the data is stored, its
 size and its CRC32.
 
 ``Data`` is the actual value associated to the ID-ATE.
@@ -103,7 +106,23 @@ Mounting the storage system starts by getting the flash parameters, checking tha
 properties are correct (sector_size, sector_count ...) then calling the zms_init function to
 make the storage ready.
 
-To mount the filesystem the following elements in the ``zms_fs`` structure must be initialized:
+By default, :c:func:`zms_mount` returns an error if the partition cannot be mounted.
+For recovery-oriented use cases, :c:func:`zms_mount_force` can be used to automatically
+wipe and reinitialize the partition when the first mount attempt fails.
+
+Mount flags
+-----------
+
+ZMS mount behavior can be controlled with optional flags in ``zms_fs.mount_flags``.
+
+- Default behavior (no optional flags set, ``mount_flags = 0``): if the partition is erased and no valid
+  ZMS header is found, :c:func:`zms_mount` formats the partition by creating the
+  initial ZMS header.
+- ``ZMS_MOUNT_FLAG_NO_FORMAT``: if the partition is erased and no valid ZMS
+  header is found, :c:func:`zms_mount` does not format the partition and returns
+  ``-ENOTSUP``.
+
+To mount the filesystem the following elements in the :c:struct:`zms_fs` structure must be initialized:
 
 .. code-block:: c
 
@@ -117,6 +136,9 @@ To mount the filesystem the following elements in the ``zms_fs`` structure must 
 		uint32_t sector_size;
 		/** Number of sectors in the file system */
 		uint32_t sector_count;
+
+		/** Optional mount behavior flags (enum zms_mount_flags) */
+		uint32_t mount_flags;
 
 		/** Flash device runtime structure */
 		const struct device *flash_device;
@@ -132,7 +154,7 @@ It must look for a closed sector followed by an open one, then within the open s
 After that, it checks that the sector after this one is empty, or it will erase it.
 
 ZMS ID/data write
-===================
+=================
 
 To avoid rewriting the same data with the same ID again, ZMS must look in all the sectors if the
 same ID exists and then compares its data. If the data is identical, no write is performed.
@@ -140,7 +162,6 @@ If it must perform a write, then an ATE and the data (if the operation is not a 
 in the sector.
 If the sector is full (cannot hold the current data + ATE), ZMS has to move to the next sector,
 garbage collect the sector after the newly opened one then erase it.
-Data whose size is smaller or equal to 8 bytes are written within the ATE.
 
 ZMS ID/data read (with history)
 ===============================
@@ -149,6 +170,158 @@ By default ZMS looks for the last data with the same ID by browsing through all 
 the most recent ones to the oldest ones. If it finds a valid ATE with a matching ID it retrieves
 its data and returns the number of bytes that were read.
 If a history count is provided and different than 0, older data with same ID is retrieved.
+
+ZMS entry enumeration (iterator API)
+====================================
+
+Applications can enumerate stored entries without supplying a predefined list of IDs.
+This is useful when IDs are derived from payload data (for example packed addresses) and the
+application does not keep a separate index in flash.
+
+This API family is generally used at boot, when the application rebuilds its in-memory state from
+the ID/length metadata persisted in ZMS.
+
+The iterator API consists of:
+
+- :c:func:`zms_iter_init` to initialize iterator state.
+- :c:func:`zms_iter_init_with_config` to initialize iterator state with optional ID mask and
+  inclusive ID range and predicate filters.
+- :c:func:`zms_iter_next` to retrieve one live entry (unique ID) at a time.
+- :c:func:`zms_iter_next_all` to retrieve all matching entries (full history, including delete markers).
+
+Choosing between :c:func:`zms_iter_next` and :c:func:`zms_iter_next_all`
+--------------------------------------------------------------------------
+
+- :c:func:`zms_iter_next` returns unique live ``(id, len)`` pairs:
+
+  - Sector/header entries are skipped.
+  - Delete markers (entries with ``len == 0``) are skipped.
+  - If the same ID appears multiple times in storage history, only the newest valid occurrence is
+    returned.
+  - To guarantee uniqueness, ZMS checks for newer entries of each candidate ID, which can require
+    additional scanning.
+
+- :c:func:`zms_iter_next_all` is faster and returns all matching ``(id, len)`` pairs as encountered:
+
+  - Historical entries for the same ID are returned.
+  - Delete markers (entries with ``len == 0``) are returned.
+  - No uniqueness filtering is performed.
+  - The application is responsible for filtering/compacting the returned pairs according to its
+    own policy.
+
+  Use :c:func:`zms_iter_init_with_config` when you want to enumerate only IDs matching a bitmask,
+  a specific inclusive ID range, a predicate callback, or any combination of those filters.
+
+Iterator return values
+----------------------
+
+Calling either :c:func:`zms_iter_next` or :c:func:`zms_iter_next_all` returns:
+
+- ``1`` when an entry is found; output arguments contain ID and data length.
+- ``0`` when there are no more entries to enumerate.
+- Negative errno on error (for example ``-EINVAL``, ``-EIO``, ``-ENXIO``).
+
+The iterator always reports metadata (ID and length). In addition, when the caller provides a
+non-NULL ``data`` buffer, the iterator also copies the entry's content directly into it, but
+only for entries small enough to be stored inside the ATE. For larger entries, or when no
+buffer is provided, the data must be read explicitly using :c:func:`zms_read` for the latest
+value, or :c:func:`zms_read_hist` for older revisions.
+
+.. _zms_iterator_concurrency:
+
+Concurrency and snapshot behavior
+---------------------------------
+
+The iterator captures a traversal boundary when :c:func:`zms_iter_init` is called.
+Entries written after initialization are not part of that traversal.
+
+Do not call :c:func:`zms_write` (including delete operations) on the same :c:struct:`zms_fs`
+between two iterator-step calls (:c:func:`zms_iter_next` or :c:func:`zms_iter_next_all`).
+If a write triggers garbage collection while iterating, iterator behavior is undefined.
+This rule applies to the thread doing the iteration regardless of locking: taking the lock
+described below only keeps *other* threads from writing during the traversal.
+
+Locking out concurrent writers
+------------------------------
+
+:c:struct:`zms_fs` exposes its internal write lock as a plain ``struct k_mutex zms_lock``
+field. :c:func:`zms_write` and :c:func:`zms_delete` take this mutex internally for the
+duration of the write. An application with multiple threads sharing the same
+:c:struct:`zms_fs` can hold this same mutex across an entire iteration to block writes
+from *other* threads for as long as the traversal boundary must stay valid:
+
+.. code-block:: c
+
+  k_mutex_lock(&fs.zms_lock, K_FOREVER);
+
+  rc = zms_iter_init(&fs, &iter);
+  /* ... */
+
+  while ((rc = zms_iter_next(&fs, &iter, &id, &len, NULL, 0)) == 1) {
+    /* ... */
+  }
+
+  k_mutex_unlock(&fs.zms_lock);
+
+Usage example
+-------------
+
+.. code-block:: c
+
+  struct zms_iter iter;
+  bool predicate_id_not_2(zms_id_t id)
+  {
+    return id != (zms_id_t)2;
+  }
+
+  struct zms_iter_config iter_config = {
+    .mask_id = (zms_id_t)0x03,
+    .min_id = (zms_id_t)0x01,
+    .max_id = (zms_id_t)0x03,
+    .use_mask = true,
+    .use_range = true,
+    .use_predicate = true,
+    .predicate_func = predicate_id_not_2,
+  };
+  zms_id_t id;
+  size_t len;
+  uint8_t data[ZMS_DATA_IN_ATE_SIZE];
+  int rc;
+
+  /* Block writes from other threads for the duration of the traversal. */
+  k_mutex_lock(&fs.zms_lock, K_FOREVER);
+
+  rc = zms_iter_init_with_config(&fs, &iter, &iter_config);
+  if (rc) {
+    /* handle error */
+  }
+
+  while ((rc = zms_iter_next(&fs, &iter, &id, &len, data, sizeof(data))) == 1) {
+    /* id: entry ID matching configured mask/range/predicate, len: current stored size */
+    /* data: filled with the entry's content when it is small enough to be
+     * stored directly inside the ATE; otherwise left untouched, in which case
+     * zms_read() must be used to fetch it.
+     */
+    printk("id=0x%llx len=%zu\n", (unsigned long long)id, len);
+  }
+
+  k_mutex_unlock(&fs.zms_lock);
+
+  if (rc < 0) {
+    /* handle iterator error */
+  }
+
+The optional ``data``/``data_len`` arguments can be set to ``NULL``/``0`` when only the
+``(id, len)`` pairs are needed. When a buffer is provided, only the data that ZMS stores
+directly inside the ATE is copied; larger entries must still be retrieved with
+:c:func:`zms_read`.
+
+Zero-initialize :c:struct:`zms_iter_config` or leave ``use_mask``, ``use_range``, and
+``use_predicate`` disabled to keep the default behavior: accept all IDs and the full
+``zms_id_t`` range.
+
+To determine how many revisions exist for an ID returned by the iterator,
+call :c:func:`zms_read_hist` with increasing ``cnt`` until ``-ENOENT`` is returned.
 
 ZMS free space calculation
 ==========================
@@ -162,7 +335,7 @@ could slow down the calling thread.
 The cycle counter
 =================
 
-Each sector has a lead cycle counter which is a ``uin8_t`` that is used to validate all the other
+Each sector has a lead cycle counter which is a ``uint8_t`` that is used to validate all the other
 ATEs.
 The lead cycle counter is stored in the empty ATE.
 To become valid, an ATE must have the same cycle counter as the one stored in the empty ATE.
@@ -196,15 +369,51 @@ This will guarantee the application that the next write won't trigger the garbag
 ATE (Allocation Table Entry) structure
 ======================================
 
-An entry has 16 bytes divided between these fields:
+An entry uses 16 bytes to encode its information.
+The exact structure is determined by ATE format which can be selected for a given application.
 
-See the :c:struct:`zms_ate` structure.
+ZMS defines multiple ATE formats tailored for different feature sets. At runtime, it recognizes
+the format using the metadata field in empty ATEs, which has the same byte position in all formats.
+
+.. table:: Entry format for 32-bit IDs
+
+   +-----+----------+--+--+--+--+--+--+--+--+---+---+---+---+---+---+
+   | 0   | 1        | 2| 3| 4| 5| 6| 7| 8| 9| 10| 11| 12| 13| 14| 15|
+   +=====+==========+==+==+==+==+==+==+==+==+===+===+===+===+===+===+
+   |     |          |     |           | data (if len <= 8)          |
+   |     |          |     |           +-------------+---------------+
+   | crc8| cycle_cnt| len | id        |             | data_crc      |
+   |     |          |     |           | offset      +---------------+
+   |     |          |     |           |             | metadata      |
+   +-----+----------+-----+-----------+-------------+---------------+
+
+This is the default format which is captured in the API documentation for :c:struct:`zms_ate`.
+The ``data_crc`` is optionally included to integrity-check data stored at the top of the sector.
 
 .. note:: The CRC of the data is checked only when a full read of the data is made.
    The CRC of the data is not checked for a partial read, as it is computed for the whole element.
 
 .. warning:: Enabling the CRC feature on previously existing ZMS content that did not have it
    enabled will make all existing data invalid.
+
+.. table:: Entry format for 64-bit IDs
+
+   +-----+----------+--+--+--+--+--+--+--+--+---+---+----+----+----+----+
+   | 0   | 1        | 2| 3| 4| 5| 6| 7| 8| 9| 10| 11| 12 | 13 | 14 | 15 |
+   +=====+==========+==+==+==+==+==+==+==+==+===+===+====+====+====+====+
+   |     |          |     |                         | data (if len <= 4)|
+   |     |          |     |                         +-------------------+
+   | crc8| cycle_cnt| len | id                      | offset            |
+   |     |          |     |                         +-------------------+
+   |     |          |     |                         | metadata          |
+   +-----+----------+-----+-------------------------+-------------------+
+
+This format is selected when :kconfig:option:`CONFIG_ZMS_ID_64BIT` is enabled.
+
+.. warning:: Selecting a different ATE format than the one used by previously existing ZMS content
+   will make all existing data invalid.
+
+.. note:: The ZMS backend for :ref:`Settings <settings_api>` does not support this format.
 
 Available space for user data (key-value pairs)
 ***********************************************
@@ -220,8 +429,11 @@ The empty sector will rotate between the 4 sectors in the partition.
 Small data values
 =================
 
-Values smaller than or equal to 8 bytes will be stored within the entry (ATE) itself, without
+Values which are sufficiently small will be stored within the entry (ATE) itself, without
 writing data at the top of the sector.
+The amount of data that can fit inside the entry depends on its selected format.
+See the `ATE structure <#ate-allocation-table-entry-structure>`_ section.
+
 ZMS has an entry size of 16 bytes which means that the maximum available space in a partition to
 store data is computed in this scenario as:
 
@@ -239,25 +451,41 @@ Where:
 
 ``(5 * ATE_SIZE)``: Reserved ATEs for header and delete items
 
-``DATA_SIZE``: Size of the small data values (range from 1 to 8)
+``DATA_SIZE``: 8 bytes or 4 bytes depending on the ATE format
 
-For example for 4 sectors of 1024 bytes, free space for 8-byte length data is :math:`\frac{3 \times 944 \times 8}{16} = 1416 \, \text{ bytes}`.
+For example for 4 sectors of 1024 bytes, with the default ATE format, free space for 8-byte length
+data is :math:`\frac{3 \times 944 \times 8}{16} = 1416 \, \text{ bytes}`.
 
 Large data values
 =================
 
-Large data values ( > 8 bytes) are stored separately at the top of the sector.
+Values exceeding ``DATA_SIZE`` are stored outside of the ATE at the top of the sector.
 In this case, it is hard to estimate the free available space, as this depends on the size of
-the data. But we can take into account that for N bytes of data (N > 8 bytes) an additional
-16 bytes of ATE must be added at the bottom of the sector.
+the data. But we can take into account that for N bytes of data added at the top of the sector,
+an additional 16 bytes of ATE must be added at the bottom of the sector, which adds up to
+:math:`N + 16` bytes for the key-value pair.
 
 Let's take an example:
 
 For a partition that has 4 sectors of 1024 bytes and for data size of 64 bytes.
-Only 3 sectors are available for writes with a capacity of 944 bytes each.
-Each key-value pair needs an extra 16 bytes for the ATE, which makes it possible to store 11 pairs
-in each sector (:math:`\frac{944}{80}`).
+Only 3 sectors are available for writes with a capacity of 944 bytes each,
+which makes it possible to store 11 key-value pairs in each sector (:math:`\frac{944}{64 + 16}`).
 Total data that could be stored in this partition for this case is :math:`11 \times 3 \times 64 = 2112 \text{ bytes}`.
+
+.. only:: html
+
+  .. raw:: html
+     :file: zms-calculator-common.html
+
+.. _zms_available_space_calculator:
+
+Available space calculator
+==========================
+
+.. only:: html
+
+  .. raw:: html
+     :file: available-space-calculator.html
 
 Wear leveling
 *************
@@ -292,7 +520,7 @@ memory cells cannot be overwritten), and for storage devices that do not require
 operation, memory cells can be overwritten directly.
 
 A typical scenario is shown here to calculate the life expectancy of a device:
-Let's suppose that we store an 8-byte variable using the same ID but its content changes every
+Let's suppose that we store a 4-byte variable using the same ID but its content changes every
 minute. The partition has 4 sectors with 1024 bytes each.
 Each write of the variable requires 16 bytes of storage.
 As we have 944 bytes available for ATEs for each sector, and because ZMS is a fast-forward
@@ -308,8 +536,8 @@ For storage devices that can be written 20 000 times, the storage will last abou
 
 To make a more general formula we must first compute the effective used size in ZMS by our
 typical set of data.
-For ID/data pairs with data <= 8 bytes, ``effective_size`` is 16 bytes.
-For ID/data pairs with data > 8 bytes, ``effective_size`` is ``16 + sizeof(data)`` bytes.
+For ID/data pairs with `small data <#small-data-values>`_, ``effective_size`` is ``16`` bytes,
+while for `large data <#large-data-values>`_, ``effective_size`` is ``16 + sizeof(data)`` bytes.
 Let's suppose that ``total_effective_size`` is the total size of the data that is written in
 the storage and that the partition is sized appropriately (double of the effective size) to avoid
 having the garbage collector moving blocks all the time.
@@ -332,30 +560,50 @@ Where:
 
 ``WR_MIN``: Number of writes of the set of data per minute
 
+.. _zms_device_lifetime_calculator:
+
+Device lifetime calculator
+==========================
+
+.. only:: html
+
+  .. raw:: html
+     :file: device-lifetime-calculator.html
+
 Features
 ********
+
 ZMS has introduced many features compared to existing storage system like NVS and will evolve
 from its initial version to include more features that satisfies new technologies requirements
 such as low latency and bigger storage space.
 
 Existing features
 =================
+
 Version 1
 ---------
+
 - Supports storage devices that do not require an erase operation (only one write operation
   to invalidate a sector)
 - Supports large partition and sector sizes (64-bit address space)
-- Supports 32-bit IDs
-- Small-sized data (<= 8 bytes) are stored in the ATE itself
+- Supports 32-bit IDs and 64-bit IDs
+- Small data values are stored in the ATE itself
 - Built-in data CRC32 (included in the ATE)
 - Versioning of ZMS (to handle future evolutions)
 - Supports large ``write-block-size`` (only for platforms that need it)
+- Supports multiple ATE formats to satisfy the requirements of different applications
+- Supports forced mount recovery via :c:func:`zms_mount_force` (automatic partition wipe
+  and reinitialization on mount failure)
+- Supports a lookup cache to speed up repeated ID lookups with optional per-instance cache
+  configuration to customize the cache size on a per-partition basis
+- Supports live-entry enumeration without predeclared ID lists via
+  :c:func:`zms_iter_init` and :c:func:`zms_iter_next`
 
 Future features
 ===============
 
-- Add multiple format ATE support to be able to use ZMS with different ATE formats that satisfies
-  requirements from application
+- Add the possibility to mount multiple filesystems with different ATE formats
+  (currently, all filesystems in the same application must use the same format)
 - Add the possibility to skip garbage collector for some application usage where ID/value pairs
   are written periodically and do not exceed half of the partition size (there is always an old
   entry with the same ID).
@@ -364,11 +612,10 @@ Future features
 - Add the possibility to retrieve the wear out value of the device based on the cycle count value
 - Add a recovery function that can recover a storage partition if something went wrong
 - Add a library/application to allow migration from NVS entries to ZMS entries
-- Add the possibility to force formatting the storage partition to the ZMS format if something
-  went wrong when mounting the storage.
 
 ZMS and other storage systems in Zephyr
 =======================================
+
 This section describes ZMS in the wider context of storage systems in Zephyr (not full filesystems,
 but simpler, non-hierarchical ones).
 Today Zephyr includes at least two other systems that are somewhat comparable in scope and
@@ -386,8 +633,8 @@ and this section provides information to help make a choice.
   ATEs and smaller header ATEs). Erasing flash in NVS is also very fast and do not require an
   additional write operation compared to ZMS.
   For these devices, NVS reads/writes will be faster as well than ZMS as it has smaller ATE size.
-- If your application needs more than 64K IDs for storage, :ref:`ZMS <zms_api>` is recommended here as it
-  has a 32-bit ID field.
+- If your application needs more than 64K IDs for storage, :ref:`ZMS <zms_api>` is recommended here
+  because the ID field is up to 64-bit.
 - If your application is working in a FIFO mode (First-in First-out) then :ref:`FCB <fcb_api>` is
   the best storage solution for this use case.
 
@@ -417,7 +664,7 @@ Sector size and count
 - For some subsystems like :ref:`Settings <settings_api>`, all path-value pairs are split into two ZMS entries (ATEs).
   The headers needed by the two entries should be accounted for when computing the needed storage
   space.
-- Storing small data (<= 8 bytes) in ZMS entries can increase the performance, as this data is
+- Using `small data values <#small-data-values>`_ can increase the performance, as this data is
   written within the entry.
   For example, for the :ref:`Settings <settings_api>` subsystem, choosing a path name that is
   less than or equal to 8 bytes can make reads and writes faster.
@@ -432,6 +679,35 @@ Cache size
 - If you use ZMS through :ref:`Settings <settings_api>`, you have to take into account that each Settings entry is
   divided into two ZMS entries. The recommendation for the cache size is to make it at least
   twice the number of Settings entries.
+
+Manual per-instance cache
+=========================
+
+When :kconfig:option:`CONFIG_ZMS_LOOKUP_CACHE_MANUAL` is enabled, each :c:struct:`zms_fs`
+instance can provide its own lookup cache buffer instead of using the global
+:kconfig:option:`CONFIG_ZMS_LOOKUP_CACHE_SIZE` setting.
+
+Call :c:func:`zms_set_lookup_cache` before :c:func:`zms_mount` to assign the cache buffer for
+that instance. If no buffer is assigned, the lookup cache remains disabled for that
+:c:struct:`zms_fs` instance.
+
+.. code-block:: c
+
+	static struct zms_fs zms_a;
+	static struct zms_fs zms_b;
+	static uint64_t zms_a_cache[512];
+	static uint64_t zms_b_cache[32];
+
+	zms_set_lookup_cache(&zms_a, zms_a_cache, ARRAY_SIZE(zms_a_cache));
+	zms_set_lookup_cache(&zms_b, zms_b_cache, ARRAY_SIZE(zms_b_cache));
+
+ID size
+=======
+
+- The 64-bit ID space is expected to be larger than necessary for most applications.
+  Unless you have a particular need for this, it's recommended to stick with 32-bit IDs.
+  This is expected to have a slight impact on code size and performance, even on 64-bit systems,
+  because the byte position of IDs in storage is not aligned to an 8-byte boundary.
 
 API Reference
 *************

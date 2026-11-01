@@ -9,6 +9,7 @@
  * @brief Infineon XMC7200 SOC.
  */
 
+#include <zephyr/irq.h>
 #include <zephyr/cache.h>
 #include <zephyr/device.h>
 #include <zephyr/init.h>
@@ -17,7 +18,8 @@
 
 __attribute__((section(".dtcm_bss"))) struct _isr_table_entry sys_int_table[CPUSS_SYSTEM_INT_NR];
 
-void enable_sys_int(uint32_t int_num, uint32_t priority, void (*isr)(const void *), const void *arg)
+void enable_sys_int(uint32_t int_num, uint32_t priority, void (*isr)(const void *param),
+		    const void *arg)
 {
 	/* IRQ_PRIO_LOWEST = 6 */
 	if (priority <= IRQ_PRIO_LOWEST) {
@@ -38,7 +40,7 @@ __attribute__((section(".itcm"))) void sys_int_handler(uint32_t intrNum)
 {
 	uint32_t system_int_idx;
 
-#ifdef CORE_NAME_CM7_0
+#ifdef CONFIG_SOC_XMC7200_CORE_NAME_M7_0
 	if ((_FLD2VAL(CPUSS_CM7_0_INT_STATUS_SYSTEM_INT_VALID, CPUSS_CM7_0_INT_STATUS[intrNum]))) {
 		system_int_idx = _FLD2VAL(CPUSS_CM7_0_INT_STATUS_SYSTEM_INT_IDX,
 					  CPUSS_CM7_0_INT_STATUS[intrNum]);
@@ -46,7 +48,7 @@ __attribute__((section(".itcm"))) void sys_int_handler(uint32_t intrNum)
 		(entry->isr)(entry->arg);
 	}
 #endif
-#ifdef CORE_NAME_CM7_1
+#ifdef CONFIG_SOC_XMC7200_CORE_NAME_M7_1
 	if ((_FLD2VAL(CPUSS_CM7_1_INT_STATUS_SYSTEM_INT_VALID, CPUSS_CM7_1_INT_STATUS[intrNum]))) {
 		system_int_idx = _FLD2VAL(CPUSS_CM7_1_INT_STATUS_SYSTEM_INT_IDX,
 					  CPUSS_CM7_1_INT_STATUS[intrNum]);
@@ -54,7 +56,7 @@ __attribute__((section(".itcm"))) void sys_int_handler(uint32_t intrNum)
 		(entry->isr)(entry->arg);
 	}
 #endif
-	NVIC_ClearPendingIRQ((IRQn_Type)intrNum);
+	k_irq_clear_pending(intrNum);
 }
 
 void system_irq_init(void)
@@ -103,9 +105,9 @@ void soc_prep_hook(void)
 	/* Allow write access to Vector Table Offset Register and ITCM/DTCM configuration register
 	 * (CPUSS_CM7_X_CTL.PPB_LOCK[3] and CPUSS_CM7_X_CTL.PPB_LOCK[1:0])
 	 */
-#ifdef CORE_NAME_CM7_1
+#ifdef CONFIG_SOC_XMC7200_CORE_NAME_M7_1
 	CPUSS->CM7_1_CTL &= ~(0xB);
-#elif CORE_NAME_CM7_0
+#elif CONFIG_SOC_XMC7200_CORE_NAME_M7_0
 	CPUSS->CM7_0_CTL &= ~(0xB);
 #else
 #error "Not valid"
@@ -118,12 +120,12 @@ void soc_prep_hook(void)
 	SCB->ITCMCR = SCB->ITCMCR | 0x7; /* Set ITCMCR.EN, .RMW and .RETEN fields */
 	SCB->DTCMCR = SCB->DTCMCR | 0x7; /* Set DTCMCR.EN, .RMW and .RETEN fields */
 
-#ifdef CORE_NAME_CM7_0
+#ifdef CONFIG_SOC_XMC7200_CORE_NAME_M7_0
 	CPUSS_CM7_0_CTL |= (0x1 << CPUSS_CM7_0_CTL_INIT_TCM_EN_Pos);
 	CPUSS_CM7_0_CTL |= (0x2 << CPUSS_CM7_0_CTL_INIT_TCM_EN_Pos);
 	CPUSS_CM7_0_CTL |= (0x1 << CPUSS_CM7_0_CTL_INIT_RMW_EN_Pos);
 	CPUSS_CM7_0_CTL |= (0x2 << CPUSS_CM7_0_CTL_INIT_RMW_EN_Pos);
-#elif CORE_NAME_CM7_1
+#elif CONFIG_SOC_XMC7200_CORE_NAME_M7_1
 	CPUSS_CM7_1_CTL |= (0x1 << CPUSS_CM7_1_CTL_INIT_TCM_EN_Pos);
 	CPUSS_CM7_1_CTL |= (0x2 << CPUSS_CM7_1_CTL_INIT_TCM_EN_Pos);
 	CPUSS_CM7_1_CTL |= (0x1 << CPUSS_CM7_1_CTL_INIT_RMW_EN_Pos);

@@ -15,20 +15,16 @@
 	model = "STMicroelectronics STM32WB07CC-NUCLEO board";
 	compatible = "st,stm32wb07cc-nucleo";
 
-	#address-cells = <1>;
-	#size-cells = <1>;
-
 	chosen {
 		zephyr,console = &usart1;
 		zephyr,shell-uart = &usart1;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 		zephyr,bt-c2h-uart = &usart1;
-		zephyr,entropy = &rng;
 	};
 
 	leds: leds {
-		compatible ="gpio-leds";
+		compatible = "gpio-leds";
 
 		blue_led_1: led_0 {
 			gpios = <&gpiob 0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
@@ -120,7 +116,7 @@
 	 * NO_SEL reflects STM32WB0's lack of RTC clock mux to configure.
 	 */
 	clocks = <&rcc STM32_CLOCK(APB0, 12)>,
-		<&rcc STM32_SRC_LSE NO_SEL>;
+		 <&rcc STM32_SRC_LSE NO_SEL>;
 	status = "okay";
 };
 
@@ -129,6 +125,10 @@
 };
 
 &bt_hci_wb0 {
+	status = "okay";
+};
+
+&radio_timer {
 	status = "okay";
 };
 
@@ -142,6 +142,8 @@
 &i2c2 {
 	pinctrl-0 = <&i2c2_scl_pb6 &i2c2_sda_pb7>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 6 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 7 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
 
@@ -151,7 +153,7 @@
 	status = "okay";
 	/* Select 32MHz clock for SPI2 */
 	clocks = <&rcc STM32_CLOCK(APB1, 12)>,
-		<&rcc STM32_SRC_SYSCLK SPI2_I2S2_SEL(1)>;
+		 <&rcc STM32_SRC_SYSCLK SPI2_I2S2_SEL(1)>;
 };
 
 &timers1 {
@@ -171,12 +173,13 @@
 
 &flash0 {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		/* Set aside 16KB of storage at the end of 256KB flash */
 		storage_partition: partition@3c000 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
 			reg = <0x0003c000 DT_SIZE_K(16)>;
 		};

@@ -11,7 +11,7 @@
 #include <zephyr/init.h>
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/drivers/timer/system_timer.h>
 #include <zephyr/logging/log.h>
 
@@ -22,7 +22,7 @@ LOG_MODULE_REGISTER(silabs_sleeptimer_timer);
 /* Maximum time interval between timer interrupts (in hw_cycles) */
 #define MAX_TIMEOUT_CYC (UINT32_MAX >> 1)
 
-#define DT_RTC DT_COMPAT_GET_ANY_STATUS_OKAY(silabs_gecko_stimer)
+#define DT_RTC DT_CHOSEN(silabs_sleeptimer)
 
 /* Ensure interrupt names don't expand to register interface struct pointers */
 #undef RTCC
@@ -66,8 +66,7 @@ static void sleeptimer_clock_set_timeout(int32_t ticks, struct sleeptimer_timer_
 		return;
 	}
 
-	ticks = (ticks == K_TICKS_FOREVER) ? timer->max_timeout_ticks : ticks;
-	ticks = CLAMP(ticks, 0, timer->max_timeout_ticks);
+	ticks = MIN(ticks, timer->max_timeout_ticks);
 
 	k_spinlock_key_t key = k_spin_lock(&timer->lock);
 
@@ -99,7 +98,7 @@ static uint32_t sleeptimer_clock_elapsed(struct sleeptimer_timer_data *timer)
 	}
 }
 
-void sys_clock_set_timeout(int32_t ticks, bool idle)
+void sys_clock_set_timeout(uint32_t ticks, bool idle)
 {
 	ARG_UNUSED(idle);
 

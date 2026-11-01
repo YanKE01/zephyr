@@ -16,23 +16,34 @@
 #include <zephyr/drivers/spi.h>
 #include <zephyr/kernel.h>
 #include <zephyr/pm/device_runtime.h>
+#include <zephyr/sys/clock.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#if defined(DT_DRV_COMPAT) && !DT_ANY_INST_HAS_PROP_STATUS_OKAY(cs_gpios)
+#define DT_SPI_CTX_HAS_NO_CS_GPIOS 1
+#endif
+
 enum spi_ctx_runtime_op_mode {
-	SPI_CTX_RUNTIME_OP_MODE_MASTER = BIT(0),
-	SPI_CTX_RUNTIME_OP_MODE_SLAVE  = BIT(1),
+	SPI_CTX_RUNTIME_OP_MODE_CONTROLLER = BIT(0),
+	SPI_CTX_RUNTIME_OP_MODE_PERIPHERAL = BIT(1),
 };
+
+/* Deprecated, use the CONTROLLER/PERIPHERAL names instead. */
+#define SPI_CTX_RUNTIME_OP_MODE_MASTER SPI_CTX_RUNTIME_OP_MODE_CONTROLLER __DEPRECATED_MACRO
+#define SPI_CTX_RUNTIME_OP_MODE_SLAVE  SPI_CTX_RUNTIME_OP_MODE_PERIPHERAL __DEPRECATED_MACRO
 
 struct spi_context {
 	const struct spi_config *config;
 #ifdef CONFIG_MULTITHREADING
 	const struct spi_config *owner;
 #endif
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 	const struct gpio_dt_spec *cs_gpios;
 	size_t num_cs_gpios;
+#endif /* !DT_SPI_CTX_HAS_NO_CS_GPIOS */
 
 #ifdef CONFIG_MULTITHREADING
 	struct k_sem lock;
@@ -55,14 +66,16 @@ struct spi_context {
 	const struct spi_buf *current_rx;
 	size_t rx_count;
 
+	size_t max_count;
+
 	const uint8_t *tx_buf;
 	size_t tx_len;
 	uint8_t *rx_buf;
 	size_t rx_len;
 
-#ifdef CONFIG_SPI_SLAVE
+#ifdef CONFIG_SPI_PERIPHERAL
 	int recv_frames;
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 };
 
 #define SPI_CONTEXT_INIT_LOCK(_data, _ctx_name)				\
@@ -71,6 +84,7 @@ struct spi_context {
 #define SPI_CONTEXT_INIT_SYNC(_data, _ctx_name)				\
 	._ctx_name.sync = Z_SEM_INITIALIZER(_data._ctx_name.sync, 0, 1)
 
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 #define SPI_CONTEXT_CS_GPIO_SPEC_ELEM(_node_id, _prop, _idx)		\
 	GPIO_DT_SPEC_GET_BY_IDX(_node_id, _prop, _idx),
 
@@ -84,6 +98,9 @@ struct spi_context {
 			    (SPI_CONTEXT_CS_GPIOS_FOREACH_ELEM(_node_id)), ({0}))	\
 	},										\
 	._ctx_name.num_cs_gpios = DT_PROP_LEN_OR(_node_id, cs_gpios, 0),
+#else /* DT_SPI_CTX_HAS_NO_CS_GPIOS */
+#define SPI_CONTEXT_CS_GPIOS_INITIALIZE(...)
+#endif /* DT_SPI_CTX_HAS_NO_CS_GPIOS */
 
 /*
  * Checks if a spi config is the same as the one stored in the spi_context
@@ -97,17 +114,26 @@ static inline bool spi_context_configured(struct spi_context *ctx,
 }
 
 /* Returns true if the spi configuration stored for this context
- * specifies a slave mode configuration, returns false otherwise
+ * specifies a peripheral mode configuration, returns false otherwise
  */
-static inline bool spi_context_is_slave(struct spi_context *ctx)
+static inline bool spi_context_is_peripheral(struct spi_context *ctx)
 {
-	return (ctx->config->operation & SPI_OP_MODE_SLAVE);
+	return (ctx->config->operation & SPI_OP_MODE_PERIPHERAL);
+}
+
+/* Deprecated, use spi_context_is_peripheral() instead. */
+__deprecated static inline bool spi_context_is_slave(struct spi_context *ctx)
+{
+	return spi_context_is_peripheral(ctx);
 }
 
 /*
  * The purpose of the context lock is to synchronize the usage of the driver/hardware.
  * The driver should call this function to claim or wait for ownership of the spi resource.
  * Usually the appropriate time to call this is at the start of the transceive API implementation.
+ *
+ * May block (and so must not be called from ISR) unless the lock is already
+ * held via SPI_LOCK_ON.
  */
 static inline void spi_context_lock(struct spi_context *ctx,
 				    bool asynchronous,
@@ -121,6 +147,10 @@ static inline void spi_context_lock(struct spi_context *ctx,
 			      (ctx->owner == spi_cfg);
 
 	if (!already_locked) {
+		__ASSERT(!k_is_in_isr(),
+			 "%s would block from ISR; "
+			 "use the RTIO submit path for chained async",
+			 __func__);
 		k_sem_take(&ctx->lock, K_FOREVER);
 		ctx->owner = spi_cfg;
 	}
@@ -143,11 +173,11 @@ static inline void spi_context_lock(struct spi_context *ctx,
 static inline void spi_context_release(struct spi_context *ctx, int status)
 {
 #ifdef CONFIG_MULTITHREADING
-#ifdef CONFIG_SPI_SLAVE
+#ifdef CONFIG_SPI_PERIPHERAL
 	if (status >= 0 && ((ctx->config == NULL) || (ctx->config->operation & SPI_LOCK_ON))) {
 		return;
 	}
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 #ifdef CONFIG_SPI_ASYNC
 	if (!ctx->asynchronous || (status < 0)) {
@@ -171,7 +201,7 @@ static inline size_t spi_context_total_rx_len(struct spi_context *ctx);
  *
  * The exact way this function is used may depend on driver implementation, but
  * essentially this will block waiting for a signal from spi_context_complete,
- * unless the transfer is asynchronous, in which case it does nothing in master mode.
+ * unless the transfer is asynchronous, in which case it does nothing in controller mode.
  */
 static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 {
@@ -188,21 +218,15 @@ static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 		k_timeout_t timeout;
 		uint32_t timeout_ms;
 
-		/* Do not use any timeout in the slave mode, as in this case
+		/* Do not use any timeout in the peripheral mode, as in this case
 		 * it is not known when the transfer will actually start and
 		 * what the frequency will be.
 		 */
-		if (IS_ENABLED(CONFIG_SPI_SLAVE) && spi_context_is_slave(ctx)) {
+		if (IS_ENABLED(CONFIG_SPI_PERIPHERAL) && spi_context_is_peripheral(ctx)) {
 			timeout = K_FOREVER;
-			timeout_ms = UINT32_MAX;
 		} else {
-			uint32_t tx_len = spi_context_total_tx_len(ctx);
-			uint32_t rx_len = spi_context_total_rx_len(ctx);
-
-			timeout_ms = MAX(tx_len, rx_len) * 8 * 1000 /
-				     ctx->config->frequency;
+			timeout_ms = ctx->max_count * 8 * 1000 / ctx->config->frequency;
 			timeout_ms += CONFIG_SPI_COMPLETION_TIMEOUT_TOLERANCE;
-
 			timeout = K_MSEC(timeout_ms);
 		}
 #ifdef CONFIG_MULTITHREADING
@@ -211,8 +235,8 @@ static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 			return -ETIMEDOUT;
 		}
 #else
-		if (timeout_ms == UINT32_MAX) {
-			/* In slave mode, we wait indefinitely, so we can go idle. */
+		if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
+			/* In peripheral mode, we wait indefinitely, so we can go idle. */
 			unsigned int key = irq_lock();
 
 			while (!atomic_get(&ctx->ready)) {
@@ -223,15 +247,14 @@ static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 			ctx->ready = 0;
 			irq_unlock(key);
 		} else {
-			const uint32_t tms = k_uptime_get_32();
+			k_timepoint_t end = sys_timepoint_calc(timeout);
 
-			while (!atomic_get(&ctx->ready) && (k_uptime_get_32() - tms < timeout_ms)) {
+			while (!atomic_get(&ctx->ready)) {
+				if (sys_timepoint_expired(end)) {
+					LOG_ERR("Timeout waiting for transfer complete");
+					return -ETIMEDOUT;
+				}
 				k_busy_wait(1);
-			}
-
-			if (!ctx->ready) {
-				LOG_ERR("Timeout waiting for transfer complete");
-				return -ETIMEDOUT;
 			}
 
 			ctx->ready = 0;
@@ -240,11 +263,11 @@ static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 		status = ctx->sync_status;
 	}
 
-#ifdef CONFIG_SPI_SLAVE
-	if (spi_context_is_slave(ctx) && !status) {
+#ifdef CONFIG_SPI_PERIPHERAL
+	if (spi_context_is_peripheral(ctx) && !status) {
 		return ctx->recv_frames;
 	}
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 	return status;
 }
@@ -252,7 +275,7 @@ static inline int spi_context_wait_for_completion(struct spi_context *ctx)
 /* For synchronous transfers, this will signal to a thread waiting
  * on spi_context_wait for completion.
  *
- * For asynchronous tranfers, this will call the async callback function
+ * For asynchronous transfers, this will call the async callback function
  * with the user data.
  */
 static inline void spi_context_complete(struct spi_context *ctx,
@@ -265,14 +288,14 @@ static inline void spi_context_complete(struct spi_context *ctx,
 		k_sem_give(&ctx->sync);
 	} else {
 		if (ctx->callback) {
-#ifdef CONFIG_SPI_SLAVE
-			if (spi_context_is_slave(ctx) && !status) {
+#ifdef CONFIG_SPI_PERIPHERAL
+			if (spi_context_is_peripheral(ctx) && !status) {
 				/* Let's update the status so it tells
 				 * about number of received frames.
 				 */
 				status = ctx->recv_frames;
 			}
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 			ctx->callback(dev, status, ctx->callback_data);
 		}
 
@@ -302,6 +325,7 @@ static inline void spi_context_complete(struct spi_context *ctx,
  */
 static inline int spi_context_cs_configure_all(struct spi_context *ctx)
 {
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 	int ret;
 	const struct gpio_dt_spec *cs_gpio;
 
@@ -317,10 +341,14 @@ static inline int spi_context_cs_configure_all(struct spi_context *ctx)
 			return ret;
 		}
 	}
+#else
+	ARG_UNUSED(ctx);
+#endif
 
 	return 0;
 }
 
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 /* Helper function to power manage the GPIO CS pins, not meant to be used directly by drivers */
 static inline int _spi_context_cs_pm_all(struct spi_context *ctx, bool get)
 {
@@ -341,25 +369,40 @@ static inline int _spi_context_cs_pm_all(struct spi_context *ctx, bool get)
 
 	return 0;
 }
+#endif
 
 /* This function should be called by drivers to pm get all the chip select lines in
- * master mode in the case of any CS being a GPIO. This should be called from the
+ * controller mode in the case of any CS being a GPIO. This should be called from the
  * drivers pm action hook on pm resume.
  */
 static inline int spi_context_cs_get_all(struct spi_context *ctx)
 {
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 	return _spi_context_cs_pm_all(ctx, true);
+#else
+	ARG_UNUSED(ctx);
+	return 0;
+#endif
 }
 
 /* This function should be called by drivers to pm put all the chip select lines in
- * master mode in the case of any CS being a GPIO. This should be called from the
+ * controller mode in the case of any CS being a GPIO. This should be called from the
  * drivers pm action hook on pm suspend.
  */
 static inline int spi_context_cs_put_all(struct spi_context *ctx)
 {
+#ifndef DT_SPI_CTX_HAS_NO_CS_GPIOS
 	return _spi_context_cs_pm_all(ctx, false);
+#else
+	ARG_UNUSED(ctx);
+	return 0;
+#endif
 }
 
+#ifdef DT_SPI_CTX_HAS_NO_CS_GPIOS
+#define _spi_context_cs_control(...) (void) 0
+#define spi_context_cs_control(...) (void) 0
+#else /* DT_SPI_CTX_HAS_NO_CS_GPIOS */
 /* Helper function to control the GPIO CS, not meant to be used directly by drivers */
 static inline void _spi_context_cs_control(struct spi_context *ctx,
 					   bool on, bool force_off)
@@ -380,7 +423,7 @@ static inline void _spi_context_cs_control(struct spi_context *ctx,
 	}
 }
 
-/* This function should be called by drivers to control the chip select line in master mode
+/* This function should be called by drivers to control the chip select line in controller mode
  * in the case of the CS being a GPIO. The de facto usage of the zephyr SPI API expects that the
  * chip select be asserted throughout the entire transfer specified by a transceive call,
  * ie all buffers in a spi_buf_set should be finished before deasserting CS. And usually
@@ -391,12 +434,13 @@ static inline void spi_context_cs_control(struct spi_context *ctx, bool on)
 {
 	_spi_context_cs_control(ctx, on, false);
 }
+#endif /* DT_SPI_CTX_HAS_NO_CS_GPIOS */
 
 /* Forcefully releases the spi context and removes the owner, allowing taking the lock
  * with spi_context_lock without the previous owner releasing the lock.
  * This is usually used to aid in implementation of the spi_release driver API.
  */
-static inline void spi_context_unlock_unconditionally(struct spi_context *ctx)
+static inline void spi_context_unlock_unconditionally(struct spi_context *ctx __maybe_unused)
 {
 	/* Forcing CS to go to inactive status */
 	_spi_context_cs_control(ctx, false, true);
@@ -465,10 +509,11 @@ void spi_context_buffers_setup(struct spi_context *ctx,
 					 &ctx->rx_len, dfs);
 
 	ctx->sync_status = 0;
+	ctx->max_count = MAX(spi_context_total_tx_len(ctx), spi_context_total_rx_len(ctx));
 
-#ifdef CONFIG_SPI_SLAVE
+#ifdef CONFIG_SPI_PERIPHERAL
 	ctx->recv_frames = 0;
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 	LOG_DBG("current_tx %p (%zu), current_rx %p (%zu),"
 		" tx buf/len %p/%zu, rx buf/len %p/%zu",
@@ -539,12 +584,12 @@ bool spi_context_tx_buf_on(struct spi_context *ctx)
 static ALWAYS_INLINE
 void spi_context_update_rx(struct spi_context *ctx, uint8_t dfs, uint32_t len)
 {
-#ifdef CONFIG_SPI_SLAVE
-	if (spi_context_is_slave(ctx)) {
+#ifdef CONFIG_SPI_PERIPHERAL
+	if (spi_context_is_peripheral(ctx)) {
 		ctx->recv_frames += len;
 	}
 
-#endif /* CONFIG_SPI_SLAVE */
+#endif /* CONFIG_SPI_PERIPHERAL */
 
 	if (!ctx->rx_len) {
 		return;

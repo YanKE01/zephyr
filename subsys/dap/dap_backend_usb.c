@@ -7,6 +7,7 @@
 #include <zephyr/usb/usbd.h>
 #include <zephyr/drivers/usb/udc.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/dap/dap_link.h>
 
 #include "cmsis_dap.h"
 
@@ -37,10 +38,11 @@ struct dap_func_desc {
 
 struct dap_func_data {
 	struct dap_func_desc *const desc;
-	const struct usb_desc_header **const fs_desc;
-	const struct usb_desc_header **const hs_desc;
+	const struct usb_desc_header *const *const fs_desc;
+	const struct usb_desc_header *const *const hs_desc;
 	struct usbd_desc_node *const iface_str_desc_nd;
 	atomic_t state;
+	struct dap_link_context *dap_link_ctx;
 };
 
 static uint8_t dap_func_get_bulk_out(struct usbd_class_data *const c_data)
@@ -91,7 +93,8 @@ static int dap_func_request_handler(struct usbd_class_data *c_data,
 		} else {
 			bi->ep = dap_func_get_bulk_in(c_data);
 
-			len = dap_execute_cmd(buf->data, response_buf);
+			len = dap_link_execute_cmd(data->dap_link_ctx,
+						   buf->data, response_buf);
 			net_buf_reset(buf);
 			LOG_DBG("response length %u, starting with [0x%02X, 0x%02X]",
 				len, response_buf[0], response_buf[1]);
@@ -110,8 +113,8 @@ static int dap_func_request_handler(struct usbd_class_data *c_data,
 	return 0;
 }
 
-static void *dap_func_get_desc(struct usbd_class_data *const c_data,
-			     const enum usbd_speed speed)
+static const void *dap_func_get_desc(struct usbd_class_data *const c_data,
+				     const enum usbd_speed speed)
 {
 	struct dap_func_data *data = usbd_class_get_private(c_data);
 
@@ -159,9 +162,9 @@ static void dap_func_enable(struct usbd_class_data *const c_data)
 
 	if (!atomic_test_and_set_bit(&data->state, SAMPLE_FUNCTION_ENABLED)) {
 		if (usbd_bus_speed(uds_ctx) == USBD_SPEED_HS) {
-			dap_update_pkt_size(512);
+			dap_link_set_pkt_size(data->dap_link_ctx, 512);
 		} else {
-			dap_update_pkt_size(64);
+			dap_link_set_pkt_size(data->dap_link_ctx, 64);
 		}
 
 		buf = dap_func_buf_alloc(c_data, dap_func_get_bulk_out(c_data));
@@ -191,6 +194,11 @@ static int dap_func_init(struct usbd_class_data *c_data)
 	struct dap_func_data *data = usbd_class_get_private(c_data);
 	struct dap_func_desc *desc = data->desc;
 
+	if (data->dap_link_ctx == NULL) {
+		LOG_ERR("No DAP Link context provided");
+		return -EIO;
+	}
+
 	LOG_DBG("Init class instance %p", (void *)c_data);
 
 	if (usbd_add_descriptor(uds_ctx, data->iface_str_desc_nd)) {
@@ -202,7 +210,7 @@ static int dap_func_init(struct usbd_class_data *c_data)
 	return 0;
 }
 
-struct usbd_class_api dap_func_api = {
+static const struct usbd_class_api dap_func_api = {
 	.request = dap_func_request_handler,
 	.get_desc = dap_func_get_desc,
 	.enable = dap_func_enable,
@@ -272,14 +280,14 @@ static struct dap_func_desc dap_func_desc_##n = {				\
 	},									\
 };										\
 										\
-const static struct usb_desc_header *dap_func_fs_desc_##n[] = {			\
+const static struct usb_desc_header *const dap_func_fs_desc_##n[] = {		\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0,			\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0_out_ep,		\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0_in_ep,		\
 	(struct usb_desc_header *) &dap_func_desc_##n.nil_desc,			\
 };										\
 										\
-const static struct usb_desc_header *dap_func_hs_desc_##n[] = {			\
+const static struct usb_desc_header *const dap_func_hs_desc_##n[] = {		\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0,			\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0_hs_out_ep,		\
 	(struct usb_desc_header *) &dap_func_desc_##n.if0_hs_in_ep,		\
@@ -303,3 +311,17 @@ const static struct usb_desc_header *dap_func_hs_desc_##n[] = {			\
 
 LISTIFY(1, DAP_FUNC_DESCRIPTOR_DEFINE, ())
 LISTIFY(1, DAP_FUNC_FUNCTION_DATA_DEFINE, ())
+
+int dap_link_backend_usb_init(struct dap_link_context *const dap_link_ctx)
+{
+	struct usbd_class_data *const c_data = &dap_func_0;
+	struct dap_func_data *data = usbd_class_get_private(c_data);
+
+	if (atomic_test_bit(&data->state, SAMPLE_FUNCTION_ENABLED)) {
+		return -EALREADY;
+	}
+
+	data->dap_link_ctx = dap_link_ctx;
+
+	return 0;
+}

@@ -1,17 +1,9 @@
 # Copyright 2022-2025 NXP
 
 # Set the SoC specific drivers and configuration to build
-if(HWMv2)
-  set(SOC_BASE ${CONFIG_SOC})
-else()
-  if(${CONFIG_SOC} STREQUAL "s32z27")
-    set(SOC_BASE "s32z270")
-  else()
-    set(SOC_BASE ${CONFIG_SOC})
-  endif()
-endif()
+set(SOC_BASE ${CONFIG_SOC})
 
-add_subdirectory(${ZEPHYR_CURRENT_MODULE_DIR}/s32/drivers/${SOC_SERIES} hal_nxp/s32/drivers)
+add_subdirectory(${ZEPHYR_CURRENT_MODULE_DIR}/s32/drivers/${CONFIG_SOC_SERIES} hal_nxp/s32/drivers)
 add_subdirectory(${ZEPHYR_CURRENT_MODULE_DIR}/s32/soc/${SOC_BASE} hal_nxp/s32/soc)
 
 if(CONFIG_HAS_MCUX)
@@ -65,26 +57,38 @@ if(CONFIG_HAS_MCUX)
   zephyr_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/s32/mcux/devices/${MCUX_DEVICE})
   zephyr_include_directories(${ZEPHYR_CURRENT_MODULE_DIR}/s32/mcux/devices/${MCUX_DEVICE}/drivers)
 
-  zephyr_linker_sources(RWDATA
-    ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
-  )
-  zephyr_linker_sources_ifdef(CONFIG_ARCH_HAS_RAMFUNC_SUPPORT
-    RAMFUNC_SECTION
-    ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
-  )
-  zephyr_linker_sources_ifdef(CONFIG_NOCACHE_MEMORY
-    NOCACHE_SECTION
-    ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/nocache.ld
-  )
+  if(CONFIG_MCUX_DATA_QUICK_ACCESS_SRAM)
+    zephyr_linker_sources(RWDATA
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
+    )
+  elseif(CONFIG_MCUX_DATA_QUICK_ACCESS_DTCM)
+    zephyr_linker_sources(DTCM_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_data.ld
+    )
+  endif()
+
+  if(CONFIG_MCUX_CODE_QUICK_ACCESS_RAMFUNC)
+    zephyr_linker_sources(RAMFUNC_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
+    )
+  elseif(CONFIG_MCUX_CODE_QUICK_ACCESS_ITCM)
+    zephyr_linker_sources(ITCM_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/quick_access_code.ld
+    )
+  endif()
+
+  if(CONFIG_MCUX_NONCACHEABLE_NOCACHE)
+    zephyr_linker_sources(NOCACHE_SECTION
+      ${ZEPHYR_CURRENT_MODULE_DIR}/mcux/nocache.ld
+    )
+  endif()
 
   # Load MCUX SDK NG code.
   include(../mcux/mcux-sdk-ng/basic.cmake)
 
-  if(${MCUX_DEVICE} MATCHES "S32K1")
-    set_variable_ifdef(CONFIG_PINCTRL CONFIG_MCUX_COMPONENT_driver.port)
-
+  if(CONFIG_SOC_SERIES_S32K1)
+    set(CONFIG_MCUX_COMPONENT_driver.port ON)
     set_variable_ifdef(CONFIG_CPU_HAS_NXP_SYSMPU CONFIG_MCUX_COMPONENT_driver.sysmpu)
-
     set_variable_ifdef(CONFIG_HAS_MCUX_CACHE CONFIG_MCUX_COMPONENT_driver.cache_lmem)
   endif()
 

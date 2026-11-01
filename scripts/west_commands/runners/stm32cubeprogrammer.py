@@ -32,6 +32,7 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         self,
         cfg: RunnerConfig,
         port: str,
+        dev_id: str | None,
         frequency: int | None,
         reset_mode: str | None,
         download_address: int | None,
@@ -42,12 +43,14 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         cli: Path | None,
         use_elf: bool,
         erase: bool,
+        reset_system: bool,
         extload: str | None,
         tool_opt: list[str],
     ) -> None:
         super().__init__(cfg)
 
         self._port = port
+        self._dev_id = dev_id
         self._frequency = frequency
 
         self._download_address = download_address
@@ -67,6 +70,7 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         )
         self._use_elf = use_elf
         self._erase = erase
+        self._reset = reset_system
 
         if extload:
             p = (
@@ -122,17 +126,26 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             return Path(os.environ["PROGRAMW6432"]) / cli
 
         if platform.system() == "Darwin":
-            return (
+            cmd = shutil.which("STM32_Programmer_CLI")
+            if cmd is not None:
+                return Path(cmd)
+
+            app_path = (
                 Path("/Applications")
                 / "STMicroelectronics"
                 / "STM32Cube"
                 / "STM32CubeProgrammer"
                 / "STM32CubeProgrammer.app"
                 / "Contents"
-                / "MacOs"
-                / "bin"
-                / "STM32_Programmer_CLI"
             )
+
+            exe_path = app_path / "MacOS/bin/STM32_Programmer_CLI"
+
+            if not exe_path.exists():
+                # Some older STM32CubeProgrammer versions place
+                # the executable in a "Resources" subfolder instead
+                exe_path = app_path / "Resources/bin/STM32_Programmer_CLI"
+            return exe_path
 
         raise NotImplementedError("Could not determine STM32_Programmer_CLI path")
 
@@ -142,7 +155,10 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
 
     @classmethod
     def capabilities(cls):
-        return RunnerCaps(commands={"flash"}, erase=True, extload=True, tool_opt=True)
+        return RunnerCaps(commands={"flash"}, dev_id=True, erase=True, extload=True, tool_opt=True,
+                          reset=True, reset_types=True, reset_types_supported=
+                                         list(STM32CubeProgrammerBinaryRunner._RESET_MODES.keys())
+                          )
 
     @classmethod
     def do_add_parser(cls, parser):
@@ -162,9 +178,10 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         parser.add_argument(
             "--reset-mode",
             type=str,
+            dest="reset_type",
             required=False,
-            choices=["sw", "hw", "core"],
-            help="Reset mode",
+            choices=list(STM32CubeProgrammerBinaryRunner._RESET_MODES.keys()),
+            help="Obsolete synonym for --reset-type",
         )
         parser.add_argument(
             "--download-address",
@@ -226,8 +243,9 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         return STM32CubeProgrammerBinaryRunner(
             cfg,
             port=args.port,
+            dev_id=args.dev_id,
             frequency=args.frequency,
-            reset_mode=args.reset_mode,
+            reset_mode=args.reset_type,
             download_address=args.download_address,
             download_modifiers=args.download_modifiers,
             start_address=args.start_address,
@@ -236,6 +254,7 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             cli=args.cli,
             use_elf=args.use_elf,
             erase=args.erase,
+            reset_system=args.reset,
             extload=args.extload,
             tool_opt=args.tool_opt,
         )
@@ -258,6 +277,8 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             connect_opts += f" reset={reset_mode}"
         if self._conn_modifiers:
             connect_opts += f" {self._conn_modifiers}"
+        if self._dev_id:
+            connect_opts += f" sn={self._dev_id}"
 
         cmd += ["--connect", connect_opts]
         cmd += self._tool_opt
@@ -270,6 +291,8 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             self.check_call(cmd + ["--erase", "all"])
 
         # Define binary to be loaded
+        dl_file = None
+
         if self._use_elf:
             # Use elf file if instructed to do so.
             dl_file = self.cfg.elf_file
@@ -296,12 +319,15 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             flash_and_run_args.append(f"0x{self._download_address:X}")
         flash_and_run_args += self._download_modifiers
 
-        # '--start' is needed to start execution after flash.
-        # The default start address is the beggining of the flash,
-        # but another value can be explicitly specified if desired.
-        flash_and_run_args.append("--start")
-        if self._start_address is not None:
-            flash_and_run_args.append(f"0x{self._start_address:X}")
-        flash_and_run_args += self._start_modifiers
+        if self._reset:
+            # Start execution through a system reset ('-rst') unless a
+            # start address or a start modifier is provided as runner argument.
+            if self._start_address is not None or self._start_modifiers:
+                flash_and_run_args.append("--start")
+                if self._start_address is not None:
+                    flash_and_run_args.append(f"0x{self._start_address:X}")
+                flash_and_run_args += self._start_modifiers
+            else:
+                flash_and_run_args.append("-rst")
 
         self.check_call(cmd + flash_and_run_args)

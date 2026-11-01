@@ -35,6 +35,10 @@
 #define ROM_END_OFFSET 0
 #endif
 
+#if defined(CONFIG_FLASH_USES_MAPPED_PARTITION) && defined(CONFIG_XIP)
+#define ROM_BASE (DT_REG_ADDR(DT_CHOSEN(zephyr_code_partition)))
+#define ROM_SIZE (DT_REG_SIZE(DT_CHOSEN(zephyr_code_partition)) - ROM_END_OFFSET)
+#else /* defined(CONFIG_FLASH_USES_MAPPED_PARTITION) && defined(CONFIG_XIP) */
 #if defined(CONFIG_FLASH_LOAD_OFFSET)
 #define FLASH_LOAD_OFFSET CONFIG_FLASH_LOAD_OFFSET
 #else
@@ -78,12 +82,13 @@
 #endif /* DT_NODE_HAS_COMPAT_STATUS */
 
 #else /* CONFIG_XIP */
-#define ROM_BASE CONFIG_SRAM_BASE_ADDRESS
-#define ROM_SIZE (KB(CONFIG_SRAM_SIZE) - ROM_END_OFFSET)
+#define ROM_BASE DT_CHOSEN_SRAM_ADDR
+#define ROM_SIZE (DT_CHOSEN_SRAM_SIZE - ROM_END_OFFSET)
 #endif /* CONFIG_XIP */
+#endif /* defined(CONFIG_FLASH_USES_MAPPED_PARTITION) && defined(CONFIG_XIP) */
 
-#define RAM_BASE CONFIG_SRAM_BASE_ADDRESS
-#define RAM_SIZE KB(CONFIG_SRAM_SIZE)
+#define RAM_BASE DT_CHOSEN_SRAM_ADDR
+#define RAM_SIZE DT_CHOSEN_SRAM_SIZE
 
 #ifdef CONFIG_RISCV_PMP
 	#define MPU_MIN_SIZE CONFIG_PMP_GRANULARITY
@@ -126,10 +131,7 @@ SECTIONS
     {
 
 #include <zephyr/linker/rel-sections.ld>
-
-#ifdef CONFIG_LLEXT
 #include <zephyr/linker/llext-sections.ld>
-#endif
 
     /*
      * The .plt and .iplt are here according to
@@ -269,62 +271,31 @@ SECTIONS
 	_app_smem_rom_start = LOADADDR(_APP_SMEM_SECTION_NAME);
 #endif /* CONFIG_USERSPACE */
 
-    SECTION_DATA_PROLOGUE(_BSS_SECTION_NAME,(NOLOAD),)
-	{
-		MPU_MIN_SIZE_ALIGN
-		/*
-		 * For performance, BSS section is assumed to be 4 byte aligned and
-		 * a multiple of 4 bytes
-		 */
-		 . = ALIGN(4);
-		 __bss_start = .;
-		__kernel_ram_start = .;
-		 *(.sbss)
-		 *(".sbss.*")
-		 *(.bss)
-		 *(".bss.*")
-		 COMMON_SYMBOLS
-
-#ifdef CONFIG_CODE_DATA_RELOCATION
-#include <linker_sram_bss_relocate.ld>
-#endif
-
-		 /*
-		  * As memory is cleared in words only, it is simpler to ensure the BSS
-		  * section ends on a 4 byte boundary. This wastes a maximum of 3 bytes.
-		  */
-		  __bss_end = ALIGN(4);
-	}  GROUP_DATA_LINK_IN(RAMABLE_REGION, RAMABLE_REGION)
-
-#include <zephyr/linker/common-noinit.ld>
-
     SECTION_DATA_PROLOGUE(_DATA_SECTION_NAME,,)
 	{
 		 . = ALIGN(4);
 		/* _image_ram_start = .; */
+		 __kernel_ram_start = .;
 		 __data_region_start = .;
 		 __data_start = .;
 
 		 *(.data)
 		 *(".data.*")
-
-#ifdef CONFIG_RISCV_GP
-		/*
-		 * RISC-V architecture has 12-bit signed immediate offsets in the
+		 *(.sdata .sdata.* .gnu.linkonce.s.*)
+#if defined(CONFIG_RISCV_GP)
+		/* RISC-V architecture has 12-bit signed immediate offsets in the
 		 * instructions. If we can put the most commonly accessed globals
 		 * in a special 4K span of memory addressed by the GP register, then
 		 * we can access those values in a single instruction, saving both
 		 * codespace and runtime.
 		 *
 		 * Since these immediate offsets are signed, place gp 0x800 past the
-		 * beginning of .sdata so that we can use both positive and negative
+		 * end of .sdata so that we can use both positive and negative
 		 * offsets.
 		 */
 		 . = ALIGN(8);
 		 PROVIDE (__global_pointer$ = . + 0x800);
 #endif
-
-		 *(.sdata .sdata.* .gnu.linkonce.s.*)
 
 /* Located in generated directory. This file is populated by the
  * zephyr_linker_sources() Cmake function.
@@ -353,6 +324,40 @@ SECTIONS
 #include <snippets-data-sections.ld>
 
     __data_region_end = .;
+
+    SECTION_DATA_PROLOGUE(_BSS_SECTION_NAME,(NOLOAD),)
+	{
+		MPU_MIN_SIZE_ALIGN
+		/*
+		 * For performance, BSS section is assumed to be 4 byte aligned and
+		 * a multiple of 4 bytes
+		 */
+		 . = ALIGN(4);
+		 __bss_start = .;
+
+/* Located in generated directory. This file is populated by the
+ * zephyr_linker_sources() Cmake function.
+ */
+#include <snippets-bss.ld>
+
+		 *(.sbss)
+		 *(".sbss.*")
+		 *(.bss)
+		 *(".bss.*")
+		 COMMON_SYMBOLS
+
+#ifdef CONFIG_CODE_DATA_RELOCATION
+#include <linker_sram_bss_relocate.ld>
+#endif
+
+		 /*
+		  * As memory is cleared in words only, it is simpler to ensure the BSS
+		  * section ends on a 4 byte boundary. This wastes a maximum of 3 bytes.
+		  */
+		  __bss_end = ALIGN(4);
+	}  GROUP_DATA_LINK_IN(RAMABLE_REGION, RAMABLE_REGION)
+
+#include <zephyr/linker/common-noinit.ld>
 
 	__kernel_ram_end = .;
 	__kernel_ram_size = __kernel_ram_end - __kernel_ram_start;
@@ -437,7 +442,6 @@ GROUP_END(DTCM)
 
 #include <zephyr/linker/debug-sections.ld>
 
-    /DISCARD/ : { *(.note.GNU-stack) }
 
     SECTION_PROLOGUE(.riscv.attributes, 0,)
 	{

@@ -26,105 +26,6 @@
 
 .. _zephyr_4.2:
 
-.. _zephyr_4.2.2:
-
-Zephyr 4.2.2
-############
-
-This is a bugfix release for Zephyr 4.2.1. The following issues are addressed by this release:
-
-:github:`55186` posix: fnmatch: fix known bugs
-:github:`61464` USB device stack (new and old) assertion on STM32
-:github:`84934` USB devices broken on STM32F723XX MCUs after clock enable changes
-:github:`92397` Missing fallback to a base board.dts when using a board variant without specific dts file
-:github:`93668` esp32s3: pr 91027 results in ``periph_rtc_dig_clk8m_get_freq()`` returning zero
-:github:`93943` Unable to build LVGL samples on Ubuntu 22.04 for ``native_sim``
-:github:`93986` Unable to build LVGL with picolibc from source/module
-:github:`96841` FRDM_K64F: ``arch.arm.user.stack.float`` test fail
-:github:`97269` Improve UVC compliance and support MacOS
-:github:`97304` arch: arm: start threads on privileged stack
-:github:`97593` Flash writing is broken for some dual-bank STM32H7 variants
-:github:`98077` wifi: credentials: Unable to connect with multiple SSIDs saved
-:github:`98231` Build System: defconfig: Base defconfig not used on fully qualified oot board
-:github:`98469` drivers: bluetooth: h4: insufficient buffer for header + payload
-:github:`98668` drivers: entropy: non-stop RNG ISR firing on STM32WB09
-:github:`98768` STM32F303 bxCAN: Last 2 bytes corrupted on TX pin, but registers are correct
-:github:`98936` net: ICMPv4 packets can be reported to ICMPv6 handlers (and vice versa)
-:github:`99369` Zephyr 4.2 release notes indicate wrong TF-M version
-:github:`99412` drivers/ethernet/eth_native_tap uses a deprecated kconfig option in 4.2
-:github:`99682` net: lib: dns: Unpacking query name can overflow the destination buffer
-:github:`99797` MCUmgr: OS: DateTime: Millisecond parsing erroneous
-:github:`99895` npcx9m6f_evb and frdm_k64f: kernel.common.stack_protection_arm_fpu_sharing fails
-:github:`100212` No event code filterint for LVGL pointer process
-:github:`100296` west packages pip --install fails with permission error
-:github:`100754` bt test commands not working/crashing for nRF54LM20A DK board
-:github:`101236` NXP: Failed to disable random-mac-address in ethernet driver.
-:github:`102307` CI runner out of disk on backports to 4.2
-:github:`102338` macos-13 runner used in v4.2-branch
-:github:`102393` Bluetooth: Mesh: Missing provisioning PDU length check can result in out of bound write
-:github:`102395` Bluetooth: Mesh: Invalid SegN in provisioning PDU may result in out-of-bound write
-:github:`102635` gpio: mcux: Potential infinite interrupt hang when configuring
-:github:`103029` NVS startup fails after power loss during final ATE write
-:github:`99535` Issue with STM32 Ethernet and KSZ8081 Phy
-:github:`104208` IPv4/6 fragmentation memory leak
-:github:`104248` DNS query packet length check
-:github:`104253` driver: clock_control: RCC_BDCR_LSEDRV_Pos undefined using STM32L0
-:github:`104652` net: socketcan: length not always verified
-:github:`104748` [mcumgr] error codes of group "stat" incorrect
-:github:`104948` net: lib: socket: tls: Potential out-of-bounds write in socket_op_vtable::connect
-:github:`105374` drivers: gpio: sam: callback called when interrupt disabled
-
-.. _zephyr_4.2.1:
-
-Zephyr 4.2.1
-############
-
-This is a bugfix release for Zephyr 4.2.0. The following issues are addressed by this release:
-
-* :github:`96197` gPTP sample does not boot with NUCLEO-H563ZI
-* :github:`92393` LIS2DUX12 setting incorrect ODR configuration
-* :github:`93011` stm32u0: interrupt vectors for lpuart1 and lpuart2 are wrong in device tree
-* :github:`93220` Twister tests with coverage enabled crash during startup
-* :github:`93265` Stm32u5x: clock disable in sleep mode fix causing USB HS device initialization stalls
-* :github:`93342` doc: Documentation issue in 'connectivity/networking/api/tftp'
-* :github:`93350` net: tcp: keep-alive "pings" are no longer acknowledged with v4.2.0
-* :github:`93364` tests/subsys/llext fails after tagging 4.2
-* :github:`93424` Missing break after IPV6_MULTICAST_IF option processing
-* :github:`93445` STM32U535/545: dtc error for node wkup-pin@8 referencing non-existent port gpiof
-* :github:`93519` drivers: nxp_lpspi: Large performance degradation
-* :github:`93594` Nicla Vision has bad I2C address for VL53L1X sensor
-* :github:`93611` doc: Documentation issue in 'releases/release-notes-4.2'
-* :github:`93790` drivers: console: posix_arch_console: build warning with ``CONFIG_PRINTK=n``
-* :github:`93792` USB samples not working on ``max32690evkit``
-* :github:`93831` drivers: can: nrf: fix invalid pointer leading to undef behavior
-* :github:`93839` I3C: STM32: Has a Mutex deadlock on DAA Failure
-* :github:`94000` EXT2 fs_stat on mount point fails with a NULL pointer dereference.
-* :github:`94047` Shell device name tab completion for regulator parents show incorrect names
-* :github:`94063` SPI loopback tests failing on MAX32 SoCs.
-* :github:`94083` stm32:  u3:  low clock frequency for the RNG periphera
-* :github:`94093` Build error when OCRAM node is disabled in device tree (status = "disabled") [NXP RT1061]
-* :github:`94107` ppp link-layer address configuration is wrong
-* :github:`94325` iar: incorrect assembler optimzation flag
-* :github:`94473` LVGL Widgets Demo stopped working in v4.1 on mimxrt1060_evk@A
-* :github:`94702` Locally Administered Address (LAA) bit missing for STM32 ethernet driver
-* :github:`94703` Locally Administered Address (LAA) bit set on wrong index for NXP i.MX ethernet driver
-* :github:`94774` modules/picolibc: Roll back unnecessary changes, synchronize with SDK 0.17.4
-* :github:`94812` ``nocache`` data is included in ROM section
-* :github:`94842` iar: Zephyr 4.2 fails with IAR EWARM 9.70.1
-* :github:`94954` Spurious error log "No valid legacy adv to resume" in bt_hci_le_enh_conn_complete when using bt_le_ext_adv_start()
-* :github:`95113` gpio_pin_get_config for STM32 returns wrong flags value for input pins
-* :github:`95146` i2c: stm32: non-RTIO driver fixes on PM and on STM32F7 from Zephyr v4.3
-* :github:`95297` Links to the pyOCD repository are outdated
-* :github:`95456` Zephyr Netstack buffer leaks
-* :github:`95580` Picolibc module and SDK are not in sync for Zephyr 4.2.0
-* :github:`95721` Boards documentation: "arm" Architecture not specified at least for STM32MP13 and STM32N6 boards
-* :github:`95724` drivers: i2c: stm32: build error when using DMAs with st,stm32-i2c-v2 driver
-* :github:`95768` Possible TCP connection leak when creating a socket
-* :github:`95850` Applications do not watch MCUboot key file for changes
-* :github:`96087` TCP connection sends an incorrect seqnum FIN message
-* :github:`96172` arch: arm: switch to privilege stack in SVC handler
-* :github:`96768` incorrect i2c3 base address on stm32f303Xe
-
 Zephyr 4.2.0
 ############
 
@@ -170,6 +71,8 @@ Security Vulnerability Related
 
 The following CVEs are addressed by this release:
 
+* :cve:`2025-12890` `Bluetooth: peripheral: Invalid handling of malformed connection request
+  <https://github.com/zephyrproject-rtos/zephyr/security/advisories/GHSA-8hrf-pfww-83v9>`_
 * :cve:`2025-27809` `TLS clients may unwittingly skip server authentication
   <https://mbed-tls.readthedocs.io/en/latest/security-advisories/mbedtls-security-advisory-2025-03-1/>`_
 * :cve:`2025-27810` `Potential authentication bypass in TLS handshake
@@ -617,11 +520,11 @@ New Boards
 
 * Aesc Silicon
 
-   * :zephyr:board:`elemrv` (``elemrv``)
+   * :zephyr:board:`elemrv_flask_n` (``elemrv``)
 
 * Ai-Thinker Co., Ltd.
 
-   * :zephyr:board:`ai_wb2_12f` (``ai_wb2_12f``)
+   * :zephyr:board:`ai_wb2_12f_kit` (``ai_wb2_12f_kit``)
 
 * Ambiq Micro, Inc.
 
@@ -667,7 +570,7 @@ New Boards
 * Ezurio
 
    * :zephyr:board:`bl54l15_dvk` (``bl54l15_dvk``)
-   * :zephyr:board:`bl54l15u_dvk` (``bl54l15u_dvk``)
+   * ``bl54l15u_dvk``
 
 * FANKE Technology Co., Ltd.
 
@@ -687,7 +590,7 @@ New Boards
 
 * ITE Tech. Inc.
 
-   * :zephyr:board:`it515xx_evb` (``it515xx_evb``)
+   * ``it515xx_evb``
 
 * KWS Computersysteme Gmbh
 
@@ -726,8 +629,6 @@ New Boards
 * NXP Semiconductors
 
    * :zephyr:board:`frdm_mcxa153` (``frdm_mcxa153``)
-   * :zephyr:board:`frdm_mcxa166` (``frdm_mcxa166``)
-   * :zephyr:board:`frdm_mcxa276` (``frdm_mcxa276``)
    * :zephyr:board:`imx943_evk` (``imx943_evk``)
    * :zephyr:board:`mcx_n9xx_evk` (``mcx_n9xx_evk``)
    * :zephyr:board:`s32k148_evb` (``s32k148_evb``)
@@ -751,7 +652,7 @@ New Boards
 
 * Raytac Corporation
 
-   * :zephyr:board:`raytac_an54l15q_db` (``raytac_an54l15q_db``)
+   * :zephyr:board:`raytac_an54lq_db_15` (``raytac_an54lq_db_15``)
    * :zephyr:board:`raytac_an7002q_db` (``raytac_an7002q_db``)
    * :zephyr:board:`raytac_mdbt50q_cx_40_dongle` (``raytac_mdbt50q_cx_40_dongle``)
 
@@ -854,7 +755,7 @@ New shields
 
 * :ref:`Arduino Giga Display Shield <arduino_giga_display_shield>`
 * :ref:`Arduino Modulino Buttons <arduino_modulino_buttons>`
-* :ref:`Arduino Modulino SmartLEDs <arduino_modulino_smartleds>`
+* :ref:`Arduino Modulino SmartLEDs <arduino_modulino_pixels>`
 * :ref:`DVP 20-pin OV7670 <dvp_20pin_ov7670>`
 * :ref:`EVAL AD4052 ARDZ <eval_ad4052_ardz>`
 * :ref:`EVAL ADXL367 ARDZ <eval_adxl367_ardz>`

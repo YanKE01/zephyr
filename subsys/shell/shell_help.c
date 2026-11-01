@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <ctype.h>
+
+#include <zephyr/sys/minmax.h>
+
 #include "shell_ops.h"
 #include "shell_help.h"
 #include "shell_utils.h"
@@ -103,7 +106,17 @@ static void formatted_text_print(const struct shell *sh, const char *str,
 		 * not begin with a space.
 		 */
 		while (isspace((int) (*(str + offset))) != 0) {
+			bool is_newline = (*(str + offset) == '\n');
+
 			++offset;
+
+			if (is_newline) {
+				/* Stop after consuming the newline so that
+				 * intentional indentation spaces that follow
+				 * are preserved for the next iteration.
+				 */
+				break;
+			}
 		}
 
 		z_cursor_next_line_move(sh);
@@ -135,18 +148,19 @@ static void help_item_print(const struct shell *sh, const char *item_name,
 	static const uint8_t tabulator[] = "  ";
 	static const char sub_cmd_sep[] = ": "; /* subcommands separator */
 	const uint16_t offset = 2 * strlen(tabulator) + item_name_width + strlen(sub_cmd_sep);
+	const uint16_t item_name_len = z_shell_strlen(item_name);
 
-	if ((item_name == NULL) || (item_name[0] == '\0')) {
+	if (item_name_len == 0) {
 		return;
 	}
 
 	if (!IS_ENABLED(CONFIG_NEWLIB_LIBC) &&
-	    !IS_ENABLED(CONFIG_ARCH_POSIX)) {
+	    !IS_ENABLED(CONFIG_NATIVE_LIBC)) {
 		/* print option name */
 		z_shell_fprintf(sh, SHELL_NORMAL, "%s%-*s", tabulator,
 				item_name_width, item_name);
 	} else {
-		uint16_t tmp = item_name_width - strlen(item_name);
+		uint16_t tmp = item_name_width - item_name_len;
 		char space = ' ';
 
 		z_shell_fprintf(sh, SHELL_NORMAL, "%s%s", tabulator,
@@ -187,7 +201,7 @@ void z_shell_help_subcmd_print(const struct shell *sh,
 
 	/* Searching for the longest subcommand to print. */
 	while ((entry = z_shell_cmd_get(parent, idx++, &dloc)) != NULL) {
-		longest = Z_MAX(longest, z_shell_strlen(entry->syntax));
+		longest = max(longest, z_shell_strlen(entry->syntax));
 	}
 
 	/* No help to print */

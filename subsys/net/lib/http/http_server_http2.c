@@ -260,14 +260,14 @@ int send_settings_frame(struct http_client_ctx *client, bool ack)
 
 		setting = (struct http2_settings_field *)
 			(settings_frame + HTTP2_FRAME_HEADER_SIZE);
-		UNALIGNED_PUT(htons(HTTP2_SETTINGS_HEADER_TABLE_SIZE),
+		UNALIGNED_PUT(net_htons(HTTP2_SETTINGS_HEADER_TABLE_SIZE),
 			      UNALIGNED_MEMBER_ADDR(setting, id));
 		UNALIGNED_PUT(0, UNALIGNED_MEMBER_ADDR(setting, value));
 
 		setting++;
-		UNALIGNED_PUT(htons(HTTP2_SETTINGS_MAX_CONCURRENT_STREAMS),
+		UNALIGNED_PUT(net_htons(HTTP2_SETTINGS_MAX_CONCURRENT_STREAMS),
 			      UNALIGNED_MEMBER_ADDR(setting, id));
-		UNALIGNED_PUT(htonl(CONFIG_HTTP_SERVER_MAX_STREAMS),
+		UNALIGNED_PUT(net_htonl(CONFIG_HTTP_SERVER_MAX_STREAMS),
 			      UNALIGNED_MEMBER_ADDR(setting, value));
 
 		len = HTTP2_FRAME_HEADER_SIZE +
@@ -469,6 +469,7 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 	enum http_compression chosen_compression = 0;
 	int len;
 	int remaining;
+	size_t file_size;
 	char tmp[64];
 
 	if (client->method != HTTP_GET) {
@@ -480,23 +481,23 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 	}
 
 	/* get filename and content-type from url */
-	len = strlen(client->url_buffer);
+	len = http_server_path_len_without_query(client->url_buffer);
 	if (len == 1) {
 		/* url is just the leading slash, use index.html as filename */
 		snprintk(fname, sizeof(fname), "%s/index.html", static_fs_detail->fs_path);
 	} else {
 		http_server_get_content_type_from_extension(client->url_buffer, content_type,
 							    sizeof(content_type));
-		snprintk(fname, sizeof(fname), "%s%s", static_fs_detail->fs_path,
+		snprintk(fname, sizeof(fname), "%s%.*s", static_fs_detail->fs_path, len,
 			 client->url_buffer);
 	}
 
 	/* open file, if it exists */
 #ifdef CONFIG_HTTP_SERVER_COMPRESSION
-	ret = http_server_find_file(fname, sizeof(fname), &client->data_len,
+	ret = http_server_find_file(fname, sizeof(fname), &file_size,
 					client->supported_compression, &chosen_compression);
 #else
-	ret = http_server_find_file(fname, sizeof(fname), &client->data_len, 0, NULL);
+	ret = http_server_find_file(fname, sizeof(fname), &file_size, 0, NULL);
 #endif /* CONFIG_HTTP_SERVER_COMPRESSION */
 	if (ret < 0) {
 		LOG_ERR("fs_stat %s: %d", fname, ret);
@@ -519,7 +520,9 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 
 	/* send headers */
 	if (IS_ENABLED(CONFIG_HTTP_SERVER_COMPRESSION)) {
-		res_detail.content_encoding = http_compression_text(chosen_compression);
+		if (chosen_compression != HTTP_NONE) {
+			res_detail.content_encoding = http_compression_text(chosen_compression);
+		}
 	}
 	ret = send_headers_frame(client, HTTP_200_OK, frame->stream_identifier, &res_detail, 0,
 				 NULL, 0);
@@ -529,7 +532,7 @@ static int handle_http2_static_fs_resource(struct http_resource_detail_static_fs
 	}
 
 	/* read and send file */
-	remaining = client->data_len;
+	remaining = file_size;
 	while (remaining > 0) {
 		len = fs_read(&file, tmp, sizeof(tmp));
 		if (len < 0) {
@@ -557,12 +560,13 @@ out:
 #endif /* CONFIG_FILE_SYSTEM */
 
 static int http2_dynamic_response(struct http_client_ctx *client, struct http2_frame *frame,
-				  struct http_response_ctx *rsp, enum http_data_status data_status,
+				  struct http_response_ctx *rsp,
+				  enum http_transaction_status status,
 				  struct http_resource_detail_dynamic *dynamic_detail)
 {
 	int ret;
 	uint8_t flags = 0;
-	bool final_response = http_response_is_final(rsp, data_status);
+	bool final_response = http_response_is_final(rsp, status);
 
 	if (client->current_stream->headers_sent && (rsp->header_count > 0 || rsp->status != 0)) {
 		LOG_WRN("Already sent headers, dropping new headers and/or response code");
@@ -616,13 +620,13 @@ static int http2_dynamic_response(struct http_client_ctx *client, struct http2_f
 	return 0;
 }
 
-static int dynamic_get_del_req_v2(struct http_resource_detail_dynamic *dynamic_detail,
-				  struct http_client_ctx *client)
+static int dynamic_get_del_opts_req_v2(struct http_resource_detail_dynamic *dynamic_detail,
+				       struct http_client_ctx *client)
 {
 	int ret, len;
 	char *ptr;
 	struct http2_frame *frame = &client->current_frame;
-	enum http_data_status status;
+	enum http_transaction_status status;
 	struct http_request_ctx request_ctx;
 	struct http_response_ctx response_ctx;
 
@@ -633,7 +637,7 @@ static int dynamic_get_del_req_v2(struct http_resource_detail_dynamic *dynamic_d
 	/* Start of GET params */
 	ptr = &client->url_buffer[dynamic_detail->common.path_len];
 	len = strlen(ptr);
-	status = HTTP_SERVER_DATA_FINAL;
+	status = HTTP_SERVER_REQUEST_DATA_FINAL;
 
 	do {
 		memset(&response_ctx, 0, sizeof(response_ctx));
@@ -660,7 +664,14 @@ static int dynamic_get_del_req_v2(struct http_resource_detail_dynamic *dynamic_d
 				      HTTP2_FLAG_END_STREAM);
 		if (ret < 0) {
 			LOG_DBG("Cannot send last frame (%d)", ret);
+			return ret;
 		}
+	}
+
+	ret = dynamic_detail->cb(client, HTTP_SERVER_TRANSACTION_COMPLETE, &request_ctx,
+				 &response_ctx, dynamic_detail->user_data);
+	if (ret < 0) {
+		return ret;
 	}
 
 	dynamic_detail->holder = NULL;
@@ -674,7 +685,7 @@ static int dynamic_post_put_req_v2(struct http_resource_detail_dynamic *dynamic_
 	int ret = 0;
 	char *ptr = client->cursor;
 	size_t data_len;
-	enum http_data_status status;
+	enum http_transaction_status status;
 	struct http2_frame *frame = &client->current_frame;
 	struct http_request_ctx request_ctx;
 	struct http_response_ctx response_ctx;
@@ -700,9 +711,9 @@ static int dynamic_post_put_req_v2(struct http_resource_detail_dynamic *dynamic_
 
 	if (frame->length == 0 && is_header_flag_set(frame->flags, HTTP2_FLAG_END_STREAM) &&
 	    !headers_only) {
-		status = HTTP_SERVER_DATA_FINAL;
+		status = HTTP_SERVER_REQUEST_DATA_FINAL;
 	} else {
-		status = HTTP_SERVER_DATA_MORE;
+		status = HTTP_SERVER_REQUEST_DATA_MORE;
 	}
 
 	memset(&response_ctx, 0, sizeof(response_ctx));
@@ -725,7 +736,8 @@ static int dynamic_post_put_req_v2(struct http_resource_detail_dynamic *dynamic_
 	}
 
 	/* Once all data is transferred to application, repeat cb until response is complete */
-	while (!http_response_is_final(&response_ctx, status) && status == HTTP_SERVER_DATA_FINAL) {
+	while (!http_response_is_final(&response_ctx, status) &&
+	       status == HTTP_SERVER_REQUEST_DATA_FINAL) {
 		memset(&response_ctx, 0, sizeof(response_ctx));
 		populate_request_ctx(&request_ctx, ptr, 0, request_headers_ctx);
 
@@ -751,15 +763,28 @@ static int dynamic_post_put_req_v2(struct http_resource_detail_dynamic *dynamic_
 			memset(&response_ctx, 0, sizeof(response_ctx));
 			response_ctx.final_chunk = true;
 			ret = http2_dynamic_response(client, frame, &response_ctx,
-						     HTTP_SERVER_DATA_FINAL, dynamic_detail);
+						     HTTP_SERVER_REQUEST_DATA_FINAL,
+						     dynamic_detail);
 		}
 
 		if (ret < 0) {
 			LOG_DBG("Cannot send last frame (%d)", ret);
+			return ret;
 		}
 
 		client->current_stream->end_stream_sent = true;
-		dynamic_detail->holder = NULL;
+
+		if (http_response_is_final(&response_ctx, status) &&
+		    status == HTTP_SERVER_REQUEST_DATA_FINAL) {
+			ret = dynamic_detail->cb(client, HTTP_SERVER_TRANSACTION_COMPLETE,
+						 &request_ctx, &response_ctx,
+						 dynamic_detail->user_data);
+			if (ret < 0) {
+				return ret;
+			}
+
+			dynamic_detail->holder = NULL;
+		}
 	}
 
 	return ret;
@@ -774,6 +799,10 @@ static int handle_http2_dynamic_resource(
 
 	if (dynamic_detail->cb == NULL) {
 		return -ESRCH;
+	}
+
+	if (client->current_stream == NULL) {
+		return -ENOENT;
 	}
 
 	user_method = dynamic_detail->common.bitmask_of_supported_http_methods;
@@ -796,8 +825,9 @@ static int handle_http2_dynamic_resource(
 	switch (client->method) {
 	case HTTP_GET:
 	case HTTP_DELETE:
+	case HTTP_OPTIONS:
 		if (user_method & BIT(client->method)) {
-			return dynamic_get_del_req_v2(dynamic_detail, client);
+			return dynamic_get_del_opts_req_v2(dynamic_detail, client);
 		}
 
 		goto not_supported;
@@ -943,6 +973,17 @@ static int enter_http_frame_continuation_state(struct http_client_ctx *client)
 {
 	struct http2_frame *frame = &client->current_frame;
 
+	/* Current_stream is only preserved for an expected
+	 * continuation, so a NULL pointer here means the peer sent a
+	 * stray CONTINUATION frame.
+	 */
+	if (client->current_stream == NULL ||
+	    client->current_stream->stream_id != frame->stream_identifier) {
+		LOG_DBG("Unexpected CONTINUATION frame for stream ID %d",
+			frame->stream_identifier);
+		return -ENOENT;
+	}
+
 	if (!is_header_flag_set(frame->flags, HTTP2_FLAG_END_HEADERS)) {
 		client->expect_continuation = true;
 	} else {
@@ -1004,7 +1045,14 @@ int handle_http_frame_header(struct http_client_ctx *client)
 		return -EBADMSG;
 	}
 
-	client->current_stream = NULL;
+	/* The stream context is bound when the header block starts and has to
+	 * stay valid until that block is complete, i. e. across the
+	 * CONTINUATION frames that carry the rest of it. Only release it when
+	 * the previous frame actually ended a block.
+	 */
+	if (!client->expect_continuation) {
+		client->current_stream = NULL;
+	}
 
 	switch (client->current_frame.type) {
 	case HTTP2_DATA_FRAME:
@@ -1373,6 +1421,7 @@ static int process_header(struct http_client_ctx *client,
 
 		memcpy(client->url_buffer, header->value, header->value_len);
 		client->url_buffer[header->value_len] = '\0';
+		http_server_remove_dot_segments(client->url_buffer);
 	} else if (header->name_len == (sizeof("content-type") - 1) &&
 		   memcmp(header->name, "content-type", header->name_len) == 0) {
 		if (header->value_len > sizeof(client->content_type) - 1) {
@@ -1492,7 +1541,7 @@ static int handle_http_frame_headers_end_stream(struct http_client_ctx *client)
 		memset(&response_ctx, 0, sizeof(response_ctx));
 		populate_request_ctx(&request_ctx, NULL, 0, NULL);
 
-		ret = dynamic_detail->cb(client, HTTP_SERVER_DATA_FINAL, &request_ctx,
+		ret = dynamic_detail->cb(client, HTTP_SERVER_REQUEST_DATA_FINAL, &request_ctx,
 					 &response_ctx, dynamic_detail->user_data);
 		if (ret < 0) {
 			dynamic_detail->holder = NULL;
@@ -1502,8 +1551,17 @@ static int handle_http_frame_headers_end_stream(struct http_client_ctx *client)
 		/* Force end stream */
 		response_ctx.final_chunk = true;
 
-		ret = http2_dynamic_response(client, frame, &response_ctx, HTTP_SERVER_DATA_FINAL,
-					     dynamic_detail);
+		ret = http2_dynamic_response(client, frame, &response_ctx,
+					     HTTP_SERVER_REQUEST_DATA_FINAL, dynamic_detail);
+
+		if (ret < 0) {
+			dynamic_detail->holder = NULL;
+			goto out;
+		}
+
+		ret = dynamic_detail->cb(client, HTTP_SERVER_TRANSACTION_COMPLETE, &request_ctx,
+					 &response_ctx, dynamic_detail->user_data);
+
 		dynamic_detail->holder = NULL;
 
 		if (ret < 0) {

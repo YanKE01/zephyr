@@ -1,6 +1,6 @@
 .. zephyr:code-sample:: sockets-http-server
    :name: HTTP Server
-   :relevant-api: http_service http_server tls_credentials
+   :relevant-api: http_service http_server tls_credentials json
 
    Implement an HTTP(s) Server demonstrating various resource types.
 
@@ -11,6 +11,11 @@ This sample application demonstrates the use of the :ref:`http_server_interface`
 This library provides high-level functions to simplify and abstract server implementation.
 The server supports the HTTP/1.1 protocol which can also be upgraded to HTTP/2,
 it also support native HTTP/2 protocol without upgrading.
+The server will support also HTTP/3 protocol if :kconfig:option:`CONFIG_QUIC` configuration
+option is enabled. By default the HTTP/1.1 session can be upgraded to HTTP/3, or
+HTTP/3 can be used natively without upgrading.
+The ``net http services`` net-shell command can show what HTTP protocols are supported
+for each configured HTTP service.
 
 Requirement
 -----------
@@ -31,7 +36,7 @@ There are configuration files for various setups in the
     * - :zephyr_file:`ieee802154-overlay.conf <samples/net/sockets/http_server/ieee802154-overlay.conf>`
       - This overlay config can be added for IEEE 802.15.4 support.
 
-    * - :zephyr_file:`overlay-netusb.conf <samples/net/sockets/http_server/overlay-netusb.conf>`
+    * - :zephyr_file:`overlay-usbd.conf <samples/net/sockets/http_server/overlay-usbd.conf>`
       - This overlay config can be added for connecting via network USB.
 
     * - :zephyr_file:`overlay-tls.conf <samples/net/sockets/http_server/overlay-tls.conf>`

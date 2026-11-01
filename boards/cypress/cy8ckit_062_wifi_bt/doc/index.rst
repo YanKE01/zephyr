@@ -74,26 +74,7 @@ For more information about the PSOC 62 MCU SoC and CY8CKIT-062-WiFi-BT board:
 Supported Features
 ==================
 
-The board configuration supports the following hardware features:
-
-+-----------+------------+-----------------------+
-| Interface | Controller | Driver/Component      |
-+===========+============+=======================+
-| NVIC      | on-chip    | nested vectored       |
-|           |            | interrupt controller  |
-+-----------+------------+-----------------------+
-| SYSTICK   | on-chip    | system clock          |
-+-----------+------------+-----------------------+
-| PINCTRL   | on-chip    | pin control           |
-+-----------+------------+-----------------------+
-| UART      | on-chip    | serial port-polling;  |
-|           |            | serial port-interrupt |
-+-----------+------------+-----------------------+
-
-
-The default configuration can be found in the Kconfig
-:zephyr_file:`boards/cypress/cy8ckit_062_wifi_bt/cy8ckit_062_wifi_bt_cy8c6247_m0_defconfig`.
-
+.. zephyr:board-supported-hw::
 
 System Clock
 ============
@@ -184,10 +165,10 @@ References
 .. target-notes::
 
 .. _PSOC 62 MCU SoC Website:
-	https://www.cypress.com/products/32-bit-arm-cortex-m4-psoc-6
+	https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/psoc-6-m4-mcu/psoc-62
 
 .. _PSOC 62 MCU Datasheet:
-	https://www.cypress.com/documentation/datasheets/psoc-6-mcu-psoc-62-datasheet-programmable-system-chip-psoc-preliminary
+	https://www.infineon.com/assets/row/public/documents/30/49/infineon-cy8c62x6-cy8c62x7-psoc-62-mcu-arm-cortex--m4-datasheet-en.pdf
 
 .. _PSOC 62 MCU Architecture Reference Manual:
 	https://www.cypress.com/documentation/technical-reference-manuals/psoc-6-mcu-psoc-62-architecture-technical-reference-manual
@@ -196,7 +177,7 @@ References
 	https://www.cypress.com/documentation/technical-reference-manuals/psoc-6-mcu-psoc-62-register-technical-reference-manual-trm
 
 .. _CY8CKIT-062-WiFi-BT Website:
-   https://www.cypress.com/documentation/development-kitsboards/psoc-6-wifi-bt-pioneer-kit
+   https://www.infineon.com/evaluation-board/CY8CKIT-062-WIFI-BT
 
 .. _CY8CKIT-062-WiFi-BT User Guide:
    https://www.cypress.com/file/407731/download

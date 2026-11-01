@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 ENE Technology Inc.
+ * Copyright (c) 2025-2026 ENE Technology Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -18,6 +18,7 @@ struct gpio_kb106x_data {
 	/* gpio_driver_data needs to be first */
 	struct gpio_driver_data common;
 	sys_slist_t cb;
+	struct k_spinlock lock;
 };
 
 struct gpio_kb106x_config {
@@ -32,17 +33,17 @@ static void gpio_kb106x_isr(const struct device *dev)
 {
 	const struct gpio_kb106x_config *config = dev->config;
 	struct gpio_kb106x_data *context = dev->data;
-	uint32_t pending_flag = config->gptd_regs->GPTDPF;
+	uint32_t pending_flag = config->gptd_regs->GPTDPF & config->gptd_regs->GPTDIE;
 
-	gpio_fire_callbacks(&context->cb, dev, pending_flag);
 	config->gptd_regs->GPTDPF = pending_flag;
+	gpio_fire_callbacks(&context->cb, dev, pending_flag);
 }
 
 static int kb106x_gpio_pin_configure(const struct device *dev, gpio_pin_t pin, gpio_flags_t flags)
 {
 	const struct gpio_kb106x_config *config = dev->config;
 
-	/* ene specific flags. low voltage mode, input voltage threshold (ViH & ViL) 1.8V */
+	/* ene specific flags. low voltage mode, input voltage threshold (ViH & ViL) support 1.8V */
 	if (flags & ENE_GPIO_VOLTAGE_1P8) {
 		WRITE_BIT(config->gpio_regs->GPIOLV, pin, 1);
 	} else {
@@ -85,12 +86,8 @@ static int kb106x_gpio_pin_configure(const struct device *dev, gpio_pin_t pin, g
 		/* [patch] disable open-drain when output is disabled */
 		WRITE_BIT(config->gpio_regs->GPIOOD, pin, 0);
 	}
-	/* input enable function */
-	if (flags & GPIO_INPUT) {
-		WRITE_BIT(config->gpio_regs->GPIOIE, pin, 1);
-	} else {
-		WRITE_BIT(config->gpio_regs->GPIOIE, pin, 0);
-	}
+	/* input function always enable */
+	WRITE_BIT(config->gpio_regs->GPIOIE, pin, 1);
 
 	return 0;
 }
@@ -107,32 +104,48 @@ static int kb106x_gpio_port_set_masked_raw(const struct device *dev, gpio_port_p
 					   gpio_port_value_t value)
 {
 	const struct gpio_kb106x_config *config = dev->config;
+	struct gpio_kb106x_data *context = dev->data;
+	k_spinlock_key_t key;
 
-	config->gpio_regs->GPIOD |= (value & mask);
+	key = k_spin_lock(&context->lock);
+	config->gpio_regs->GPIOD = (config->gpio_regs->GPIOD & ~mask) | (value & mask);
+	k_spin_unlock(&context->lock, key);
 	return 0;
 }
 
 static int kb106x_gpio_port_set_bits_raw(const struct device *dev, gpio_port_pins_t pins)
 {
 	const struct gpio_kb106x_config *config = dev->config;
+	struct gpio_kb106x_data *context = dev->data;
+	k_spinlock_key_t key;
 
+	key = k_spin_lock(&context->lock);
 	config->gpio_regs->GPIOD |= pins;
+	k_spin_unlock(&context->lock, key);
 	return 0;
 }
 
 static int kb106x_gpio_port_clear_bits_raw(const struct device *dev, gpio_port_pins_t pins)
 {
 	const struct gpio_kb106x_config *config = dev->config;
+	struct gpio_kb106x_data *context = dev->data;
+	k_spinlock_key_t key;
 
+	key = k_spin_lock(&context->lock);
 	config->gpio_regs->GPIOD &= ~pins;
+	k_spin_unlock(&context->lock, key);
 	return 0;
 }
 
 static int kb106x_gpio_port_toggle_bits(const struct device *dev, gpio_port_pins_t pins)
 {
 	const struct gpio_kb106x_config *config = dev->config;
+	struct gpio_kb106x_data *context = dev->data;
+	k_spinlock_key_t key;
 
+	key = k_spin_lock(&context->lock);
 	config->gpio_regs->GPIOD ^= pins;
+	k_spin_unlock(&context->lock, key);
 	return 0;
 }
 
@@ -140,6 +153,28 @@ static int kb106x_gpio_pin_interrupt_configure(const struct device *dev, gpio_pi
 					       enum gpio_int_mode mode, enum gpio_int_trig trig)
 {
 	const struct gpio_kb106x_config *config = dev->config;
+	struct gpio_kb106x_data *context = dev->data;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&context->lock);
+#ifdef CONFIG_GPIO_ENABLE_DISABLE_INTERRUPT
+	if (mode == GPIO_INT_MODE_DISABLE_ONLY) {
+		WRITE_BIT(config->gptd_regs->GPTDIE, pin, 0);
+		k_spin_unlock(&context->lock, key);
+		return 0;
+	} else if (mode == GPIO_INT_MODE_ENABLE_ONLY) {
+		WRITE_BIT(config->gptd_regs->GPTDIE, pin, 1);
+		k_spin_unlock(&context->lock, key);
+		return 0;
+	}
+#endif /* CONFIG_GPIO_ENABLE_DISABLE_INTERRUPT */
+
+	/* check original interrupt enable setting */
+	if (FIELD_GET(BIT(pin), config->gptd_regs->GPTDIE)) {
+		mode |= GPIO_INT_ENABLE;
+	}
+	/* Disable interrupts to prevent unfinished configuration events occurring.*/
+	WRITE_BIT(config->gptd_regs->GPTDIE, pin, 0);
 
 	if (mode & GPIO_INT_EDGE) {
 		WRITE_BIT(config->gptd_regs->GPTDEL, pin, 0);
@@ -158,7 +193,6 @@ static int kb106x_gpio_pin_interrupt_configure(const struct device *dev, gpio_pi
 			WRITE_BIT(config->gptd_regs->GPTDPS, pin, 0);
 		}
 	} else {
-		WRITE_BIT(config->gptd_regs->GPTDEL, pin, 1);
 		/* Disable Toggle trigger */
 		WRITE_BIT(config->gptd_regs->GPTDCHG, pin, 0);
 		if (trig & GPIO_INT_HIGH_1) {
@@ -166,19 +200,11 @@ static int kb106x_gpio_pin_interrupt_configure(const struct device *dev, gpio_pi
 		} else {
 			WRITE_BIT(config->gptd_regs->GPTDPS, pin, 0);
 		}
+		WRITE_BIT(config->gptd_regs->GPTDEL, pin, 1);
 	}
 
 	/* clear pending flag */
-	WRITE_BIT(config->gptd_regs->GPTDPF, pin, 1);
-
-	/* Check if GPIO port needs interrupt support */
-	if ((mode & GPIO_INT_DISABLE) || (mode & GPIO_INT_ENABLE) == 0) {
-		/* Set the mask to disable the interrupt */
-		WRITE_BIT(config->gptd_regs->GPTDIE, pin, 0);
-	} else {
-		/* Enable the interrupt */
-		WRITE_BIT(config->gptd_regs->GPTDIE, pin, 1);
-	}
+	config->gptd_regs->GPTDPF = BIT(pin);
 
 	/* Check GPIO wakeup enable */
 	if (trig & GPIO_INT_TRIG_WAKE) {
@@ -186,6 +212,19 @@ static int kb106x_gpio_pin_interrupt_configure(const struct device *dev, gpio_pi
 	} else {
 		WRITE_BIT(config->gptd_regs->GPTDWE, pin, 0);
 	}
+
+	/* Check GPIO needs interrupt support or not
+	 * if mode has GPIO_INT_DISABLE keep GPTDIE disabled.
+	 * (GPIO_INT_DISABLE Take precedence)
+	 */
+	if ((mode & GPIO_INT_DISABLE) == 0) {
+		/* Enable the interrupt */
+		if (mode & GPIO_INT_ENABLE) {
+			WRITE_BIT(config->gptd_regs->GPTDIE, pin, 1);
+		}
+	}
+	k_spin_unlock(&context->lock, key);
+
 	return 0;
 }
 
@@ -201,10 +240,10 @@ static uint32_t kb106x_gpio_get_pending_int(const struct device *dev)
 {
 	const struct gpio_kb106x_config *const config = dev->config;
 
-	return config->gptd_regs->GPTDPF;
+	return config->gptd_regs->GPTDWE & config->gptd_regs->GPTDPF;
 }
 
-static const struct gpio_driver_api kb106x_gpio_api = {
+static DEVICE_API(gpio, kb106x_gpio_api) = {
 	.pin_configure = kb106x_gpio_pin_configure,
 	.port_get_raw = kb106x_gpio_port_get_raw,
 	.port_set_masked_raw = kb106x_gpio_port_set_masked_raw,
@@ -228,12 +267,12 @@ static const struct gpio_driver_api kb106x_gpio_api = {
 		return 0;                                                                          \
 	};                                                                                         \
 	static const struct gpio_kb106x_config port_##n##_kb106x_config = {                        \
-		.common = {.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(n)},                   \
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(n),                                      \
 		.gpio_regs = (struct gpio_regs *)DT_INST_REG_ADDR_BY_IDX(n, 0),                    \
 		.gptd_regs = (struct gptd_regs *)DT_INST_REG_ADDR_BY_IDX(n, 1),                    \
 	};                                                                                         \
 	static struct gpio_kb106x_data gpio_kb106x_##n##_data;                                     \
-	DEVICE_DT_INST_DEFINE(n, &kb106x_gpio_##n##_init, NULL, &gpio_kb106x_##n##_data,           \
+	DEVICE_DT_INST_DEFINE(n, kb106x_gpio_##n##_init, NULL, &gpio_kb106x_##n##_data,            \
 			      &port_##n##_kb106x_config, PRE_KERNEL_1, CONFIG_GPIO_INIT_PRIORITY,  \
 			      &kb106x_gpio_api);
 

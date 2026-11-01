@@ -14,7 +14,14 @@ toolchain:
   - zephyr
   - gnuarmemb
 supported:
-  - uart
-  - netif:eth
   - gpio
+  - i2c
+  - i2s
+  - netif:eth
+  - pwm
+  - uart
+  - watchdog
+testing:
+  binaries:
+    - flash.bin
 vendor: nxp

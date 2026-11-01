@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Nordic Semiconductor ASA
+ * Copyright (c) 2026 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -17,6 +17,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/dt-bindings/gpio/nordic-nrf-gpio.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/wifi/nrf_wifi/bus/rpu_hw_if.h>
 #include <zephyr/drivers/wifi/nrf_wifi/bus/qspi_if.h>
 
@@ -29,8 +30,37 @@ LOG_MODULE_REGISTER(wifi_nrf_bus, CONFIG_WIFI_NRF70_BUSLIB_LOG_LEVEL);
 static const struct gpio_dt_spec host_irq_spec =
 GPIO_DT_SPEC_GET(NRF7002_NODE, host_irq_gpios);
 
+#if DT_NODE_HAS_PROP(NRF7002_NODE, iovdd_ctrl_gpios)
+
+#define NRF70_IOVDD_GPIO 1
 static const struct gpio_dt_spec iovdd_ctrl_spec =
 GPIO_DT_SPEC_GET(NRF7002_NODE, iovdd_ctrl_gpios);
+
+#elif DT_NODE_HAS_PROP(NRF7002_NODE, iovdd_regulator)
+
+static const struct device *iovdd_regulator =
+DEVICE_DT_GET(DT_PHANDLE(NRF7002_NODE, iovdd_regulator));
+
+#else
+#error "nRF70 device either needs iovdd-ctrl-gpios or iovdd-regulator property"
+#endif
+
+/* Always defined so the code below builds regardless of the devicetree. The
+ * GPIO port and the regulator device are NULL when the matching property is
+ * absent.
+ */
+static const struct gpio_dt_spec supply_spec =
+GPIO_DT_SPEC_GET_OR(NRF7002_NODE, supply_gpios, {0});
+
+static const struct device *vin_supply =
+DEVICE_DT_GET_OR_NULL(DT_PHANDLE(NRF7002_NODE, vin_supply));
+
+/* Tracks whether this driver holds a reference on vin_supply, so a failed
+ * power-up only releases what it actually requested. The regulator may be
+ * shared with other consumers, where regulator_is_enabled() says nothing
+ * about who enabled it.
+ */
+static bool vin_supply_enabled;
 
 static const struct gpio_dt_spec bucken_spec =
 GPIO_DT_SPEC_GET(NRF7002_NODE, bucken_gpios);
@@ -56,6 +86,8 @@ uint32_t rpu_7002_memmap[][3] = {
 static const struct qspi_dev *qdev;
 static struct qspi_config *cfg;
 
+static int rpu_gpio_remove(void);
+
 static int validate_addr_blk(uint32_t start_addr,
 							 uint32_t end_addr,
 							 uint32_t block_no,
@@ -67,7 +99,7 @@ static int validate_addr_blk(uint32_t start_addr,
 	if (((start_addr >= block_map[0]) && (start_addr <= block_map[1])) &&
 	    ((end_addr >= block_map[0]) && (end_addr <= block_map[1]))) {
 		if (block_no == PKTRAM) {
-			*hl_flag = 0;
+			*hl_flag = false;
 		}
 		*selected_blk = block_no;
 		return 0;
@@ -84,7 +116,7 @@ static int rpu_validate_addr(uint32_t start_addr, uint32_t len, bool *hl_flag)
 
 	end_addr = start_addr + len - 1;
 
-	*hl_flag = 1;
+	*hl_flag = true;
 
 	for (i = 0; i < NUM_MEM_BLOCKS; i++) {
 		ret = validate_addr_blk(start_addr, end_addr, i, hl_flag, &selected_blk);
@@ -94,7 +126,7 @@ static int rpu_validate_addr(uint32_t start_addr, uint32_t len, bool *hl_flag)
 	}
 
 	if (ret) {
-		LOG_ERR("Address validation failed - pls check memmory map and re-try");
+		LOG_ERR("Address validation failed - pls check memory map and re-try");
 		return -1;
 	}
 
@@ -169,32 +201,166 @@ out:
 	return ret;
 }
 
-static int rpu_gpio_config(void)
+/**
+ * @brief Configure RPU GPIO pins to OUTPUT_INACTIVE state during driver
+ * initialization.
+ *
+ * This function configures the voltage control pins (BUCKEN, VDDIO_CTRL)
+ * to OUTPUT_INACTIVE state to prevent them from floating. This should be
+ * called early during driver initialization, before the interface is
+ * brought up.
+ *
+ * @return 0 on success, negative error code on failure
+ */
+static int rpu_gpio_config_early(void)
 {
 	int ret;
 
+#ifdef NRF70_IOVDD_GPIO
 	if (!device_is_ready(iovdd_ctrl_spec.port)) {
 		LOG_ERR("IOVDD GPIO %s is not ready", iovdd_ctrl_spec.port->name);
 		return -ENODEV;
 	}
+#endif
 
 	if (!device_is_ready(bucken_spec.port)) {
 		LOG_ERR("BUCKEN GPIO %s is not ready", bucken_spec.port->name);
 		return -ENODEV;
 	}
 
-	ret = gpio_pin_configure_dt(&bucken_spec, (GPIO_OUTPUT | NRF_GPIO_DRIVE_H0H1));
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO) && !device_is_ready(supply_spec.port)) {
+		LOG_ERR("SUPPLY GPIO %s is not ready", supply_spec.port->name);
+		return -ENODEV;
+	}
+
+	/* Configure BUCKEN as output in inactive (low) state to prevent
+	 * floating pin from accidentally powering the module.
+	 */
+	ret = gpio_pin_configure_dt(&bucken_spec,
+				     (GPIO_OUTPUT_INACTIVE | NRF_GPIO_DRIVE_H0H1));
 	if (ret) {
 		LOG_ERR("BUCKEN GPIO configuration failed...");
 		return ret;
 	}
 
-	ret = gpio_pin_configure_dt(&iovdd_ctrl_spec, GPIO_OUTPUT);
+#ifdef NRF70_IOVDD_GPIO
+	/* Configure IOVDD_CTRL as output in inactive (low) state to prevent
+	 * floating pin from accidentally enabling IOVDD.
+	 */
+	ret = gpio_pin_configure_dt(&iovdd_ctrl_spec, GPIO_OUTPUT_INACTIVE);
 	if (ret) {
 		LOG_ERR("IOVDD GPIO configuration failed...");
 		gpio_pin_configure_dt(&bucken_spec, GPIO_DISCONNECTED);
 		return ret;
 	}
+#endif
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		/* Configure SUPPLY as output in inactive (low) state to prevent
+		 * floating pin from accidentally powering the module.
+		 */
+		ret = gpio_pin_configure_dt(&supply_spec, GPIO_OUTPUT_INACTIVE);
+		if (ret) {
+			LOG_ERR("SUPPLY GPIO configuration failed...");
+			gpio_pin_configure_dt(&supply_spec, GPIO_DISCONNECTED);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * @brief Configure all nRF70 GPIO pins to OUTPUT_INACTIVE state during
+ * driver initialization.
+ *
+ * This function configures all output GPIO pins controlled by the nRF70
+ * driver (BUCKEN, VDDIO_CTRL, SR RF switch) to OUTPUT_INACTIVE state to
+ * prevent them from floating. This should be called early during driver
+ * initialization, before the interface is brought up.
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int nrf_wifi_gpio_config_early(void)
+{
+	int ret;
+
+	ret = rpu_gpio_config_early();
+	if (ret) {
+		return ret;
+	}
+
+#ifdef CONFIG_NRF70_SR_COEX_RF_SWITCH
+	/* Configure SR RF switch GPIO to OUTPUT_INACTIVE state to prevent
+	 * floating pin from accidentally switching the antenna.
+	 */
+	ret = sr_gpio_config_early();
+	if (ret) {
+		LOG_ERR("SR GPIO early configuration failed...");
+		/* Clean up RPU GPIOs on failure */
+		rpu_gpio_remove();
+		return ret;
+	}
+#endif
+
+	LOG_DBG("Early GPIO configuration done (pins set to inactive)...\n");
+
+	return 0;
+}
+
+static int rpu_gpio_config(void)
+{
+	int ret;
+
+	if (IS_ENABLED(CONFIG_NRF70_VIN_SUPPLY) && !device_is_ready(vin_supply)) {
+		LOG_ERR("VIN supply regulator is not ready");
+		return -ENODEV;
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO) && !device_is_ready(supply_spec.port)) {
+		LOG_ERR("SUPPLY GPIO %s is not ready", supply_spec.port->name);
+		return -ENODEV;
+	}
+
+#ifdef NRF70_IOVDD_GPIO
+	if (!device_is_ready(iovdd_ctrl_spec.port)) {
+		LOG_ERR("IOVDD GPIO %s is not ready", iovdd_ctrl_spec.port->name);
+		return -ENODEV;
+	}
+#endif
+
+	if (!device_is_ready(bucken_spec.port)) {
+		LOG_ERR("BUCKEN GPIO %s is not ready", bucken_spec.port->name);
+		return -ENODEV;
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		/* GPIO_INPUT keeps the input buffer connected so the pin state
+		 * can be read back.
+		 */
+		ret = gpio_pin_configure_dt(&supply_spec, (GPIO_OUTPUT | GPIO_INPUT));
+		if (ret) {
+			LOG_ERR("SUPPLY GPIO configuration failed...");
+			gpio_pin_configure_dt(&supply_spec, GPIO_DISCONNECTED);
+			return ret;
+		}
+	}
+
+	ret = gpio_pin_configure_dt(&bucken_spec,
+				     (GPIO_OUTPUT | GPIO_INPUT | NRF_GPIO_DRIVE_H0H1));
+	if (ret) {
+		LOG_ERR("BUCKEN GPIO configuration failed...");
+		return ret;
+	}
+
+#ifdef NRF70_IOVDD_GPIO
+	ret = gpio_pin_configure_dt(&iovdd_ctrl_spec, (GPIO_OUTPUT | GPIO_INPUT));
+	if (ret) {
+		LOG_ERR("IOVDD GPIO configuration failed...");
+		gpio_pin_configure_dt(&bucken_spec, GPIO_DISCONNECTED);
+		return ret;
+	}
+#endif
 
 	LOG_DBG("GPIO configuration done...\n");
 
@@ -211,10 +377,20 @@ static int rpu_gpio_remove(void)
 		return ret;
 	}
 
+#ifdef NRF70_IOVDD_GPIO
 	ret = gpio_pin_configure_dt(&iovdd_ctrl_spec, GPIO_DISCONNECTED);
 	if (ret) {
 		LOG_ERR("IOVDD GPIO remove failed...");
 		return ret;
+	}
+#endif
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		ret = gpio_pin_configure_dt(&supply_spec, GPIO_DISCONNECTED);
+		if (ret) {
+			LOG_ERR("SUPPLY GPIO remove failed...");
+			return ret;
+		}
 	}
 
 	LOG_DBG("GPIO remove done...\n");
@@ -225,6 +401,29 @@ static int rpu_pwron(void)
 {
 	int ret;
 
+	/* The regulator must be requested before the supply GPIO is activated. */
+	if (IS_ENABLED(CONFIG_NRF70_VIN_SUPPLY)) {
+		ret = regulator_enable(vin_supply);
+		if (ret) {
+			LOG_ERR("VIN supply enable failed...");
+			return ret;
+		}
+		vin_supply_enabled = true;
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		ret = gpio_pin_set_dt(&supply_spec, 1);
+		if (ret) {
+			LOG_ERR("SUPPLY GPIO set failed...");
+			return ret;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY)) {
+		/* Settling time for SUPPLY */
+		k_msleep(DT_PROP(NRF7002_NODE, supply_power_up_delay_ms));
+	}
+
 	ret = gpio_pin_set_dt(&bucken_spec, 1);
 	if (ret) {
 		LOG_ERR("BUCKEN GPIO set failed...");
@@ -233,15 +432,27 @@ static int rpu_pwron(void)
 	/* Settling time is 50us (H0) or 100us (L0) */
 	k_msleep(1);
 
+#ifdef NRF70_IOVDD_GPIO
 	ret = gpio_pin_set_dt(&iovdd_ctrl_spec, 1);
+#else
+	ret = regulator_enable(iovdd_regulator);
+#endif
 	if (ret) {
-		LOG_ERR("IOVDD GPIO set failed...");
+		LOG_ERR("IOVDD enable failed...");
 		gpio_pin_set_dt(&bucken_spec, 0);
 		return ret;
 	}
 	/* Settling time for IOVDD */
 	k_msleep(DT_PROP(NRF7002_NODE, iovdd_power_up_delay_ms));
 
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		LOG_DBG("Supply GPIO = %d", gpio_pin_get_dt(&supply_spec));
+	}
+	if (IS_ENABLED(CONFIG_NRF70_VIN_SUPPLY)) {
+		LOG_DBG("Vin supply = %d", regulator_is_enabled(vin_supply) ? 1 : 0);
+	}
+
+#ifdef NRF70_IOVDD_GPIO
 	if ((bucken_spec.port == iovdd_ctrl_spec.port) &&
 	    (bucken_spec.pin == iovdd_ctrl_spec.pin)) {
 		/* When a single GPIO is used, we need a total wait time after bucken assertion
@@ -252,6 +463,11 @@ static int rpu_pwron(void)
 
 	LOG_DBG("Bucken = %d, IOVDD = %d", gpio_pin_get_dt(&bucken_spec),
 			gpio_pin_get_dt(&iovdd_ctrl_spec));
+#else
+	LOG_DBG("Bucken = %d, IOVDD = %d", gpio_pin_get_dt(&bucken_spec),
+			regulator_is_enabled(iovdd_regulator) ? 1 : 0);
+#endif
+
 
 	return ret;
 }
@@ -260,9 +476,13 @@ static int rpu_pwroff(void)
 {
 	int ret;
 
+#ifdef NRF70_IOVDD_GPIO
 	ret = gpio_pin_set_dt(&iovdd_ctrl_spec, 0); /* IOVDD CNTRL = 0 */
+#else
+	ret = regulator_disable(iovdd_regulator);
+#endif
 	if (ret) {
-		LOG_ERR("IOVDD GPIO set failed...");
+		LOG_ERR("IOVDD disable failed...");
 		return ret;
 	}
 
@@ -272,7 +492,40 @@ static int rpu_pwroff(void)
 		return ret;
 	}
 
+	/* The supply GPIO must be inactive before releasing the regulator. */
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		ret = gpio_pin_set_dt(&supply_spec, 0); /* SUPPLY = 0 */
+		if (ret) {
+			LOG_ERR("SUPPLY GPIO set failed...");
+			return ret;
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_VIN_SUPPLY)) {
+		ret = regulator_disable(vin_supply);
+		if (ret) {
+			LOG_ERR("VIN supply disable failed...");
+			return ret;
+		}
+		vin_supply_enabled = false;
+	}
+
 	return ret;
+}
+
+/* Release the supply rail after a failed power-up. Errors are ignored, there is
+ * nothing left to do about them on that path.
+ */
+static void rpu_supply_off(void)
+{
+	if (IS_ENABLED(CONFIG_NRF70_SUPPLY_GPIO)) {
+		gpio_pin_set_dt(&supply_spec, 0);
+	}
+
+	if (IS_ENABLED(CONFIG_NRF70_VIN_SUPPLY) && vin_supply_enabled) {
+		regulator_disable(vin_supply);
+		vin_supply_enabled = false;
+	}
 }
 
 int rpu_read(unsigned int addr, void *data, int len)
@@ -395,6 +648,37 @@ int rpu_rdsr1(void)
 #endif
 }
 
+/**
+ * @brief Read a register via RPU hardware interface
+ *
+ * @param reg_addr Register address (opcode)
+ * @param reg_value Pointer to store the read value
+ * @return int 0 on success, negative error code on failure
+ */
+int rpu_read_reg(uint8_t reg_addr, uint8_t *reg_value)
+{
+#if CONFIG_NRF70_ON_QSPI
+	return qspi_read_reg(&qspi_perip, reg_addr, reg_value);
+#else
+	return spim_read_reg_wrapper(NULL, reg_addr, reg_value);
+#endif
+}
+
+/**
+ * @brief Write a register via RPU hardware interface
+ *
+ * @param reg_addr Register address (opcode)
+ * @param reg_value Value to write
+ * @return int 0 on success, negative error code on failure
+ */
+int rpu_write_reg(uint8_t reg_addr, uint8_t reg_value)
+{
+#if CONFIG_NRF70_ON_QSPI
+	return qspi_write_reg(&qspi_perip, reg_addr, reg_value);
+#else
+	return spim_write_reg_wrapper(NULL, reg_addr, reg_value);
+#endif
+}
 
 int rpu_clks_on(void)
 {
@@ -450,6 +734,7 @@ int rpu_init(void)
 #endif
 	ret = rpu_pwron();
 	if (ret) {
+		rpu_supply_off();
 #ifdef CONFIG_NRF70_SR_COEX_RF_SWITCH
 		goto remove_sr_gpio;
 #else

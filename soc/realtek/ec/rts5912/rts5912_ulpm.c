@@ -24,6 +24,8 @@ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1, "Unsupported number of
 
 #define ULPM_RTS5912_MAX_NB_WKUP_PINS DT_INST_PROP(0, wkup_pins_max)
 
+#define RTS5912_ULPM_WAIT_READY (10 * USEC_PER_MSEC)
+
 /** @cond INTERNAL_HIDDEN */
 
 /**
@@ -89,13 +91,13 @@ void ulpm_start(void)
 	SYSTEM_Type *sys_reg = RTS5912_SCCON_REG_BASE;
 	/* enable VOUT */
 	sys_reg->VIVOCTRL &= ~(SYSTEM_VIVOCTRL_VOUTMD_Msk);
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 	/* Set the VOUT to low */
 	sys_reg->VIVOCTRL &= ~(SYSTEM_VIVOCTRL_VODEF_Msk);
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 	/* update to ULPM */
 	sys_reg->VIVOCTRL |= SYSTEM_VIVOCTRL_REGWREN_Msk;
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 }
 /**
  * @brief Update register value to ULPM IP
@@ -104,11 +106,11 @@ void update_vivo_register(void)
 {
 	SYSTEM_Type *sys_reg = RTS5912_SCCON_REG_BASE;
 	/* Update Register & reset bit */
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 	sys_reg->VIVOCTRL |= SYSTEM_VIVOCTRL_REGWREN_Msk;
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 	sys_reg->VIVOCTRL &= ~(SYSTEM_VIVOCTRL_REGWREN_Msk);
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 }
 
 /**
@@ -125,9 +127,9 @@ void rts5912_ulpm_enable(void)
 	LOG_INF("rts5912 ULPM enabled\n");
 	/* VoutEnable, Keep VOUT output default value as bit 16 */
 	sys_reg->VIVOCTRL |= SYSTEM_VIVOCTRL_VODEF_Msk;
-	k_msleep(10);
+	k_busy_wait(RTS5912_ULPM_WAIT_READY);
 
-	/* set to GPIO mode to clear status and aviod mis-trigger */
+	/* set to GPIO mode to clear status and avoid mis-trigger */
 	sys_reg->VIVOCTRL |= (SYSTEM_VIVOCTRL_VIN0MD_Msk | SYSTEM_VIVOCTRL_VIN1MD_Msk |
 			      SYSTEM_VIVOCTRL_VIN2MD_Msk | SYSTEM_VIVOCTRL_VIN3MD_Msk |
 			      SYSTEM_VIVOCTRL_VIN4MD_Msk | SYSTEM_VIVOCTRL_VIN5MD_Msk);
@@ -163,8 +165,10 @@ void rts5912_ulpm_enable(void)
 	/* Update Status Bit to ULPM IP */
 	update_vivo_register();
 
+#if defined(CONFIG_SOC_RTS5912_ULPM_POWEROFF_BRAM)
 	/* Disable LDO 2 power. */
 	sys_reg->LDOCTRL &= ~(SYSTEM_LDOCTRL_LDO2EN_Msk);
+#endif
 
 	/* ULPM Start */
 	ulpm_start();

@@ -7,8 +7,8 @@ toolchain:
   - gnuarmemb
 supported:
   - adc
-  - usb_device
-  - ble
+  - usbd
+  - bluetooth
   - watchdog
   - counter
   - feather_serial

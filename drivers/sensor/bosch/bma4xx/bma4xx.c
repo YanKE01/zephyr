@@ -185,12 +185,13 @@ static int bma4xx_attr_set_range(const struct sensor_value *val,
 static int bma4xx_attr_set_bwp(const struct sensor_value *val,
 			       struct bma4xx_runtime_config *new_config)
 {
-	/* Require that `val2` is unused, and that `val1` is in range of a valid BWP */
-	if (val->val2 || val->val1 < BMA4XX_BWP_OSR4_AVG1 || val->val1 > BMA4XX_BWP_RES_AVG128) {
+	/* Ensure a valid BWP for performance mode, the only mode currently supported */
+	if (val->val2 != 0 || val->val1 < BMA4XX_BWP_OSR4_AVG1 ||
+	    val->val1 > BMA4XX_BWP_NORM_AVG4) {
 		return -EINVAL;
 	}
 
-	new_config->accel_bwp = (((uint8_t)val->val1) << BMA4XX_SHIFT_ACC_CONF_BWP);
+	new_config->accel_bwp = (uint8_t)val->val1;
 
 	return 0;
 }
@@ -275,6 +276,17 @@ static int bma4xx_chip_init(const struct device *dev)
 	}
 	LOG_DBG("chip_id is 0x%02x", bma4xx->chip_id);
 
+	switch (bma4xx->chip_id) {
+	case BMA4XX_CHIP_ID_BMA423:
+		LOG_WRN("Driver tested for BMA422/BMA400. Check for unintended operation.");
+	case BMA4XX_CHIP_ID_BMA400:
+	case BMA4XX_CHIP_ID_BMA422:
+		break;
+	default:
+		LOG_ERR("Chip id (0x%02X) not supported", bma4xx->chip_id);
+		return -ENODEV;
+	}
+
 	if (bma4xx->chip_id != BMA4XX_CHIP_ID_BMA422) {
 		LOG_WRN("Driver tested for BMA422. Check for unintended operation.");
 	}
@@ -308,11 +320,27 @@ static int bma4xx_chip_init(const struct device *dev)
 	return 0;
 }
 
+static int bma4xx_attr_get(const struct device *dev, enum sensor_channel chan,
+			   enum sensor_attribute attr, struct sensor_value *val)
+{
+	struct bma4xx_data *bma4xx = dev->data;
+
+	switch (attr) {
+	case SENSOR_ATTR_CHIP_ID:
+		val->val1 = bma4xx->chip_id;
+		return 0;
+	default:
+		LOG_ERR("Attribute not supported");
+		return -EINVAL;
+	}
+}
+
 /*
  * Sensor driver API
  */
 
 static DEVICE_API(sensor, bma4xx_driver_api) = {
+	.attr_get = bma4xx_attr_get,
 	.attr_set = bma4xx_attr_set,
 	.get_decoder = bma4xx_get_decoder,
 	.submit = bma4xx_submit,
@@ -327,7 +355,7 @@ static DEVICE_API(sensor, bma4xx_driver_api) = {
 	RTIO_DEFINE(bma4xx_rtio_##inst, 8, 8);
 
 #define BMA4XX_RTIO_SPI_DEFINE(inst)                                                               \
-	SPI_DT_IODEV_DEFINE(bma4xx_iodev_##inst, DT_DRV_INST(inst));                               \
+	SPI_DT_IODEV_DEFINE(bma4xx_iodev_##inst, DT_DRV_INST(inst), 0);                            \
 	RTIO_DEFINE(bma4xx_rtio_##inst, 8, 8);
 
 #define BMA4XX_DEFINE_RTIO(inst)                                                                   \
@@ -338,7 +366,7 @@ static DEVICE_API(sensor, bma4xx_driver_api) = {
  * SPI operation is not currently supported.
  */
 #define BMA4XX_CONFIG_SPI(inst)                                                                    \
-	.bus_cfg.spi = SPI_DT_SPEC_INST_GET(inst, 0, 0), .bus_init = &bma4xx_spi_init,             \
+	.bus_cfg.spi = SPI_DT_SPEC_INST_GET(inst, 0), .bus_init = &bma4xx_spi_init,                \
 	.bus_type = BMA4XX_BUS_SPI,
 
 /* Initializes a struct bma4xx_config for an instance on an I2C bus. */

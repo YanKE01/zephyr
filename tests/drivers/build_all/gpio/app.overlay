@@ -31,6 +31,16 @@
 			status = "okay";
 		};
 
+		test_gpio_mmio_latch: gpio@feed0000 {
+			compatible = "gpio-mmio-latch";
+			gpio-controller;
+			reg = <0xfeed0000 0x4>;
+			#gpio-cells = <0x2>;
+			ngpios = <8>;
+			initial-output = <0x5a>;
+			status = "okay";
+		};
+
 		test_i2c: i2c@11112222 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -45,6 +55,26 @@
 				#gpio-cells = <2>;
 				ngpios = <16>;
 				gpio-controller;
+			};
+
+			test_i2c_pca6408: pca6408@1 {
+				compatible = "nxp,pca6408";
+				reg = <0x01>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <8>;
+				int-gpios = <&test_gpio 0 0>;
+				reset-gpios = <&test_gpio 0 0>;
+			};
+
+			test_i2c_pca6416: pca6416@2 {
+				compatible = "nxp,pca6416";
+				reg = <0x02>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <16>;
+				int-gpios = <&test_gpio 0 0>;
+				reset-gpios = <&test_gpio 0 0>;
 			};
 
 			test_i2c_pcal6408a: pcal6408a@1 {
@@ -158,9 +188,22 @@
 				gpio-controller;
 			};
 
+			test_i2c_m5pm1: pmic@6e {
+				compatible = "m5stack,m5pm1";
+				reg = <0x6e>;
+
+				test_i2c_m5pm1_gpio: gpio {
+					compatible = "m5stack,m5pm1-gpio";
+					gpio-controller;
+					#gpio-cells = <2>;
+					ngpios = <5>;
+				};
+			};
+
 			mfd-nct38xx@9 {
 				compatible = "nuvoton,nct38xx";
 				reg = <0x09>;
+
 				test_i2c_nct3807: nct3807 {
 					#address-cells = <1>;
 					#size-cells = <0>;
@@ -190,6 +233,7 @@
 			test_i2c_nct3808_p1: mfd-nct38xx@a {
 				compatible = "nuvoton,nct38xx";
 				reg = <0x0a>;
+
 				nct3808_0_P1 {
 					#address-cells = <1>;
 					#size-cells = <0>;
@@ -210,6 +254,7 @@
 			test_i2c_nct3808_p2: mfd-nct38xx@b {
 				compatible = "nuvoton,nct38xx";
 				reg = <0x0b>;
+
 				nct3808_0_P2 {
 					#address-cells = <1>;
 					#size-cells = <0>;
@@ -235,6 +280,15 @@
 				ngpios = <24>;
 				int-gpios = <&test_gpio 0 0>;
 				reset-gpios = <&test_gpio 0 0>;
+			};
+
+			test_i2c_pi4ioe5v6408: pi4ioe5v6408@43 {
+				compatible = "diodes,pi4ioe5v6408";
+				reg = <0x43>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				ngpios = <8>;
+				int-gpios = <&test_gpio 0 0>;
 			};
 
 			test_i2c_axp192: axp192@d {
@@ -353,6 +407,7 @@
 			test_i2c_aw9523b: aw9523b@16 {
 				status = "okay";
 				reg = <0x16>;
+				reset-gpios = <&test_gpio 0 0>;
 				compatible = "awinic,aw9523b";
 
 				aw9523_gpio: gpio {
@@ -360,7 +415,6 @@
 					gpio-controller;
 					#gpio-cells = <2>;
 					int-gpios = <&test_gpio 0 0>;
-					reset-gpios = <&test_gpio 0 0>;
 				};
 			};
 
@@ -436,6 +490,39 @@
 					#gpio-cells = <2>;
 					ngpios = <5>;
 				};
+			};
+
+			test_i2c_npm1012: pmic@1f {
+				reg = <0x1f>;
+				compatible = "nordic,npm10xx";
+
+				npm1012_gpio: gpio-controller {
+					compatible = "nordic,npm10xx-gpio";
+					gpio-controller;
+					#gpio-cells = <2>;
+					ngpios = <3>;
+				};
+			};
+
+			test_i2c_tla2528: tla2528@20 {
+				compatible = "ti,tla2528";
+				reg = <0x20>;
+
+				test_i2c_tla2528_gpio: gpio {
+					compatible = "ti,tla2528-gpio";
+					gpio-controller;
+					#gpio-cells = <2>;
+					ngpios = <8>;
+				};
+			};
+
+			test_i2c_tca9554: tca9554@21 {
+				status = "okay";
+				compatible = "ti,tca9554";
+				reg = <0x21>;
+				ngpios = <8>;
+				#gpio-cells = <2>;
+				gpio-controller;
 			};
 		};
 
@@ -576,9 +663,9 @@
 				ngpios = <8>;
 				crc-en;
 				spi-addr = <0>;
-				ow-on-en = <0 0 0 0>;
-				ow-off-en = <0 0 0 0>;
-				sh-vdd-en = <0 0 0 0>;
+				ow-on-en = <0 0 0 0 0 0 0 0>;
+				ow-off-en = <0 0 0 0 0 0 0 0>;
+				sh-vdd-en = <0 0 0 0 0 0 0 0>;
 				drdy-gpios = <&test_gpio 0 0>;
 				fault-gpios = <&test_gpio 0 0>;
 				sync-gpios = <&test_gpio 0 0>;
@@ -612,8 +699,8 @@
 				#gpio-cells = <2>;
 				ngpios = <8>;
 				max22190-mode = <1>;
-				filter-wbes = <1 0 1 0  1 0 1 0>;
-				filter-fbps = <0 0 0 0  0 0 0 0>;
+				filter-wbes = <1 0 1 0 1 0 1 0>;
+				filter-fbps = <0 0 0 0 0 0 0 0>;
 				filter-delays = <50 100 400 800 1600 3200 12800 20000>;
 				drdy-gpios = <&test_gpio 0 0>;
 				fault-gpios = <&test_gpio 0 0>;
@@ -629,7 +716,7 @@
 				#gpio-cells = <2>;
 				ngpios = <8>;
 				max22190-mode = <1>;
-				filter-fbps = <0 0 0 0  0 0 0 0>;
+				filter-fbps = <0 0 0 0 0 0 0 0>;
 				filter-delays = <50 100 400 800 1600 3200 12800 20000>;
 				drdy-gpios = <&test_gpio 0 0>;
 				fault-gpios = <&test_gpio 0 0>;

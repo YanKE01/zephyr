@@ -5,6 +5,7 @@
  */
 
 #include <zephyr/ztest.h>
+#include <errno.h>
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/fs/fs.h>
@@ -17,6 +18,7 @@
 #include <zephyr/llext/symbol.h>
 #include <zephyr/llext/buf_loader.h>
 #include <zephyr/llext/fs_loader.h>
+#include <zephyr/llext/semihost_loader.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/libc-hooks.h>
@@ -26,6 +28,11 @@
 
 LOG_MODULE_REGISTER(test_llext);
 
+#ifdef CONFIG_LLEXT_INC_IN_TEXT
+#define LLEXT_SECT Z_GENERIC_SECTION(.text)
+#else
+#define LLEXT_SECT
+#endif
 
 #ifdef CONFIG_LLEXT_STORAGE_WRITABLE
 #define LLEXT_CONST
@@ -67,7 +74,16 @@ struct llext_test {
 };
 
 
-K_THREAD_STACK_DEFINE(llext_stack, 1024);
+/* Extensions run in a user thread on this stack. 64-bit targets need
+ * more room: pointers, saved registers and stack slots all double.
+ */
+#ifdef CONFIG_64BIT
+#define LLEXT_STACK_SIZE 4096
+#else
+#define LLEXT_STACK_SIZE 1024
+#endif
+
+K_THREAD_STACK_DEFINE(llext_stack, LLEXT_STACK_SIZE);
 struct k_thread llext_thread;
 
 
@@ -106,7 +122,7 @@ EXPORT_SYMBOL(my_thread_stack);
  * even in supervisor mode, so that user mode descendant threads can inherit
  * these permissions.
  */
-static void threads_objects_test_setup(struct llext *, struct k_thread *llext_thread)
+static void threads_objects_test_setup(struct llext *ext, struct k_thread *llext_thread)
 {
 	k_object_access_grant(&my_sem, llext_thread);
 	k_object_access_grant(&my_thread, llext_thread);
@@ -157,6 +173,7 @@ void load_call_unload(const struct llext_test *test_case)
 	res = llext_add_domain(ext, &domain);
 	if (res == -ENOSPC) {
 		TC_PRINT("Too many memory partitions for this particular hardware\n");
+		llext_unload(&ext);
 		ztest_test_skip();
 		return;
 	}
@@ -219,7 +236,7 @@ void load_call_unload(const struct llext_test *test_case)
 	/* The ELF specification forbids shared libraries from defining init
 	 * entries, so calling llext_bootstrap here would be redundant. Use
 	 * this opportunity to test llext_call_fn, even though llext_bootstrap
-	 * would have behaved simlarly.
+	 * would have behaved similarly.
 	 */
 	zassert_ok(llext_call_fn(ext, "test_entry"),
 		   "test_entry call should succeed");
@@ -237,8 +254,8 @@ void load_call_unload(const struct llext_test *test_case)
 
 /*
  * Attempt to load, list, list symbols, call a fn, and unload each
- * extension in the test table. This excercises loading, calling into, and
- * unloading each extension which may itself excercise various APIs provided by
+ * extension in the test table. This exercises loading, calling into, and
+ * unloading each extension which may itself exercise various APIs provided by
  * Zephyr.
  */
 #define LLEXT_LOAD_UNLOAD(_name, extra_args...)			\
@@ -260,15 +277,16 @@ void load_call_unload(const struct llext_test *test_case)
  */
 #define ELF_ALIGN __aligned(4096)
 
-static LLEXT_CONST uint8_t hello_world_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t hello_world_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "hello_world.inc"
 };
 LLEXT_LOAD_UNLOAD(hello_world,
 	.kernel_only = true
 )
 
-#ifndef CONFIG_LLEXT_TYPE_ELF_SHAREDLIB
-static LLEXT_CONST uint8_t init_fini_ext[] ELF_ALIGN = {
+/* When compiled with CCAC, init_fini's sections are unfixably out of order */
+#if !defined(CONFIG_LLEXT_TYPE_ELF_SHAREDLIB) && !defined(__CCAC__)
+static LLEXT_CONST uint8_t init_fini_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "init_fini.inc"
 };
 
@@ -290,41 +308,89 @@ LLEXT_LOAD_UNLOAD(init_fini,
 )
 #endif
 
-static LLEXT_CONST uint8_t logging_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t logging_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "logging.inc"
 };
 LLEXT_LOAD_UNLOAD(logging)
 
-static LLEXT_CONST uint8_t relative_jump_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t relative_jump_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "relative_jump.inc"
 };
 LLEXT_LOAD_UNLOAD(relative_jump)
 
-static LLEXT_CONST uint8_t object_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t object_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "object.inc"
 };
 LLEXT_LOAD_UNLOAD(object)
 
-static LLEXT_CONST uint8_t syscalls_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t syscalls_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "syscalls.inc"
 };
 LLEXT_LOAD_UNLOAD(syscalls)
 
-static LLEXT_CONST uint8_t threads_kernel_objects_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t threads_kernel_objects_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "threads_kernel_objects.inc"
 };
 LLEXT_LOAD_UNLOAD(threads_kernel_objects,
 	.test_setup = threads_objects_test_setup,
 )
 
-static LLEXT_CONST uint8_t align_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t align_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "align.inc"
 };
 LLEXT_LOAD_UNLOAD(align)
 
-static LLEXT_CONST uint8_t inspect_ext[] ELF_ALIGN = {
+#if defined(CONFIG_ARM64) && defined(CONFIG_THREAD_LOCAL_STORAGE)
+/*
+ * TLS local-exec relocation test (arm64). The extension (tls_ext.c) reads and
+ * writes the thread-local errno through R_AARCH64_TLSLE_ADD_TPREL_* relocations.
+ * An extension shares the loading thread's TLS block, so the errno it touches is
+ * the one set here: setup seeds a sentinel, the extension increments it, and
+ * cleanup checks the result. This exercises both the section handling (.tbss is
+ * not mapped as a region) and the arch relocation arithmetic resolving to the
+ * correct, shared thread-pointer-relative address.
+ */
+#define TLS_ERRNO_SENTINEL 0x1234
+
+static void tls_test_setup(struct llext *ext, struct k_thread *llext_thread)
+{
+	ARG_UNUSED(ext);
+	ARG_UNUSED(llext_thread);
+	errno = TLS_ERRNO_SENTINEL;
+}
+
+static void tls_test_cleanup(struct llext *ext)
+{
+	ARG_UNUSED(ext);
+	zassert_equal(errno, TLS_ERRNO_SENTINEL + 1,
+		      "extension did not read-modify-write the loader's TLS errno "
+		      "(got %d, want %d)", errno, TLS_ERRNO_SENTINEL + 1);
+}
+
+static LLEXT_CONST uint8_t tls_ext[] LLEXT_SECT ELF_ALIGN = {
+	#include "tls.inc"
+};
+LLEXT_LOAD_UNLOAD(tls,
+	.kernel_only = true,
+	.test_setup = tls_test_setup,
+	.test_cleanup = tls_test_cleanup,
+)
+#endif
+
+static LLEXT_CONST uint8_t inspect_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "inspect.inc"
 };
+
+#if defined(CONFIG_LLEXT_RODATA_NO_RELOC) && !defined(CONFIG_XTENSA)
+static LLEXT_CONST uint8_t rodata_no_reloc_ext[] ELF_ALIGN = {
+	#include "rodata_no_reloc.inc"
+};
+const void *rodata_no_reloc_ext_ptr = rodata_no_reloc_ext;
+EXPORT_SYMBOL(rodata_no_reloc_ext_ptr);
+const size_t rodata_no_reloc_ext_size = sizeof(rodata_no_reloc_ext);
+EXPORT_SYMBOL(rodata_no_reloc_ext_size);
+LLEXT_LOAD_UNLOAD(rodata_no_reloc)
+#endif
 
 void do_inspect_checks(struct llext_loader *ldr, struct llext *ext, enum llext_mem reg_idx,
 		       const char *sect_name, const char *sym_name)
@@ -375,10 +441,26 @@ ZTEST(llext, test_inspect)
 	res = llext_load(ldr, "inspect", &ext, &ldr_parm);
 	zassert_ok(res, "load should succeed");
 
+	/* MWDT puts variables that are supposed to go into .bss into .data */
+#ifdef __CCAC__
+	do_inspect_checks(ldr, ext, LLEXT_MEM_DATA, ".data", "number_in_bss");
+#else
 	do_inspect_checks(ldr, ext, LLEXT_MEM_BSS, ".bss", "number_in_bss");
+#endif
+
+	/* When the -Hccm flag is passed to MWDT, it puts read-only data into
+	 * a special data-type section called .rodata_in_data
+	 */
+	res = llext_section_shndx(ldr, ext, ".rodata_in_data");
+	if (res > 0) {
+		do_inspect_checks(ldr, ext, LLEXT_MEM_DATA, ".rodata_in_data", "number_in_rodata");
+		do_inspect_checks(ldr, ext, LLEXT_MEM_DATA, ".my_rodata", "number_in_my_rodata");
+	} else {
+		do_inspect_checks(ldr, ext, LLEXT_MEM_RODATA, ".rodata", "number_in_rodata");
+		do_inspect_checks(ldr, ext, LLEXT_MEM_RODATA, ".my_rodata", "number_in_my_rodata");
+	}
+
 	do_inspect_checks(ldr, ext, LLEXT_MEM_DATA, ".data", "number_in_data");
-	do_inspect_checks(ldr, ext, LLEXT_MEM_RODATA, ".rodata", "number_in_rodata");
-	do_inspect_checks(ldr, ext, LLEXT_MEM_RODATA, ".my_rodata", "number_in_my_rodata");
 	do_inspect_checks(ldr, ext, LLEXT_MEM_TEXT, ".text", "function_in_text");
 
 	max_alloc_bytes = ext->alloc_size;
@@ -389,7 +471,7 @@ ZTEST(llext, test_inspect)
 }
 
 #ifndef CONFIG_LLEXT_TYPE_ELF_OBJECT
-static LLEXT_CONST uint8_t multi_file_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t multi_file_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "multi_file.inc"
 };
 LLEXT_LOAD_UNLOAD(multi_file)
@@ -410,12 +492,19 @@ LLEXT_LOAD_UNLOAD(riscv_edge_case_non_paired_hi20_lo12)
 
 #endif /* !CONFIG_LLEXT_TYPE_ELF_OBJECT */
 
+#ifdef CONFIG_LLEXT_VENEERS
+static LLEXT_CONST uint8_t veneer_ext[] ELF_ALIGN = {
+	#include "veneer.inc"
+};
+LLEXT_LOAD_UNLOAD(veneer)
+#endif /* CONFIG_LLEXT_VENEERS */
+
 #ifndef CONFIG_USERSPACE
-static LLEXT_CONST uint8_t export_dependent_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t export_dependent_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "export_dependent.inc"
 };
 
-static LLEXT_CONST uint8_t export_dependency_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t export_dependency_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "export_dependency.inc"
 };
 
@@ -424,7 +513,7 @@ ZTEST(llext, test_inter_ext)
 	const void *dependency_buf = export_dependency_ext;
 	const void *dependent_buf = export_dependent_ext;
 	struct llext_buf_loader buf_loader_dependency =
-		LLEXT_BUF_LOADER(dependency_buf, sizeof(hello_world_ext));
+		LLEXT_BUF_LOADER(dependency_buf, sizeof(export_dependency_ext));
 	struct llext_buf_loader buf_loader_dependent =
 		LLEXT_BUF_LOADER(dependent_buf, sizeof(export_dependent_ext));
 	struct llext_loader *loader_dependency = &buf_loader_dependency.loader;
@@ -449,8 +538,10 @@ ZTEST(llext, test_inter_ext)
 }
 #endif
 
-#if defined(CONFIG_LLEXT_TYPE_ELF_RELOCATABLE) && defined(CONFIG_XTENSA)
-static LLEXT_CONST uint8_t pre_located_ext[] ELF_ALIGN = {
+#if defined(CONFIG_LLEXT_TYPE_ELF_RELOCATABLE) && defined(CONFIG_XTENSA) &&                        \
+	!defined(CONFIG_ARCH_HAS_WORD_GRANULAR_ACCESS_INSTR_MEM) &&                                \
+	defined(CONFIG_LLEXT_STORAGE_WRITABLE)
+static LLEXT_CONST uint8_t pre_located_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "pre_located.inc"
 };
 
@@ -477,16 +568,37 @@ ZTEST(llext, test_pre_located)
 }
 #endif
 
+#if defined(CONFIG_LLEXT_TYPE_ELF_RELOCATABLE) && defined(CONFIG_XTENSA)
+static LLEXT_CONST uint8_t reloc_offset_oob_ext[] LLEXT_SECT ELF_ALIGN = {
+	#include "reloc_offset_oob.inc"
+};
+
+ZTEST(llext, test_reloc_offset_oob)
+{
+	struct llext_buf_loader buf_loader =
+		LLEXT_BUF_LOADER(reloc_offset_oob_ext, sizeof(reloc_offset_oob_ext));
+	struct llext_loader *loader = &buf_loader.loader;
+	struct llext_load_param ldr_parm = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext *ext = NULL;
+	int res;
+
+	res = llext_load(loader, "reloc_offset_oob", &ext, &ldr_parm);
+	zassert_equal(res, -ENOEXEC, "load should fail with -ENOEXEC, got %d", res);
+	zassert_is_null(ext, "ext should be NULL after a failed load");
+}
+#endif
+
 #if defined(CONFIG_LLEXT_STORAGE_WRITABLE)
-static LLEXT_CONST uint8_t find_section_ext[] ELF_ALIGN = {
+static LLEXT_CONST uint8_t find_section_ext[] LLEXT_SECT ELF_ALIGN = {
 	#include "find_section.inc"
 };
 
 ZTEST(llext, test_find_section)
 {
 	/* This test exploits the fact that in the STORAGE_WRITABLE cases, the
-	 * symbol addresses calculated by llext will be directly inside the ELF
-	 * file buffer, so the two methods can be easily compared.
+	 * symbol addresses calculated by llext are inside the .data region,
+	 * whether it is used in place in the ELF buffer or copied, so the two
+	 * methods can be easily compared.
 	 */
 
 	int res;
@@ -508,10 +620,12 @@ ZTEST(llext, test_find_section)
 	res = llext_get_section_header(loader, ext, ".data", &shdr);
 	zassert_ok(res, "get_section_header() should succeed");
 	zassert_equal(shdr.sh_offset, section_ofs,
-		     "different section offset %zd from get_section_header", shdr.sh_offset);
+		     "different section offset %llu from get_section_header",
+		     (uint64_t)shdr.sh_offset);
 
 	uintptr_t symbol_ptr = (uintptr_t)llext_find_sym(&ext->exp_tab, "number");
-	uintptr_t section_ptr = (uintptr_t)find_section_ext + section_ofs;
+	uintptr_t section_ptr = (uintptr_t)ext->mem[LLEXT_MEM_DATA] + section_ofs -
+				loader->sects[LLEXT_MEM_DATA].sh_offset;
 
 	/*
 	 * FIXME on RISC-V, at least for GCC, the symbols aren't always at the beginning
@@ -526,7 +640,13 @@ ZTEST(llext, test_find_section)
 	llext_unload(&ext);
 }
 
-static LLEXT_CONST uint8_t test_detached_ext[] ELF_ALIGN = {
+#ifndef CONFIG_ARCH_HAS_WORD_GRANULAR_ACCESS_INSTR_MEM
+/* For Harvard architectures, the detached section must be placed in instruction memory. */
+#ifdef CONFIG_HARVARD
+static LLEXT_CONST uint8_t test_detached_ext[] Z_GENERIC_SECTION(.text) ELF_ALIGN = {
+#else
+static LLEXT_CONST uint8_t test_detached_ext[] LLEXT_SECT ELF_ALIGN = {
+#endif
 	#include "detached_fn.inc"
 };
 
@@ -551,9 +671,13 @@ ZTEST(llext, test_detached)
 	struct llext_buf_loader buf_loader =
 		LLEXT_BUF_LOADER(test_detached_ext, sizeof(test_detached_ext));
 	struct llext_load_param ldr_parm = LLEXT_LOAD_PARAM_DEFAULT;
+	enum llext_mem sect_region = LLEXT_MEM_COUNT;
+	size_t sect_offset = 0;
+	int sect_shndx;
 	int res;
 
 	ldr_parm.section_detached = test_section_detached;
+	ldr_parm.keep_section_info = true;
 	detached_loader = &buf_loader.loader;
 
 	res = llext_load(detached_loader, "test_detached", &detached_llext, &ldr_parm);
@@ -577,11 +701,26 @@ ZTEST(llext, test_detached)
 	test_entry_fn = llext_find_sym(&detached_llext->exp_tab, "detached_entry");
 
 	zassert_not_null(test_entry_fn, "detached_entry should be an exported symbol");
+	zassert_between_inclusive((uintptr_t)test_entry_fn,
+				  (uintptr_t)test_detached_ext + detached_shdr.sh_offset,
+				  (uintptr_t)test_detached_ext + detached_shdr.sh_offset +
+					  detached_shdr.sh_size - 1,
+				  "detached_entry is not in the ELF buffer");
 	test_entry_fn();
 
+	sect_shndx = llext_section_shndx(detached_loader, detached_llext, ".detach");
+	zassert_true(sect_shndx > 0, "section .detach should be found");
+	res = llext_get_section_info(detached_loader, detached_llext, sect_shndx,
+				     NULL, &sect_region, &sect_offset);
+	zassert_ok(res, "get_section_info() should succeed");
+	zassert_equal(sect_region, LLEXT_MEM_TEXT, "detached section should report .text");
+	zassert_equal(sect_offset, (size_t)-1, "detached section should have no region offset");
+
+	llext_free_inspection_data(detached_loader, detached_llext);
 	llext_unload(&detached_llext);
 }
-#endif
+#endif /* !CONFIG_ARCH_HAS_WORD_GRANULAR_ACCESS_INSTR_MEM */
+#endif /* CONFIG_LLEXT_STORAGE_WRITABLE */
 
 #if defined(CONFIG_FILE_SYSTEM)
 #define LLEXT_FILE "hello_world.llext"
@@ -590,7 +729,7 @@ FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(storage);
 static struct fs_mount_t mp = {
 	.type = FS_LITTLEFS,
 	.fs_data = &storage,
-	.storage_dev = (void *)FIXED_PARTITION_ID(storage_partition),
+	.storage_dev = (void *)PARTITION_ID(storage_partition),
 	.mnt_point = "/lfs",
 };
 
@@ -634,6 +773,28 @@ ZTEST(llext, test_fs_loader)
 }
 #endif
 
+#if defined(CONFIG_LLEXT_SEMIHOST_LOADER)
+ZTEST(llext, test_semihost_loader)
+{
+	int res;
+	struct llext_semihost_loader sh_loader = LLEXT_SEMIHOST_LOADER("llext/hello_world.llext");
+	struct llext_loader *loader = &sh_loader.loader;
+	struct llext_load_param ldr_parm = LLEXT_LOAD_PARAM_DEFAULT;
+	struct llext *ext = NULL;
+
+	res = llext_load(loader, "hello_world", &ext, &ldr_parm);
+	zassert_ok(res, "load should succeed");
+
+	void (*test_entry_fn)() = llext_find_sym(&ext->exp_tab, "test_entry");
+
+	zassert_not_null(test_entry_fn, "test_entry should be an exported symbol");
+
+	llext_bootstrap(ext, test_entry_fn, NULL);
+
+	llext_unload(&ext);
+}
+#endif /* defined(CONFIG_LLEXT_SEMIHOST_LOADER) */
+
 /*
  * Ensure that EXPORT_SYMBOL does indeed provide a symbol and a valid address
  * to it.
@@ -659,17 +820,33 @@ ZTEST(llext, test_ext_syscall_fail)
 }
 
 #ifdef CONFIG_LLEXT_HEAP_DYNAMIC
+#ifdef CONFIG_HARVARD
+#define TEST_LLEXT_INSTR_HEAP_DYNAMIC_SIZE KB(16)
+static uint8_t llext_instr_heap_data[TEST_LLEXT_INSTR_HEAP_DYNAMIC_SIZE] Z_GENERIC_SECTION(.rodata);
+#define TEST_LLEXT_DATA_HEAP_DYNAMIC_SIZE KB(48)
+static uint8_t llext_data_heap_data[TEST_LLEXT_DATA_HEAP_DYNAMIC_SIZE];
+#else
 #define TEST_LLEXT_HEAP_DYNAMIC_SIZE KB(64)
 static uint8_t llext_heap_data[TEST_LLEXT_HEAP_DYNAMIC_SIZE];
+#endif
 #endif
 
 static void *ztest_suite_setup(void)
 {
 #ifdef CONFIG_LLEXT_HEAP_DYNAMIC
+#ifdef CONFIG_HARVARD
+	zassert_ok(llext_heap_init_harvard(llext_instr_heap_data, sizeof(llext_instr_heap_data),
+					   llext_data_heap_data, sizeof(llext_data_heap_data)));
+	LOG_INF("Allocated LLEXT dynamic instruction heap of size %uKB\n",
+		(unsigned int)(sizeof(llext_instr_heap_data) / KB(1)));
+	LOG_INF("Allocated LLEXT dynamic data heap of size %uKB\n",
+		(unsigned int)(sizeof(llext_data_heap_data) / KB(1)));
+#else
 	/* Test runtime allocation of the LLEXT loader heap */
 	zassert_ok(llext_heap_init(llext_heap_data, sizeof(llext_heap_data)));
 	LOG_INF("Allocated LLEXT dynamic heap of size %uKB\n",
 			(unsigned int)(sizeof(llext_heap_data)/KB(1)));
+#endif
 #endif
 	return NULL;
 }

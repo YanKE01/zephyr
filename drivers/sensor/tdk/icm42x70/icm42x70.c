@@ -242,54 +242,70 @@ static uint8_t convert_bitfield_to_acc_fs(uint8_t bitfield)
 static int icm42x70_set_accel_power_mode(struct icm42x70_data *drv_data,
 					 const struct sensor_value *val)
 {
-	if ((val->val1 == ICM42X70_LOW_POWER_MODE) &&
-	    (drv_data->accel_pwr_mode != ICM42X70_LOW_POWER_MODE)) {
+	int err = 0;
+
+	if (val->val1 == drv_data->accel_pwr_mode) {
+		return 0;
+	}
+
+	if (val->val1 == ICM42X70_LOW_POWER_MODE) {
 		if (drv_data->accel_hz != 0) {
 			if (drv_data->accel_hz <= 400) {
-				inv_imu_enable_accel_low_power_mode(&drv_data->driver);
+				err = inv_imu_enable_accel_low_power_mode(&drv_data->driver);
 			} else {
 				LOG_ERR("Not supported ATTR value");
 				return -EINVAL;
 			}
 		}
-		drv_data->accel_pwr_mode = val->val1;
-	} else if ((val->val1 == ICM42X70_LOW_NOISE_MODE) &&
-		   (drv_data->accel_pwr_mode != ICM42X70_LOW_NOISE_MODE)) {
+	} else if (val->val1 == ICM42X70_LOW_NOISE_MODE) {
 		if (drv_data->accel_hz != 0) {
 			if (drv_data->accel_hz >= 12) {
-				inv_imu_enable_accel_low_noise_mode(&drv_data->driver);
+				err = inv_imu_enable_accel_low_noise_mode(&drv_data->driver);
 			} else {
 				LOG_ERR("Not supported ATTR value");
 				return -EINVAL;
 			}
 		}
-		drv_data->accel_pwr_mode = val->val1;
 	} else {
 		LOG_ERR("Not supported ATTR value");
 		return -EINVAL;
 	}
+	if (err != 0) {
+		return -EIO;
+	}
+	drv_data->accel_pwr_mode = val->val1;
 	return 0;
 }
 
 static int icm42x70_set_accel_odr(struct icm42x70_data *drv_data, const struct sensor_value *val)
 {
+	uint16_t accel_hz;
+	int err;
+
 	if (val->val1 <= 1600 && val->val1 >= 1) {
-		if (drv_data->accel_hz == 0) {
-			inv_imu_set_accel_frequency(
-				&drv_data->driver,
-				convert_freq_to_bitfield(val->val1, &drv_data->accel_hz));
+		bool was_disabled = (drv_data->accel_hz == 0);
+
+		err = inv_imu_set_accel_frequency(&drv_data->driver,
+						  convert_freq_to_bitfield(val->val1, &accel_hz));
+		if (err != 0) {
+			return -EIO;
+		}
+		drv_data->accel_hz = accel_hz;
+		if (was_disabled) {
 			if (drv_data->accel_pwr_mode == ICM42X70_LOW_POWER_MODE) {
-				inv_imu_enable_accel_low_power_mode(&drv_data->driver);
+				err = inv_imu_enable_accel_low_power_mode(&drv_data->driver);
 			} else if (drv_data->accel_pwr_mode == ICM42X70_LOW_NOISE_MODE) {
-				inv_imu_enable_accel_low_noise_mode(&drv_data->driver);
+				err = inv_imu_enable_accel_low_noise_mode(&drv_data->driver);
 			}
-		} else {
-			inv_imu_set_accel_frequency(
-				&drv_data->driver,
-				convert_freq_to_bitfield(val->val1, &drv_data->accel_hz));
+			if (err != 0) {
+				return -EIO;
+			}
 		}
 	} else if (val->val1 == 0) {
-		inv_imu_disable_accel(&drv_data->driver);
+		err = inv_imu_disable_accel(&drv_data->driver);
+		if (err != 0) {
+			return -EIO;
+		}
 		drv_data->accel_hz = val->val1;
 	} else {
 		LOG_ERR("Incorrect sampling value");
@@ -300,12 +316,19 @@ static int icm42x70_set_accel_odr(struct icm42x70_data *drv_data, const struct s
 
 static int icm42x70_set_accel_fs(struct icm42x70_data *drv_data, const struct sensor_value *val)
 {
+	uint8_t accel_fs;
+	int err;
+
 	if (val->val1 > 16 || val->val1 < 2) {
 		LOG_ERR("Incorrect fullscale value");
 		return -EINVAL;
 	}
-	inv_imu_set_accel_fsr(&drv_data->driver,
-			      convert_acc_fs_to_bitfield(val->val1, &drv_data->accel_fs));
+	err = inv_imu_set_accel_fsr(&drv_data->driver,
+				    convert_acc_fs_to_bitfield(val->val1, &accel_fs));
+	if (err != 0) {
+		return -EIO;
+	}
+	drv_data->accel_fs = accel_fs;
 	LOG_DBG("Set accel full scale to: %d G", drv_data->accel_fs);
 	return 0;
 }
@@ -314,27 +337,33 @@ static int icm42x70_accel_config(struct icm42x70_data *drv_data, enum sensor_att
 				 const struct sensor_value *val)
 {
 	if (attr == SENSOR_ATTR_CONFIGURATION) {
-		icm42x70_set_accel_power_mode(drv_data, val);
+		return icm42x70_set_accel_power_mode(drv_data, val);
 
 	} else if (attr == SENSOR_ATTR_SAMPLING_FREQUENCY) {
-		icm42x70_set_accel_odr(drv_data, val);
+		return icm42x70_set_accel_odr(drv_data, val);
 
 	} else if (attr == SENSOR_ATTR_FULL_SCALE) {
-		icm42x70_set_accel_fs(drv_data, val);
+		return icm42x70_set_accel_fs(drv_data, val);
 
 	} else if ((enum sensor_attribute_icm42x70)attr == SENSOR_ATTR_BW_FILTER_LPF) {
 		if (val->val1 > 180) {
 			LOG_ERR("Incorrect low pass filter bandwidth value");
 			return -EINVAL;
 		}
-		inv_imu_set_accel_ln_bw(&drv_data->driver, convert_ln_bw_to_bitfield(val->val1));
+		if (inv_imu_set_accel_ln_bw(&drv_data->driver,
+					    convert_ln_bw_to_bitfield(val->val1)) != 0) {
+			return -EIO;
+		}
 
 	} else if ((enum sensor_attribute_icm42x70)attr == SENSOR_ATTR_AVERAGING) {
 		if (val->val1 > 64 || val->val1 < 2) {
 			LOG_ERR("Incorrect averaging filter value");
 			return -EINVAL;
 		}
-		inv_imu_set_accel_lp_avg(&drv_data->driver, convert_lp_avg_to_bitfield(val->val1));
+		if (inv_imu_set_accel_lp_avg(&drv_data->driver,
+					     convert_lp_avg_to_bitfield(val->val1)) != 0) {
+			return -EIO;
+		}
 	} else {
 		LOG_ERR("Unsupported attribute");
 		return -EINVAL;
@@ -482,12 +511,17 @@ static void icm42x70_convert_accel(struct sensor_value *val, int16_t raw_val, ui
 	val->val2 = conv_val % 1000000;
 }
 
-static void icm42x70_convert_temp(struct sensor_value *val, int16_t raw_val)
+static void icm42x70_convert_temp(struct sensor_value *val, int16_t raw_val, bool hires)
 {
 	int64_t conv_val;
 
 	/* see datasheet section 15.9 for details */
-	conv_val = 25 * 1000000 + ((int64_t)raw_val * 1000000 / 2);
+	if (hires) {
+		conv_val = (25 * 1000000) + ((int64_t)raw_val * 1000000 / 128);
+	} else {
+		conv_val = (25 * 1000000) + ((int64_t)raw_val * 1000000 / 2);
+	}
+
 	val->val1 = conv_val / 1000000;
 	val->val2 = conv_val % 1000000;
 }
@@ -530,7 +564,15 @@ static int icm42x70_channel_get(const struct device *dev, enum sensor_channel ch
 		icm42670_convert_gyro(val, data->gyro_z, data->gyro_fs);
 #endif
 	} else if (chan == SENSOR_CHAN_DIE_TEMP) {
-		icm42x70_convert_temp(val, data->temp);
+		/* see datasheet section 15.9 for details */
+		if (IS_ENABLED(CONFIG_ICM42X70_TRIGGER)) {
+			icm42x70_convert_temp(val, data->temp, data->driver.fifo_highres_enabled);
+		} else {
+			/* The temperature data read in non-fifo mode is of 2-bytes;
+			 * which is same as FIFO with high resolution temp data.
+			 */
+			icm42x70_convert_temp(val, data->temp, true);
+		}
 #ifdef CONFIG_TDK_APEX
 	} else if ((enum sensor_channel_tdk_apex)chan == SENSOR_CHAN_APEX_MOTION) {
 		if (cfg->apex == TDK_APEX_PEDOMETER) {
@@ -561,8 +603,12 @@ static int icm42x70_fetch_from_fifo(const struct device *dev)
 	struct icm42x70_data *data = dev->data;
 	int status = 0;
 	uint8_t int_status;
-	uint16_t packet_size = FIFO_HEADER_SIZE + FIFO_ACCEL_DATA_SIZE + FIFO_GYRO_DATA_SIZE +
-			       FIFO_TEMP_DATA_SIZE + FIFO_TS_FSYNC_SIZE;
+	uint16_t packet_size =
+		data->driver.fifo_highres_enabled
+			? FIFO_20BYTES_PACKET_SIZE
+			: (FIFO_HEADER_SIZE + FIFO_ACCEL_DATA_SIZE +
+			   (IS_ENABLED(CONFIG_USE_EMD_ICM42670) ? FIFO_GYRO_DATA_SIZE : 0) +
+			   FIFO_TEMP_DATA_SIZE + FIFO_TS_FSYNC_SIZE);
 	uint16_t fifo_idx = 0;
 
 	/* Ensure data ready status bit is set */
@@ -575,7 +621,7 @@ static int icm42x70_fetch_from_fifo(const struct device *dev)
 	    (int_status & INT_STATUS_FIFO_FULL_INT_MASK)) {
 		uint16_t packet_count;
 
-		/* Make sure RCOSC is enabled to guarrantee FIFO read */
+		/* Make sure RCOSC is enabled to guarantee FIFO read */
 		status |= inv_imu_switch_on_mclk(&data->driver);
 
 		/* Read FIFO frame count */
@@ -585,6 +631,12 @@ static int icm42x70_fetch_from_fifo(const struct device *dev)
 		if (status != 0) {
 			status |= inv_imu_switch_off_mclk(&data->driver);
 			return status;
+		}
+
+		/* CID 520276: Constrain packet_count to the size of the driver buffer */
+		if (packet_count * packet_size > sizeof(data->driver.fifo_data)) {
+			LOG_WRN("FIFO count (%d) exceeds buffer size, capping.", packet_count);
+			packet_count = sizeof(data->driver.fifo_data) / packet_size;
 		}
 
 		/* Read FIFO data */
@@ -600,10 +652,28 @@ static int icm42x70_fetch_from_fifo(const struct device *dev)
 
 		for (uint16_t i = 0; i < packet_count; i++) {
 			inv_imu_sensor_event_t event;
+			uint8_t header = data->driver.fifo_data[fifo_idx];
+			uint16_t frame_size = packet_size;
+
+			if (!(header & (FIFO_HEADER_MSG | FIFO_HEADER_HEADER_20))) {
+				frame_size = FIFO_HEADER_SIZE + FIFO_TEMP_DATA_SIZE;
+				if (header & FIFO_HEADER_ACC) {
+					frame_size += FIFO_ACCEL_DATA_SIZE;
+				}
+				if (IS_ENABLED(CONFIG_USE_EMD_ICM42670) &&
+				    (header & FIFO_HEADER_GYRO)) {
+					frame_size += FIFO_GYRO_DATA_SIZE;
+				}
+				if ((header & FIFO_HEADER_TMST) ||
+				    (IS_ENABLED(CONFIG_USE_EMD_ICM42670) &&
+				     (header & FIFO_HEADER_FSYNC))) {
+					frame_size += FIFO_TS_FSYNC_SIZE;
+				}
+			}
 
 			status |= inv_imu_decode_fifo_frame(
 				&data->driver, &data->driver.fifo_data[fifo_idx], &event);
-			fifo_idx += packet_size;
+			fifo_idx += frame_size;
 
 			/* Check for error */
 			if (status != 0) {
@@ -780,6 +850,7 @@ static int icm42x70_attr_set(const struct device *dev, enum sensor_channel chan,
 			     enum sensor_attribute attr, const struct sensor_value *val)
 {
 	struct icm42x70_data *drv_data = dev->data;
+	int res = 0;
 
 	__ASSERT_NO_MSG(val != NULL);
 
@@ -789,41 +860,51 @@ static int icm42x70_attr_set(const struct device *dev, enum sensor_channel chan,
 		if (attr == SENSOR_ATTR_CONFIGURATION) {
 #ifdef CONFIG_TDK_APEX
 			if (val->val1 == TDK_APEX_PEDOMETER) {
-				icm42x70_apex_enable(&drv_data->driver);
-				icm42x70_apex_enable_pedometer(dev, &drv_data->driver);
+				res = icm42x70_apex_enable(&drv_data->driver);
+				if (res == 0) {
+					res = icm42x70_apex_enable_pedometer(dev,
+									     &drv_data->driver);
+				}
 			} else if (val->val1 == TDK_APEX_TILT) {
-				icm42x70_apex_enable(&drv_data->driver);
-				icm42x70_apex_enable_tilt(&drv_data->driver);
+				res = icm42x70_apex_enable(&drv_data->driver);
+				if (res == 0) {
+					res = icm42x70_apex_enable_tilt(&drv_data->driver);
+				}
 			} else if (val->val1 == TDK_APEX_SMD) {
-				icm42x70_apex_enable(&drv_data->driver);
-				icm42x70_apex_enable_smd(&drv_data->driver);
+				res = icm42x70_apex_enable(&drv_data->driver);
+				if (res == 0) {
+					res = icm42x70_apex_enable_smd(&drv_data->driver);
+				}
 			} else if (val->val1 == TDK_APEX_WOM) {
-				icm42x70_apex_enable_wom(&drv_data->driver);
+				res = icm42x70_apex_enable_wom(&drv_data->driver);
 			} else {
 				LOG_ERR("Not supported ATTR value");
+				res = -EINVAL;
 			}
+#else
+			res = -ENOTSUP;
 #endif
 		} else {
 			LOG_ERR("Not supported ATTR");
-			return -EINVAL;
+			res = -EINVAL;
 		}
 	} else if (SENSOR_CHANNEL_IS_ACCEL(chan)) {
-		icm42x70_accel_config(drv_data, attr, val);
+		res = icm42x70_accel_config(drv_data, attr, val);
 #if CONFIG_USE_EMD_ICM42670
 	} else if ((SENSOR_CHANNEL_IS_GYRO(chan)) &&
 		   ((drv_data->imu_whoami == INV_ICM42670P_WHOAMI) ||
 		    (drv_data->imu_whoami == INV_ICM42670S_WHOAMI))) {
-		icm42670_gyro_config(drv_data, attr, val);
+		res = icm42670_gyro_config(drv_data, attr, val);
 #endif
 	} else {
 		LOG_ERR("Unsupported channel");
 		(void)drv_data;
-		return -EINVAL;
+		res = -EINVAL;
 	}
 
 	icm42x70_unlock(dev);
 
-	return 0;
+	return res;
 }
 
 static int icm42x70_attr_get(const struct device *dev, enum sensor_channel chan,
@@ -983,7 +1064,7 @@ static DEVICE_API(sensor, icm42x70_driver_api) = {
 
 /* Initializes the bus members for an instance on a SPI bus. */
 #define ICM42X70_CONFIG_SPI(inst)                                                                  \
-	{.bus.spi = SPI_DT_SPEC_INST_GET(inst, ICM42X70_SPI_CFG, 0),                               \
+	{.bus.spi = SPI_DT_SPEC_INST_GET(inst, ICM42X70_SPI_CFG),                                  \
 	 .bus_io = &icm42x70_bus_io_spi,                                                           \
 	 .serif_type = UI_SPI4,                                                                    \
 	 ICM42X70_CONFIG_COMMON(inst)}

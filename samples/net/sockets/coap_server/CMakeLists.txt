@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(coap_server)
 
@@ -34,11 +34,11 @@ include(${ZEPHYR_BASE}/samples/net/common/common.cmake)
 set(gen_dir ${ZEPHYR_BINARY_DIR}/include/generated/)
 
 foreach(inc_file
-	ca.der
-	server.der
-	server_privkey.der
-	coaps-server-cert.der
-	coaps-server-key.der
+  ca.der
+  server.der
+  server_privkey.der
+  coaps-server-cert.der
+  coaps-server-key.der
 )
   generate_inc_file_for_target(
     app

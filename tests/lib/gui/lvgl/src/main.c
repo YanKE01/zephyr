@@ -44,7 +44,7 @@ static struct fs_mount_t mnt = {
 #define IMG_FILE_PATH "/mnt/img.bin"
 
 #define LVGL_PARTITION		storage_partition
-#define LVGL_PARTITION_ID	FIXED_PARTITION_ID(LVGL_PARTITION)
+#define LVGL_PARTITION_ID	PARTITION_ID(LVGL_PARTITION)
 
 FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(cstorage);
 
@@ -102,15 +102,15 @@ void *setup_lvgl(void)
 {
 	int ret;
 
-#if CONFIG_LV_COLOR_DEPTH_1 == 1
+#if defined(CONFIG_LV_COLOR_FORMAT_I1)
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_MONO10);
-#elif CONFIG_LV_COLOR_DEPTH_8 == 1
+#elif defined(CONFIG_LV_COLOR_FORMAT_L8)
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_L_8);
-#elif CONFIG_LV_COLOR_DEPTH_24 == 1
+#elif defined(CONFIG_LV_COLOR_FORMAT_RGB888)
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_RGB_888);
-#elif CONFIG_LV_COLOR_DEPTH_16 == 1
+#elif defined(CONFIG_LV_COLOR_FORMAT_RGB565)
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_RGB_565);
-#elif CONFIG_LV_COLOR_DEPTH_32 == 1
+#elif defined(CONFIG_LV_COLOR_FORMAT_XRGB8888)
 	display_set_pixel_format(display_dev, PIXEL_FORMAT_ARGB_8888);
 #else
 #error "No display pixel format defined, is your board supported?"

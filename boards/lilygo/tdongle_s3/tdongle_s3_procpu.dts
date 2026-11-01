@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include <espressif/esp32s3/esp32s3_wroom_n16r8.dtsi>
+#include <espressif/esp32s3/esp32s3.dtsi>
 #include "tdongle_s3-pinctrl.dtsi"
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/mipi_dbi/mipi_dbi.h>
@@ -36,7 +36,6 @@
 		zephyr,code-partition = &slot0_partition;
 		zephyr,bt-hci = &esp32_bt_hci;
 		zephyr,display = &st7735r;
-		zephyr,sdhc = &sdhc0;
 	};
 
 	buttons {
@@ -70,19 +69,28 @@
 			height = <80>;
 			inversion-on;
 			rgb-is-inverted;
-			madctl = <0xBE>;
+			madctl = <0xbe>;
 			x-offset = <1>;
 			y-offset = <26>;
-			gamctrp1 = [02 1c 07 12 37 32 29 2d 29 25 2B 39 00 01 03 10];
-			gamctrn1 = [03 1d 07 06 2E 2C 29 2D 2E 2E 37 3F 00 00 02 10];
-			te-delay = <0x0A>;
-			vmctr1 = <0x0E>;
+			gamctrp1 = [02 1c 07 12 37 32 29 2d 29 25 2b 39 00 01 03 10];
+			gamctrn1 = [03 1d 07 06 2e 2c 29 2d 2e 2e 37 3f 00 00 02 10];
+			te-delay = <0x0a>;
+			vmctr1 = <0x0e>;
 			colmod = <0x05>;
 			caset = [00 02 00 81];
-			raset = [00 01 00 A0];
+			raset = [00 01 00 a0];
 			status = "okay";
 		};
 	};
+};
+
+&flash0 {
+	reg = <0x0 DT_SIZE_M(16)>;
+	ranges = <0x0 0x0 DT_SIZE_M(16)>;
+};
+
+&psram0 {
+	size = <DT_SIZE_M(8)>;
 };
 
 &uart0 {
@@ -116,8 +124,8 @@
 		spi-max-frequency = <24000000>;
 		chain-length = <1>;
 		color-mapping = <LED_COLOR_ID_RED
-						 LED_COLOR_ID_BLUE
-						 LED_COLOR_ID_GREEN>;
+				 LED_COLOR_ID_BLUE
+				 LED_COLOR_ID_GREEN>;
 		status = "okay";
 	};
 };

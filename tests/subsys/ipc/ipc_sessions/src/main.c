@@ -112,7 +112,7 @@ static struct ipc_ept ep;
 
 
 /**
- * @brief Estabilish connection before any test run
+ * @brief Establish connection before any test run
  */
 void *test_suite_setup(void)
 {
@@ -214,14 +214,14 @@ ZTEST(ipc_sessions, test_reboot)
 
 	int ret;
 	struct test_ipc_event_state ev;
-	static const struct ipc_test_cmd_reboot cmd_rebond = { { IPC_TEST_CMD_REBOOT }, 10 };
+	static const struct ipc_test_cmd_reboot cmd_reboot = { { IPC_TEST_CMD_REBOOT }, 10 };
 
 	zassert_not_ok(data_queue_is_empty(&ipc_data_queue),
 		       "IPC data queue contains unexpected data");
 	/* Sending data */
-	ret = ipc_service_send(&ep, &cmd_rebond, sizeof(cmd_rebond));
-	zassert_equal(ret, sizeof(cmd_rebond), "ipc_service_send failed: %d, expected: %u", ret,
-		      sizeof(cmd_rebond));
+	ret = ipc_service_send(&ep, &cmd_reboot, sizeof(cmd_reboot));
+	zassert_equal(ret, sizeof(cmd_reboot), "ipc_service_send failed: %d, expected: %u", ret,
+		      sizeof(cmd_reboot));
 	/* Waiting for IPC to unbound */
 	ret = k_msgq_get(&ipc_events, &ev, K_MSEC(1000));
 	zassert_ok(ret, "No IPC unbound event on time");
@@ -248,7 +248,7 @@ ZTEST(ipc_sessions, test_rebond)
 
 	int ret;
 	struct test_ipc_event_state ev;
-	static const struct ipc_test_cmd_reboot cmd_rebond = { { IPC_TEST_CMD_REBOND }, 10 };
+	static const struct ipc_test_cmd_rebond cmd_rebond = { { IPC_TEST_CMD_REBOND }, 10 };
 
 	zassert_not_ok(data_queue_is_empty(&ipc_data_queue),
 		       "IPC data queue contains unexpected data");
@@ -332,7 +332,7 @@ ZTEST(ipc_sessions, test_tx_long)
 	zassert_not_null(cmd_rxstat, "No command response on time");
 	zassert_equal(cmd_rsp_size, sizeof(*cmd_rxstat),
 		      "Unexpected response size: %u, expected: %u", cmd_rsp_size,
-		      sizeof(cmd_rxstat));
+		      sizeof(*cmd_rxstat));
 	zassert_equal(cmd_rxstat->base.cmd, IPC_TEST_CMD_XSTAT,
 		      "Unexpected command in response: %u", cmd_rxstat->base.cmd);
 	zassert_ok(cmd_rxstat->result, "RX result not ok: %d", cmd_rxstat->result);
@@ -348,6 +348,7 @@ ZTEST(ipc_sessions, test_tx_long)
 		}
 		do {
 			ret = ipc_service_send(&ep, &cmd_txdata, sizeof(cmd_txdata));
+			Z_SPIN_DELAY(1);
 		} while (ret == -ENOMEM);
 		if ((blk % 1000) == 0) {
 			LOG_INF("Transfer number: %u of %u", blk, cmd_rxstart.blk_cnt);
@@ -364,7 +365,7 @@ ZTEST(ipc_sessions, test_tx_long)
 	zassert_not_null(cmd_rxstat, "No command response on time");
 	zassert_equal(cmd_rsp_size, sizeof(*cmd_rxstat),
 		      "Unexpected response size: %u, expected: %u", cmd_rsp_size,
-		      sizeof(cmd_rxstat));
+		      sizeof(*cmd_rxstat));
 	zassert_equal(cmd_rxstat->base.cmd, IPC_TEST_CMD_XSTAT,
 		      "Unexpected command in response: %u", cmd_rxstat->base.cmd);
 	zassert_ok(cmd_rxstat->result, "RX result not ok: %d", cmd_rxstat->result);
@@ -448,7 +449,7 @@ ZTEST(ipc_sessions, test_rx_long)
 	zassert_not_null(cmd_txstat, "No command response on time");
 	zassert_equal(cmd_rsp_size, sizeof(*cmd_txstat),
 		      "Unexpected response size: %u, expected: %u", cmd_rsp_size,
-		      sizeof(cmd_txstat));
+		      sizeof(*cmd_txstat));
 	zassert_equal(cmd_txstat->base.cmd, IPC_TEST_CMD_XSTAT,
 		      "Unexpected command in response: %u", cmd_txstat->base.cmd);
 	zassert_ok(cmd_txstat->result, "RX result not ok: %d", cmd_txstat->result);

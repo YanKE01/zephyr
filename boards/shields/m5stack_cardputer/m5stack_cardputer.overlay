@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/display/panel.h>
+
 / {
 	zephyr,user {
 		io-channels = <&adc0 9>;
@@ -31,25 +33,24 @@
 			reg = <0>;
 			mipi-max-frequency = <20000000>;
 
-			width = <135>;
-			height = <240>;
-			x-offset = <53>;
-			y-offset = <40>;
-
+			width = <240>;
+			height = <135>;
+			x-offset = <40>;
+			y-offset = <53>;
 			vcom = <0x28>;
 			gctrl = <0x35>;
 			vrhs = <0x10>;
 			vdvs = <0x20>;
-			mdac = <0x00>;
+			mdac = <0x60>;
 			gamma = <0x01>;
-			colmod = <0x55>;
+			pixel-format = <PANEL_PIXEL_FORMAT_RGB_565X>;
 			lcm = <0x2c>;
 			porch-param = [0c 0c 00 33 33];
 			cmd2en-param = [5a 69 02 00];
 			pwctrl1-param = [a4 a1];
 			pvgam-param = [d0 00 02 07 0a 28 32 44 42 06 0e 12 14 17];
 			nvgam-param = [d0 00 02 07 0a 28 31 54 47 0e 1c 17 1b 1e];
-			ram-param = [00 F0];
+			ram-param = [00 f0];
 			rgb-param = [40 02 14];
 			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
 		};
@@ -109,7 +110,6 @@
 };
 
 &spi3 {
-	status = "okay";
 	#address-cells = <1>;
 	#size-cells = <0>;
 	status = "okay";

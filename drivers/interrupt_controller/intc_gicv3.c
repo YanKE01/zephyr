@@ -1,11 +1,12 @@
 /*
  * Copyright 2020 Broadcom
- * Copyright 2024 NXP
- * Copyright 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
+ * Copyright 2024-2025 NXP
+ * Copyright 2025-2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/cache.h>
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/arch/cpu.h>
@@ -49,7 +50,8 @@ static struct gic_reg_region gic_reg_regions[] = {
 /* Redistributor base addresses for each core */
 mem_addr_t gic_rdists[CONFIG_MP_MAX_NUM_CPUS];
 
-#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
+#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_ARMV7_A_NS) \
+	|| defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
 #define IGROUPR_VAL 0xFFFFFFFFU
 #else
 #define IGROUPR_VAL 0x0U
@@ -111,7 +113,11 @@ static void arm_gic_lpi_setup(unsigned int intid, bool enable)
 		*cfg &= ~BIT(0);
 	}
 
+#ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
+	arch_dcache_flush_and_invd_range(cfg, sizeof(*cfg));
+#else
 	barrier_dsync_fence_full();
+#endif
 
 	its_rdist_invall();
 }
@@ -123,7 +129,11 @@ static void arm_gic_lpi_set_priority(unsigned int intid, unsigned int prio)
 	*cfg &= 0xfc;
 	*cfg |= prio & 0xfc;
 
+#ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
+	arch_dcache_flush_and_invd_range(cfg, sizeof(*cfg));
+#else
 	barrier_dsync_fence_full();
+#endif
 
 	its_rdist_invall();
 }
@@ -136,7 +146,6 @@ static bool arm_gic_lpi_is_enabled(unsigned int intid)
 }
 #endif
 
-#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
 static inline void arm_gic_write_irouter(uint64_t val, unsigned int intid)
 {
 	mem_addr_t addr;
@@ -154,7 +163,14 @@ static inline void arm_gic_write_irouter(uint64_t val, unsigned int intid)
 	sys_write64(val, addr);
 #endif
 }
-#endif
+
+void arm_gic_irq_set_affinity(unsigned int intid, uint64_t mpidr)
+{
+	__ASSERT(GIC_IS_SPI(intid) || GIC_IS_ESPI(intid),
+		  "affinity routing only applies to SPIs/extended SPIs, got intid %u", intid);
+
+	arm_gic_write_irouter(MPIDR_TO_CORE(mpidr), intid);
+}
 
 void arm_gic_irq_set_priority(unsigned int intid, unsigned int prio, uint32_t flags)
 {
@@ -219,11 +235,13 @@ void arm_gic_irq_enable(unsigned int intid)
 	uint32_t idx = GIC_IS_ESPI(intid) ? ((intid - GIC_ESPI_START) / GIC_NUM_INTR_PER_REG)
 					  : (intid / GIC_NUM_INTR_PER_REG);
 
-#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
+#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_ARMV7_A_NS) \
+	|| defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
 	/*
-	 * Affinity routing is enabled for Armv8-A Non-secure state (GICD_CTLR.ARE_NS
-	 * is set to '1') and for GIC single security state (GICD_CTRL.ARE is set to '1'),
-	 * so need to set SPI's affinity, now set it to be the PE on which it is enabled.
+	 * Affinity routing is enabled for Armv8-A and Armv7-A Non-secure states
+	 * (GICD_CTLR.ARE_NS is set to '1') and for GIC single security state
+	 * (GICD_CTRL.ARE is set to '1'), so need to set SPI's affinity, now set
+	 * it to be the PE on which it is enabled.
 	 */
 	if (GIC_IS_SPI(intid) || GIC_IS_ESPI(intid)) {
 		arm_gic_write_irouter(MPIDR_TO_CORE(GET_MPIDR()), intid);
@@ -406,7 +424,7 @@ static void gicv3_rdist_setup_lpis(mem_addr_t rdist)
 	unsigned int lpi_id_bits =
 		MIN(GICD_TYPER_IDBITS(sys_read32(GICD_TYPER)), ITS_MAX_LPI_NRBITS);
 	uintptr_t lpi_pend_table;
-	uint64_t reg;
+	uint64_t reg, tmp;
 	uint32_t ctlr;
 
 	/* If not, alloc a common prop table for all redistributors */
@@ -417,6 +435,11 @@ static void gicv3_rdist_setup_lpis(mem_addr_t rdist)
 
 	lpi_pend_table = (uintptr_t)k_aligned_alloc(64 * 1024, LPI_PENDBASE_SZ(lpi_id_bits));
 	memset((void *)lpi_pend_table, 0, LPI_PENDBASE_SZ(lpi_id_bits));
+
+#ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
+	arch_dcache_flush_and_invd_range((void *)lpi_prop_table, LPI_PROPBASE_SZ(lpi_id_bits));
+	arch_dcache_flush_and_invd_range((void *)lpi_pend_table, LPI_PENDBASE_SZ(lpi_id_bits));
+#endif
 
 	ctlr = sys_read32(rdist + GICR_CTLR);
 	ctlr &= ~GICR_CTLR_ENABLE_LPIS;
@@ -429,7 +452,16 @@ static void gicv3_rdist_setup_lpis(mem_addr_t rdist)
 	      (GIC_BASER_CACHE_INNERLIKE << GITR_PROPBASER_OUTER_CACHE_SHIFT) |
 	      ((lpi_id_bits - 1) & GITR_PROPBASER_ID_BITS_MASK);
 	sys_write64(reg, rdist + GICR_PROPBASER);
-	/* TOFIX: check SHAREABILITY validity */
+	/* Check SHAREABILITY validity */
+	tmp = sys_read64(rdist + GICR_PROPBASER);
+#ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
+	tmp &= ~MASK(GITR_PROPBASER_SHAREABILITY);
+#endif
+	if (!(tmp & MASK(GITR_PROPBASER_SHAREABILITY))) {
+		reg &= ~(MASK(GITR_PROPBASER_SHAREABILITY) | MASK(GITR_PROPBASER_INNER_CACHE));
+		reg |= GIC_BASER_CACHE_NCACHEABLE << GITR_PROPBASER_INNER_CACHE_SHIFT;
+		sys_write64(reg, rdist + GICR_PROPBASER);
+	}
 
 	/* PENDBASE */
 	reg = (GIC_BASER_SHARE_INNER << GITR_PENDBASER_SHAREABILITY_SHIFT) |
@@ -437,7 +469,16 @@ static void gicv3_rdist_setup_lpis(mem_addr_t rdist)
 	      (lpi_pend_table & (GITR_PENDBASER_ADDR_MASK << GITR_PENDBASER_ADDR_SHIFT)) |
 	      (GIC_BASER_CACHE_INNERLIKE << GITR_PENDBASER_OUTER_CACHE_SHIFT) | GITR_PENDBASER_PTZ;
 	sys_write64(reg, rdist + GICR_PENDBASER);
-	/* TOFIX: check SHAREABILITY validity */
+	/* Check SHAREABILITY validity */
+	tmp = sys_read64(rdist + GICR_PENDBASER);
+#ifdef CONFIG_GIC_V3_RDIST_DMA_NONCOHERENT
+	tmp &= ~MASK(GITR_PENDBASER_SHAREABILITY);
+#endif
+	if (!(tmp & MASK(GITR_PENDBASER_SHAREABILITY))) {
+		reg &= ~(MASK(GITR_PENDBASER_SHAREABILITY) | MASK(GITR_PENDBASER_INNER_CACHE));
+		reg |= GIC_BASER_CACHE_NCACHEABLE << GITR_PENDBASER_INNER_CACHE_SHIFT;
+		sys_write64(reg, rdist + GICR_PENDBASER);
+	}
 
 	ctlr = sys_read32(rdist + GICR_CTLR);
 	ctlr |= GICR_CTLR_ENABLE_LPIS;
@@ -486,7 +527,7 @@ static void gicv3_cpuif_init(void)
 	 * Check if system interface can be enabled.
 	 * 'icc_sre_el3' needs to be configured at 'EL3'
 	 * to allow access to 'icc_sre_el1' at 'EL1'
-	 * eg: z_arch_el3_plat_init can be used by platform.
+	 * eg: z_arm64_el3_plat_init can be used by platform.
 	 */
 	icc_sre = read_sysreg(ICC_SRE_EL1);
 
@@ -540,7 +581,6 @@ static void gicv3_dist_init(void)
 	 * the GIC single security state mode is supported.
 	 * Make sure GICD_CTRL_NS is 1.
 	 */
-	sys_set_bit(GICD_CTLR, GICD_CTRL_NS);
 	__ASSERT(sys_test_bit(GICD_CTLR, GICD_CTRL_NS),
 		 "Current GIC does not support single security state");
 #endif
@@ -596,9 +636,13 @@ static void gicv3_dist_init(void)
 		sys_write32(0, ICFGRnE(base, idx));
 	}
 
-#ifdef CONFIG_ARMV8_A_NS
-	/* Enable distributor with ARE */
-	sys_write32(BIT(GICD_CTRL_ARE_NS) | BIT(GICD_CTLR_ENABLE_G1NS), GICD_CTLR);
+#if defined(CONFIG_ARMV8_A_NS) || defined(CONFIG_ARMV7_A_NS)
+	/*
+	 * Enable Affinity Routing in the distributor.
+	 * Since we are already in NS state, we need to use the S bit position,
+	 * because ARE_S in Secure view has the same position as ARE_NS in Non-Secure view.
+	 */
+	sys_write32(BIT(GICD_CTRL_ARE_S) | BIT(GICD_CTLR_ENABLE_G1NS), GICD_CTLR);
 #elif defined(CONFIG_GIC_SINGLE_SECURITY_STATE)
 	/*
 	 * For GIC single security state, the config GIC_SINGLE_SECURITY_STATE
@@ -640,6 +684,11 @@ static bool arm_gic_aff_matching(uint64_t gicr_aff, uint64_t aff)
 #if defined(CONFIG_GIC_V3_RDIST_MATCHING_AFF0_ONLY)
 	uint64_t mask = BIT64_MASK(8);
 
+	return (gicr_aff & mask) == (aff & mask);
+#elif defined(CONFIG_ARM)
+	uint64_t mask = BIT64_MASK(24);
+
+	/* For ARM (AArch32), only compare aff2:aff1:aff0 (lower 24 bits) */
 	return (gicr_aff & mask) == (aff & mask);
 #else
 	return gicr_aff == aff;

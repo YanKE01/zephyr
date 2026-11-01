@@ -9,10 +9,17 @@
  * @brief Driver for Platform Level Interrupt Controller (PLIC)
  */
 
-#ifndef ZEPHYR_INCLUDE_DRIVERS_RISCV_PLIC_H_
-#define ZEPHYR_INCLUDE_DRIVERS_RISCV_PLIC_H_
+#ifndef ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_RISCV_PLIC_H_
+#define ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_RISCV_PLIC_H_
 
 #include <zephyr/device.h>
+
+/**
+ * @brief Mark interrupt as completed
+ *
+ * @param irq IRQ number to claim as completed
+ */
+void riscv_plic_irq_complete(uint32_t irq);
 
 /**
  * @brief Enable interrupt
@@ -79,4 +86,4 @@ unsigned int riscv_plic_get_irq(void);
  */
 const struct device *riscv_plic_get_dev(void);
 
-#endif /* ZEPHYR_INCLUDE_DRIVERS_RISCV_PLIC_H_ */
+#endif /* ZEPHYR_INCLUDE_DRIVERS_INTERRUPT_CONTROLLER_RISCV_PLIC_H_ */

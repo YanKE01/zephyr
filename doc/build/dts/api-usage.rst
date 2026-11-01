@@ -202,7 +202,7 @@ Its properties can be accessed like this:
 
    int a[] = DT_PROP(FOO, a);           /* {1000, 2000, 3000} */
    unsigned char b[] = DT_PROP(FOO, b); /* {0xaa, 0xbb, 0xcc, 0xdd} */
-   char* c[] = DT_PROP(FOO, c);         /* {"foo", "bar"} */
+   char* c[] = DT_PROP(FOO, c);         /* {"bar", "baz"} */
 
 You can use :c:macro:`DT_PROP_LEN()` to get logical array lengths in number of
 elements.
@@ -337,7 +337,8 @@ Here are pointers to some other available APIs.
 - :c:macro:`DT_BUS`: get a node's bus controller, if there is one
 - :c:macro:`DT_ENUM_IDX`: for properties whose values are among a fixed list of
   choices
-- :ref:`devicetree-flash-api`: APIs for managing fixed flash partitions.
+- :ref:`devicetree-flash-api`: APIs for managing fixed flash partitions and
+  mapped flash partitions.
   Also see :ref:`flash_map_api`, which wraps this in a more user-friendly API.
 
 Device driver conveniences
@@ -391,11 +392,8 @@ useful to understand them since they will frequently be seen in compiler error
 messages.
 
 This section contains an Augmented Backus-Naur Form grammar for these
-generated macros, with examples and more details in comments. See `RFC 7405`_
-(which extends `RFC 5234`_) for a syntax specification.
+generated macros, with examples and more details in comments. See :rfc:`7405`
+(which extends :rfc:`5234`) for a syntax specification.
 
 .. literalinclude:: macros.bnf
    :language: abnf
-
-.. _RFC 7405: https://tools.ietf.org/html/rfc7405
-.. _RFC 5234: https://tools.ietf.org/html/rfc5234

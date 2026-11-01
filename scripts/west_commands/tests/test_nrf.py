@@ -48,7 +48,7 @@ class TC(typing.NamedTuple):    # 'TestCase'
     family: str
 
     # 'APP', 'NET', 'APP+NET', or None.
-    coprocessor: typing.Optional[str]
+    coprocessor: str | None
 
     # Run a recover command first if True
     recover: bool
@@ -364,7 +364,7 @@ def fix_up_runner_config(test_case, runner_config, tmpdir):
     dotconfig = os.fspath(zephyr / '.config')
     with open(dotconfig, 'w') as f:
         f.write(f'''
-CONFIG_SOC_SERIES_{test_case.family.upper()}X=y
+CONFIG_SOC_SERIES_{test_case.family.upper()}=y
 ''')
         if test_case.family == 'nrf53':
             f.write(f'''

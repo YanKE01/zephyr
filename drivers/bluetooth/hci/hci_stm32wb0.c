@@ -11,6 +11,8 @@
 #include <zephyr/bluetooth/hci_types.h>
 #include <zephyr/drivers/bluetooth.h>
 #include <zephyr/drivers/entropy.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/pm/device.h>
 #include "bleplat_cntr.h"
 #include "ble_stack.h"
 #include "stm32wb0x_hal_radio_timer.h"
@@ -30,16 +32,10 @@ LOG_MODULE_REGISTER(bt_driver);
 
 #define DT_DRV_COMPAT st_hci_stm32wb0
 
-/* Max HS startup time expressed in system time (1953 us / 2.4414 us) */
-#define MAX_HS_STARTUP_TIME 320
-#define BLE_WKUP_PRIO       0
-#define BLE_WKUP_FLAGS      0
 #define BLE_TX_RX_PRIO      0
 #define BLE_TX_RX_FLAGS     0
-#define CPU_WKUP_PRIO       1
-#define CPU_WKUP_FLAGS      0
-#define BLE_ERROR_PRIO      3
-#define BLE_ERROR_FLAGS     0
+#define BLE_RRM_PRIO        0
+#define BLE_RRM_FLAGS       0
 #define BLE_RXTX_SEQ_PRIO   3
 #define BLE_RXTX_SEQ_FLAGS  0
 #define PKA_PRIO	    2
@@ -56,25 +52,33 @@ LOG_MODULE_REGISTER(bt_driver);
 #define EVT_VENDOR_CODE_LSB  3
 #define EVT_VENDOR_CODE_MSB  4
 
+#if (defined(CONFIG_SOC_STM32WB06XX) || defined(CONFIG_SOC_STM32WB07XX)) && defined(CONFIG_PM)
+#error "PM is not supported yet for WB06/WB07"
+#endif /* (CONFIG_SOC_STM32WB06XX || CONFIG_SOC_STM32WB07XX) && CONFIG_PM */
+
 static uint32_t __noinit dyn_alloc_a[BLE_DYN_ALLOC_SIZE >> 2];
 static uint8_t buffer_out_mem[MAX_EVENT_SIZE];
-static struct k_work_delayable hal_radio_timer_work, ble_stack_work;
+static struct k_work_delayable ble_stack_work;
 
 static struct net_buf *get_rx(uint8_t *msg);
 static PKA_HandleTypeDef hpka;
 
-#if CONFIG_BT_EXT_ADV
+#if defined(CONFIG_BT_EXT_ADV)
 static uint32_t __noinit aci_adv_nwk_buffer[CFG_BLE_ADV_NWK_BUFFER_SIZE >> 2];
 #endif /* CONFIG_BT_EXT_ADV */
-
-struct hci_data {
-	bt_hci_recv_t recv;
-};
 
 /* Dummy implementation */
 int BLEPLAT_NvmGet(void)
 {
 	return 0;
+}
+
+uint8_t BLEPLAT_SetRadioTimerValue(uint32_t Time, uint8_t EventType, uint8_t CalReq)
+{
+	uint8_t retval;
+
+	retval = HAL_RADIO_TIMER_SetRadioTimerValue(Time, EventType, CalReq);
+	return retval;
 }
 
 static void blestack_process(struct k_work *work)
@@ -83,11 +87,6 @@ static void blestack_process(struct k_work *work)
 	if (BLE_STACK_SleepCheck() == 0) {
 		k_work_reschedule(&ble_stack_work, K_NO_WAIT);
 	}
-}
-
-static void vtimer_process(struct k_work *work)
-{
-	HAL_RADIO_TIMER_Tick();
 }
 
 /* "If, since the last power-on or reset, the Host has ever issued a legacy
@@ -195,14 +194,14 @@ void send_event(uint8_t *buffer_out, uint16_t buffer_out_length, int8_t overflow
 	ARG_UNUSED(overflow_index);
 
 	const struct device *dev = DEVICE_DT_GET(DT_DRV_INST(0));
-	struct hci_data *hci = dev->data;
-	/* Construct net_buf from event data */
-	struct net_buf *buf = get_rx(buffer_out);
+	struct net_buf *buf;
 
+	/* Construct net_buf from event data */
+	buf = get_rx(buffer_out);
 	if (buf) {
 		/* Handle the received HCI data */
 		LOG_DBG("New event %p len %u type %u", buf, buf->len, buf->data[0]);
-		hci->recv(dev, buf);
+		bt_hci_recv(dev, buf);
 	} else {
 		LOG_ERR("Buf is null");
 	}
@@ -210,13 +209,6 @@ void send_event(uint8_t *buffer_out, uint16_t buffer_out_length, int8_t overflow
 
 void HAL_RADIO_TIMER_TxRxWakeUpCallback(void)
 {
-	k_work_schedule(&hal_radio_timer_work, K_NO_WAIT);
-	k_work_schedule(&ble_stack_work, K_NO_WAIT);
-}
-
-void HAL_RADIO_TIMER_CpuWakeUpCallback(void)
-{
-	k_work_schedule(&hal_radio_timer_work, K_NO_WAIT);
 	k_work_schedule(&ble_stack_work, K_NO_WAIT);
 }
 
@@ -224,14 +216,11 @@ void HAL_RADIO_TxRxCallback(uint32_t flags)
 {
 	BLE_STACK_RadioHandler(flags);
 	k_work_schedule(&ble_stack_work, K_NO_WAIT);
-	k_work_schedule(&hal_radio_timer_work, K_NO_WAIT);
 }
 
-ISR_DIRECT_DECLARE(RADIO_TIMER_TXRX_WKUP_IRQHandler)
+void HAL_RADIO_RRMCallback(uint32_t ble_irq_status)
 {
-	HAL_RADIO_TIMER_TXRX_WKUP_IRQHandler();
-	ISR_DIRECT_PM(); /* PM done after servicing interrupt for best latency */
-	return 1;
+	BLE_STACK_RRMHandler(ble_irq_status);
 }
 
 ISR_DIRECT_DECLARE(RADIO_TXRX_IRQHandler)
@@ -248,26 +237,9 @@ ISR_DIRECT_DECLARE(RADIO_TXRX_SEQ_IRQHandler)
 	return 1;
 }
 
-ISR_DIRECT_DECLARE(RADIO_TIMER_CPU_WKUP_IRQHandler)
+ISR_DIRECT_DECLARE(RADIO_RRM_IRQHandler)
 {
-	HAL_RADIO_TIMER_TimeoutCallback();
-	HAL_RADIO_TIMER_CpuWakeUpCallback();
-	ISR_DIRECT_PM(); /* PM done after servicing interrupt for best latency */
-	return 1;
-}
-
-ISR_DIRECT_DECLARE(RADIO_TIMER_ERROR_IRQHandler)
-{
-	volatile uint32_t debug_cmd;
-
-	BLUE->DEBUGCMDREG |= 1;
-	/* If the device is configured with CLK_SYS = 64MHz
-	 * and BLE clock = 16MHz, a register read is necessary
-	 * to ensure interrupt register is properly cleared
-	 * due to AHB down converter latency
-	 */
-	debug_cmd = BLUE->DEBUGCMDREG;
-	LOG_ERR("Timer error");
+	HAL_RADIO_RRM_IRQHandler();
 	ISR_DIRECT_PM(); /* PM done after servicing interrupt for best latency */
 	return 1;
 }
@@ -278,32 +250,58 @@ void PKAMGR_IRQCallback(void)
 	k_work_schedule(&ble_stack_work, K_NO_WAIT);
 }
 
-static int _PKA_IRQHandler(void *args)
+static void _PKA_IRQHandler(void *args)
 {
 	ARG_UNUSED(args);
 
 	HAL_PKA_IRQHandler(&hpka);
-	ISR_DIRECT_PM(); /* PM done after servicing interrupt for best latency */
-	return 1;
 }
 
 static void ble_isr_installer(void)
 {
-	IRQ_DIRECT_CONNECT(RADIO_TIMER_TXRX_WKUP_IRQn, BLE_WKUP_PRIO,
-			   RADIO_TIMER_TXRX_WKUP_IRQHandler, BLE_WKUP_FLAGS);
 	IRQ_DIRECT_CONNECT(RADIO_TXRX_IRQn, BLE_TX_RX_PRIO, RADIO_TXRX_IRQHandler, BLE_TX_RX_FLAGS);
-	IRQ_DIRECT_CONNECT(RADIO_TIMER_CPU_WKUP_IRQn, CPU_WKUP_PRIO,
-			   RADIO_TIMER_CPU_WKUP_IRQHandler, CPU_WKUP_FLAGS);
+	IRQ_DIRECT_CONNECT(RADIO_RRM_IRQn, BLE_RRM_PRIO, RADIO_RRM_IRQHandler, BLE_RRM_FLAGS);
 	IRQ_DIRECT_CONNECT(RADIO_TXRX_SEQ_IRQn, BLE_RXTX_SEQ_PRIO, RADIO_TXRX_SEQ_IRQHandler,
 			   BLE_RXTX_SEQ_FLAGS);
-	IRQ_DIRECT_CONNECT(RADIO_TIMER_ERROR_IRQn, BLE_ERROR_PRIO, RADIO_TIMER_ERROR_IRQHandler,
-			   BLE_ERROR_FLAGS);
 	IRQ_CONNECT(PKA_IRQn, PKA_PRIO, _PKA_IRQHandler, NULL, PKA_FLAGS);
 }
 
+#if defined(CONFIG_PM_DEVICE)
+static int ble_pm_action(const struct device *dev,
+			 enum pm_device_action action)
+{
+	static uint32_t pka_cr_vr, ble_rrm_irq_enable_vr;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+		LL_PWR_EnableWU_EWBLE();
+		pka_cr_vr = PKA->CR;
+		/* TBD: Manage PKA save for WB06 & WB07 */
+
+		ble_rrm_irq_enable_vr = RRM->BLE_IRQ_ENABLE;
+		break;
+	case PM_DEVICE_ACTION_RESUME:
+		LL_PWR_DisableWU_EWBLE();
+		/* TBD: Manage PKA restore for WB06 & WB07 */
+		PKA->CLRFR = PKA_CLRFR_PROCENDFC | PKA_CLRFR_RAMERRFC | PKA_CLRFR_ADDRERRFC;
+		PKA->CR = pka_cr_vr;
+		RRM->BLE_IRQ_ENABLE = ble_rrm_irq_enable_vr;
+		irq_enable(RADIO_TXRX_IRQn);
+		irq_enable(RADIO_RRM_IRQn);
+		irq_enable(RADIO_TXRX_SEQ_IRQn);
+		irq_enable(PKA_IRQn);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_PM_DEVICE */
+
 static void rng_get_random(void *num, size_t size)
 {
-	const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_entropy));
+	const struct device *dev = entropy_get_default_device();
 	int res;
 
 	/* try to allocate from pool */
@@ -394,7 +392,6 @@ static struct net_buf *get_rx(uint8_t *msg)
 
 static int bt_hci_stm32wb0_send(const struct device *dev, struct net_buf *buf)
 {
-	int ret = 0;
 	uint8_t type = net_buf_pull_u8(buf);
 	uint8_t *hci_buffer = buf->data;
 
@@ -444,13 +441,11 @@ static int bt_hci_stm32wb0_send(const struct device *dev, struct net_buf *buf)
 	}
 	net_buf_unref(buf);
 
-	return ret;
+	return 0;
 }
 
-static int bt_hci_stm32wb0_open(const struct device *dev, bt_hci_recv_t recv)
+static int bt_hci_stm32wb0_open(const struct device *dev)
 {
-	struct hci_data *data = dev->data;
-	RADIO_TIMER_InitTypeDef VTIMER_InitStruct = {MAX_HS_STARTUP_TIME, 0, 0};
 	RADIO_HandleTypeDef hradio = {0};
 	BLE_STACK_InitTypeDef BLE_STACK_InitParams = {
 		.BLEStartRamAddress = (uint8_t *)dyn_alloc_a,
@@ -479,6 +474,7 @@ static int bt_hci_stm32wb0_open(const struct device *dev, bt_hci_recv_t recv)
 		.NumOfBrcBIS = CFG_BLE_NUM_BRC_BIS_MAX,
 		.NumOfCIG = CFG_BLE_NUM_CIG_MAX,
 		.NumOfCIS = CFG_BLE_NUM_CIS_MAX,
+		.ExtraLLProcedureContexts = CFG_BLE_EXTRA_LL_PROCEDURE_CONTEXTS,
 		.isr0_fifo_size = CFG_BLE_ISR0_FIFO_SIZE,
 		.isr1_fifo_size = CFG_BLE_ISR1_FIFO_SIZE,
 		.user_fifo_size = CFG_BLE_USER_FIFO_SIZE
@@ -487,8 +483,6 @@ static int bt_hci_stm32wb0_open(const struct device *dev, bt_hci_recv_t recv)
 	ble_isr_installer();
 	hradio.Instance = RADIO;
 	HAL_RADIO_Init(&hradio);
-	HAL_RADIO_TIMER_Init(&VTIMER_InitStruct);
-
 	HW_AES_Init();
 	hpka.Instance = PKA;
 	HAL_PKA_Init(&hpka);
@@ -498,14 +492,11 @@ static int bt_hci_stm32wb0_open(const struct device *dev, bt_hci_recv_t recv)
 		return -EIO;
 	}
 
-#if CONFIG_BT_EXT_ADV
+#if defined(CONFIG_BT_EXT_ADV)
 	dm_init(CFG_BLE_ADV_NWK_BUFFER_SIZE, aci_adv_nwk_buffer);
 #endif /* CONFIG_BT_EXT_ADV */
 
 	aci_adv_nwk_init();
-
-	data->recv = recv;
-	k_work_init_delayable(&hal_radio_timer_work, vtimer_process);
 	k_work_init_delayable(&ble_stack_work, blestack_process);
 	k_work_schedule(&ble_stack_work, K_NO_WAIT);
 
@@ -518,10 +509,14 @@ static DEVICE_API(bt_hci, drv) = {
 };
 
 #define HCI_DEVICE_INIT(inst) \
-	static struct hci_data hci_data_##inst = { \
+	PM_DEVICE_DT_INST_DEFINE(inst, ble_pm_action); \
+	static struct bt_hci_driver_data hci_data_##inst = { \
 	}; \
-	DEVICE_DT_INST_DEFINE(inst, NULL, NULL, &hci_data_##inst, NULL, \
-				POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &drv)
+	static const struct bt_hci_driver_config hci_config_##inst =                               \
+		BT_DT_HCI_DRIVER_CONFIG_INST_GET(inst);                                            \
+	DEVICE_DT_INST_DEFINE(inst, NULL, PM_DEVICE_DT_INST_GET(inst), &hci_data_##inst,           \
+			      &hci_config_##inst, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE, \
+			      &drv)
 
 /* Only one instance supported */
 HCI_DEVICE_INIT(0)

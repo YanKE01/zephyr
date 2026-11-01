@@ -111,6 +111,8 @@ struct usbd_dfu_image {
  * @brief USB DFU device update API
  * @defgroup usbd_dfu USB DFU device update API
  * @ingroup usb
+ * @since 4.1
+ * @version 0.1.0
  * @{
  */
 
@@ -145,6 +147,7 @@ struct usbd_dfu_image {
  *
  * @param id     Identifier by which the linker sorts registered images
  * @param iname  Image name as used in interface descriptor
+ * @param ipriv  Pointer to private data passed to the callbacks
  * @param iread  Image read callback
  * @param iwrite Image write callback
  * @param inext  Notify/confirm next state

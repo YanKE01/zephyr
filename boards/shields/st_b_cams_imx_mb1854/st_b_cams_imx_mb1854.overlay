@@ -31,6 +31,10 @@
 };
 
 &csi_i2c {
+	status = "okay";
+	/* Use I2C Fast mode for faster sensor startup */
+	clock-frequency = <I2C_BITRATE_FAST>;
+
 	imx335: camera@1a {
 		compatible = "sony,imx335";
 		clocks = <&imx335_input_clock>;
@@ -45,13 +49,16 @@
 			};
 		};
 	};
+
+	vl53l5cx: sensor@29 {
+		compatible = "st,vl53l5cx";
+		friendly-name = "mb1854_vl53l5cx";
+		reg = <0x29>;
+	};
 };
 
-&csi_connector {
-	/* Power the camera module */
-	en-module-gpios {
-		gpio-hog;
-		gpios = <CSI_IO1 GPIO_ACTIVE_HIGH>;
-		output-high;
-	};
+/* Power the camera module */
+&csi_gpio1_hog {
+	status = "okay";
+	output-high;
 };

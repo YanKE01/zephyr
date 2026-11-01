@@ -25,16 +25,14 @@ zephyr_library_sources_ifdef(CONFIG_TIMING_FUNCTIONS timing.c)
 zephyr_library_sources_ifdef(CONFIG_GDBSTUB gdbstub.c)
 zephyr_library_sources_ifdef(CONFIG_SEMIHOST semihost.c)
 zephyr_library_sources_ifdef(CONFIG_XTENSA_MMU ptables.c mmu.c)
-zephyr_library_sources_ifdef(CONFIG_XTENSA_MPU mpu.c)
+zephyr_library_sources_ifdef(CONFIG_XTENSA_MPU mpu/mpu_core.c mpu/mpu_regions.c)
 zephyr_library_sources_ifdef(CONFIG_USERSPACE userspace.S syscall_helper.c)
 zephyr_library_sources_ifdef(CONFIG_LLEXT elf.c)
 zephyr_library_sources_ifdef(CONFIG_SMP smp.c)
 zephyr_library_sources_ifdef(CONFIG_XTENSA_HIFI_SHARING xtensa_hifi.S)
+zephyr_library_sources_ifdef(CONFIG_XTENSA_FATAL_BREADCRUMB xtensa_breadcrumb.c)
 
-zephyr_library_sources_ifdef(
-  CONFIG_KERNEL_VM_USE_CUSTOM_MEM_RANGE_CHECK
-  mem_manage.c
-)
+zephyr_library_sources(instr_mem.c)
 
 if("${ZEPHYR_TOOLCHAIN_VARIANT}" STREQUAL "xcc")
   zephyr_library_sources(xcc_stubs.c)
@@ -85,7 +83,7 @@ else()
   set(MAY_NEED_SYSCALL_SCRATCH_REG false)
 endif()
 
-if(CONFIG_KERNEL_COHERENCE AND NOT CONFIG_SCHED_CPU_MASK_PIN_ONLY)
+if(CONFIG_KERNEL_COHERENCE)
   set(NEED_FLUSH_SCRATCH_REG true)
 else()
   set(NEED_FLUSH_SCRATCH_REG false)
@@ -101,31 +99,13 @@ add_custom_command(OUTPUT ${ZSR_H} DEPENDS ${CORE_ISA_DM}
   COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/gen_zsr.py
                                $<$<BOOL:${CONFIG_XTENSA_MMU}>:--mmu>
                                $<$<BOOL:${MAY_NEED_SYSCALL_SCRATCH_REG}>:--syscall-scratch>
+                               $<$<BOOL:${CONFIG_XTENSA_EMULATE_UNSUPPORTED_UNSIGNED_LOAD_STORE}>:--load-store-emulation>
                                $<$<BOOL:${NEED_FLUSH_SCRATCH_REG}>:--flush-reg>
                                ${CORE_ISA_DM} ${ZSR_H})
 add_custom_target(zsr_h DEPENDS ${ZSR_H})
 add_dependencies(zephyr_interface zsr_h)
 
 unset(MAY_NEED_SYSCALL_SCRATCH_REG)
-
-# Similar: auto-generate interrupt handlers
-set(HANDLERS ${CMAKE_BINARY_DIR}/zephyr/include/generated/xtensa_handlers)
-
-add_custom_command(
-  OUTPUT ${HANDLERS}_tmp.c
-  COMMAND ${CMAKE_C_COMPILER} -E -U__XCC__
-          ${XTENSA_CONFIG_HAL_INCLUDE_DIR}
-	  -o ${HANDLERS}_tmp.c
-	  - < ${CMAKE_CURRENT_SOURCE_DIR}/xtensa_intgen.tmpl)
-
-add_custom_command(
-  OUTPUT ${HANDLERS}.h
-  DEPENDS ${HANDLERS}_tmp.c
-  COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/xtensa_intgen.py
-          ${HANDLERS}_tmp.c > ${HANDLERS}.h)
-
-add_custom_target(xtensa_handlers_h DEPENDS ${HANDLERS}.h)
-add_dependencies(zephyr_interface xtensa_handlers_h)
 
 # Auto-generate interrupt vector entry
 set(VECS_LD ${CMAKE_BINARY_DIR}/zephyr/include/generated/xtensa_vectors.ld)

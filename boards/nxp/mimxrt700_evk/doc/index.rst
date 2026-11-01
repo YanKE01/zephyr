@@ -24,12 +24,16 @@ Hardware
 ********
 
 - Main Compute Subsystem:
-   - Arm Cortex-M33 up to 325 MHz
-   - HiFi 4 DSP up to 325 MHz
-   - eIQ Neutron NPU up to 325 MHz
-- Sense Compute Subsystem:
-   - Arm Cortex-M33 up to 250 MHz
-   - HiFi 1 DSP up to 250 MHz
+
+  - Arm Cortex-M33 up to 325 MHz
+  - HiFi 4 DSP up to 325 MHz
+  - eIQ Neutron NPU up to 325 MHz
+
+- Sense Compute Subsystem
+
+  - Arm Cortex-M33 up to 250 MHz
+  - HiFi 1 DSP up to 250 MHz
+
 - 7.5 MB on-chip SRAM
 - Three xSPI interfaces for off-chip memory expansion, supporting up to 16b wide external memories up to 250 MHz DDR
 - eUSB support with integrated PHY
@@ -40,7 +44,7 @@ Hardware
 - 2.5D GPU with vector graphics acceleration and frame buffer compression
 - EZH-V using RISC-V core with additional SIMD/DSP instructions
 - Full openVG 1.1 support
-- Up to 720p@60FPS from on-chip SRAM
+- Up to 720p at 60 FPS from on-chip SRAM
 - LCD Interface + MIPI DSI
 - Integrated JPEG and PNG support
 - CSI 8/10/16-bit parallel (via FlexIO)
@@ -128,6 +132,18 @@ To build the hello_world sample for the i.MX RT700 HiFi 4 DSP core:
    :board: mimxrt700_evk/mimxrt798s/hifi4
    :goals: build
 
+Multicore Core Operation
+************************
+
+The MIMXRT700-EVK supports multicore core operation with all cores, the Cortex-M33 CPU0, Cortex-M33 CPU1,
+HiFi1 DSP and HiFi4 DSP.
+By default, the CM33 CPU0 core is the boot core and is responsible for initializing the system and
+starting the CM33 CPU1 core and/or HiFi4 DSP.
+The CM33 CPU1 is responsible to boot the HiFi1 DSP.
+
+Usually boot process is that core responsible for booting the secondary core(s) will copy its firmware/image
+to the designated memory location and then release the secondary core from reset.
+
 Programming and Debugging
 *************************
 
@@ -213,8 +229,52 @@ should see the following message in the terminal:
    *** Booting Zephyr OS v3.7.0 ***
    Hello World! mimxrt700_evk/mimxrt798s/cm33_cpu0
 
-.. include:: ../../common/board-footer.rst
-   :start-after: nxp-board-footer
+SEGGER RTT Logging
+==================
+
+The CM33 CPU0 core has D-cache enabled on SRAM by default, which means a
+naive RTT buffer placed in regular ``.bss`` would be invisible to the
+debugger (CPU writes stay in D-cache and never reach physical SRAM that
+J-Link reads). The SoC layer automatically routes the SEGGER RTT control
+block and buffers into the Zephyr ``nocache`` region whenever
+:kconfig:option:`CONFIG_USE_SEGGER_RTT` is enabled, so no buffer-placement
+Kconfig or DTS overlay is needed.
+
+Enabling log output over RTT requires only the log backend:
+
+.. code-block:: cfg
+
+   CONFIG_USE_SEGGER_RTT=y
+   CONFIG_LOG_BACKEND_RTT=y
+
+When connecting with ``JLinkRTTViewer`` or ``JLinkRTTLogger``, set the
+**RTT Control Block** option to ``Address`` (not ``Auto Detection``) and
+enter the address of ``_SEGGER_RTT`` from the built linker map file:
+
+.. code-block:: console
+
+   $ grep " _SEGGER_RTT$" build/zephyr/zephyr.map
+                   0x30180260                _SEGGER_RTT
+
+The address sits in the Secure SRAM alias range (``0x30xxxxxx``) because
+:kconfig:option:`CONFIG_TRUSTED_EXECUTION_SECURE` is enabled in the board
+defconfig. J-Link's default RTT auto-search range only covers the Non-secure
+alias (``0x20xxxxxx``) and will fail to locate the control block otherwise.
+
+SD Card Support
+***************
+
+The USDHC1 interface on the MIMXRT700-EVK is shared between the SD card socket (J47) and
+the M.2 connector (J44) through electronic switches (TMUX136). Jumper JP65 is used to select
+which interface is active:
+
+- **JP65 1-2**: Routes SDIO signals to the SD card socket (J47). Set this position when
+  using the SD card.
+- **JP65 2-3** (default): Routes SDIO signals to the M.2 connector (J44).
+
+To use the SD card, ensure JP65 is set to the 1-2 position.
+
+.. include:: ../../common/board-footer.rst.inc
 
 .. _i.MX RT700 Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt700-crossover-mcu-with-arm-cortex-m33-npu-dsp-and-gpu-cores:i.MX-RT700
@@ -226,7 +286,8 @@ Display Support
 ***************
 
 The mimxrt700_evk board supports following in-tree display module(s). Setup for
-each module is described below:
+each module is described below. Note that the display controller on board cannot be worked with
+data cache enabled.
 
 NXP G1120B0MIPI MIPI Display
 ============================
@@ -237,8 +298,107 @@ directly, but some modifications are required (see
 for a list). The display sample can be built for this module like so:
 
 .. zephyr-app-commands::
-   :board: mimxrt700_evk
+   :board: mimxrt700_evk/mimxrt798s/cm33_cpu0
    :shield: g1120b0mipi
    :zephyr-app: samples/drivers/display
    :goals: build
    :compact:
+
+NXP RK055HDMIPI4MA0 720p MIPI Display
+=====================================
+
+The :ref:`rk055hdmipi4ma0` connects to the board's MIPI connector J52
+directly, but some modifications are required (see
+:zephyr_file:`boards/shields/rk055hdmipi4ma0/boards/mimxrt700_evk_mimxrt798s_cm33_cpu0.overlay`
+for a list). This panel has a 720p resolution which needs large frame buffer(s) so PSRAM memory
+region must be used, which needs to connect JP45 1-2. The display sample can be built for this
+module like so:
+
+.. zephyr-app-commands::
+   :board: mimxrt700_evk/mimxrt798s/cm33_cpu0
+   :shield: rk055hdmipi4ma0
+   :zephyr-app: samples/drivers/display
+   :goals: build
+   :compact:
+
+NXP ZC143AC72MIPI MIPI Display
+==============================
+
+The :ref:`zc143ac72mipi` connects to the board's MIPI connector J26
+directly, but some modifications are required (see
+:zephyr_file:`boards/shields/zc143ac72mipi/boards/mimxrt700_evk_mimxrt798s_cm33_cpu0.overlay`
+for a list). The display sample can be built for this module like so:
+
+.. zephyr-app-commands::
+   :board: mimxrt700_evk/mimxrt798s/cm33_cpu0
+   :shield: zc143ac72mipi
+   :zephyr-app: samples/drivers/display
+   :goals: build
+   :compact:
+
+NXP LCD_PAR_S035
+================
+
+The :ref:`lcd_par_s035` connects to the board's LCD socket J4 pin 1 to pin 28
+directly, but some modifications are required (see
+:zephyr_file:`boards/shields/lcd_par_s035/boards/mimxrt700_evk_mimxrt798s_cm33_cpu0.overlay`
+for a list). Connect JP7 2&3 to use 3.3v interface, and remove resistance R60 to use the touch
+function. The display sample can be built for this module like so:
+
+.. zephyr-app-commands::
+   :board: mimxrt700_evk/mimxrt798s/cm33_cpu0
+   :shield: lcd_par_s035_8080
+   :zephyr-app: samples/drivers/display
+   :goals: build
+   :compact:
+
+Flash Memory Configuration
+==========================
+
+By default the board boots and executes in place (XIP) from the on-board octal
+SPI NOR (MX25UM51345G) on XSPI0.
+
+Boards that have been reworked to populate the on-board Winbond W25Q512NW quad
+SPI NOR on XSPI0 instead are supported through the ``w25q512nw`` board revision,
+which selects the quad flash device, the matching boot flash configuration block
+(FCB) used by the boot ROM for XIP, and the corresponding XSPI0 clock setup. The
+spi flash sample can be built for this revision like so:
+
+.. zephyr-app-commands::
+   :board: mimxrt700_evk@w25q512nw/mimxrt798s/cm33_cpu0
+   :zephyr-app: samples/drivers/spi_flash
+   :west-args: -p always
+   :goals: build
+   :compact:
+
+The hardware rework routes XSPI0 to the W25Q512NW quad SPI NOR by changing the
+following resistors:
+
+- Removed: R396, R397, R400, R402
+- Populated: R386, R694, R695, R701, R707, R708
+
+Building without a revision qualifier selects the default ``mx25um51345g``
+revision, which targets the as-shipped octal flash.
+
+.. note::
+
+   The ``w25q512nw`` revision is flashed with LinkServer
+   (``west flash --runner linkserver``); the default J-Link runner does not
+   support this part. LinkServer drives the secure XSPI0 region through the
+   ``MIMXRT700_XSPI0_Quad_S.cfx`` flash algorithm, which is provided separately
+   by NXP. Copy it into ``<LinkServer>/binaries/Flash/``.
+
+   .. code-block:: shell
+
+      west flash --runner linkserver -- \
+        --override=/board/memory/1/flash-driver=MIMXRT700_XSPI0_Quad_S.cfx
+      # west flash --runner linkserver -- \
+      #   --override=/device/memory/5/flash-driver=MIMXRT700_XSPI0_Quad_S.cfx
+
+.. include:: ../../common/board-footer.rst.inc
+
+.. _i.MX RT700 Website:
+   https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt700-crossover-mcu-with-arm-cortex-m33-npu-dsp-and-gpu-cores:i.MX-RT700
+
+.. _MIMXRT700-EVK Debug Firmware:
+   https://www.nxp.com/docs/en/application-note/AN13206.pdf

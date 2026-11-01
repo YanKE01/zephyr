@@ -8,6 +8,10 @@ toolchain:
   - zephyr
   - gnuarmemb
 supported:
+  - dmic
   - gpio
   - uart
+  - spi
+  - sdhc
+  - netif:eth
 vendor: renesas

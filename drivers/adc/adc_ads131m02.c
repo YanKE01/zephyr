@@ -720,8 +720,8 @@ static int ads131m02_init(const struct device *dev)
 	PM_DEVICE_DT_INST_DEFINE(n, ads131m02_pm_action);			\
 	static const struct ads131m02_config config_##n = {			\
 		.spi = SPI_DT_SPEC_INST_GET(					\
-			n, SPI_OP_MODE_MASTER | SPI_MODE_CPHA |			\
-			SPI_WORD_SET(8), 0),					\
+			n, SPI_OP_MODE_CONTROLLER | SPI_MODE_CPHA |		\
+			SPI_WORD_SET(8)),					\
 		.gpio_drdy = GPIO_DT_SPEC_INST_GET(n, drdy_gpios),		\
 	};									\
 	static struct ads131m02_data data_##n;					\

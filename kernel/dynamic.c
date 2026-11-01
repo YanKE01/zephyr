@@ -28,18 +28,18 @@ struct dyn_cb_data {
 };
 
 static K_THREAD_STACK_ARRAY_DEFINE(dynamic_stack, CONFIG_DYNAMIC_THREAD_POOL_SIZE,
-				   CONFIG_DYNAMIC_THREAD_STACK_SIZE);
+				   K_THREAD_STACK_LEN(CONFIG_DYNAMIC_THREAD_STACK_SIZE));
 SYS_BITARRAY_DEFINE_STATIC(dynamic_ba, BA_SIZE);
 
-static k_thread_stack_t *z_thread_stack_alloc_pool(size_t size)
+static k_thread_stack_t *z_thread_stack_alloc_pool(size_t size, int flags)
 {
 	int rv;
 	size_t offset;
 	k_thread_stack_t *stack;
 
 	if (size > CONFIG_DYNAMIC_THREAD_STACK_SIZE) {
-		LOG_DBG("stack size %zu is > pool stack size %d", size,
-			CONFIG_DYNAMIC_THREAD_STACK_SIZE);
+		LOG_DBG("stack size %zu is > pool stack size %zu", size,
+			(size_t)CONFIG_DYNAMIC_THREAD_STACK_SIZE);
 		return NULL;
 	}
 
@@ -58,6 +58,8 @@ static k_thread_stack_t *z_thread_stack_alloc_pool(size_t size)
 
 static k_thread_stack_t *z_thread_stack_alloc_dyn(size_t size, int flags)
 {
+	size_t stack_len;
+
 	if ((flags & K_USER) == K_USER) {
 #ifdef CONFIG_DYNAMIC_OBJECTS
 		return k_object_alloc_size(K_OBJ_THREAD_STACK_ELEMENT, size);
@@ -69,7 +71,12 @@ static k_thread_stack_t *z_thread_stack_alloc_dyn(size_t size, int flags)
 #endif /* CONFIG_DYNAMIC_OBJECTS */
 	}
 
-	return z_thread_aligned_alloc(Z_KERNEL_STACK_OBJ_ALIGN, K_KERNEL_STACK_LEN(size));
+	stack_len = K_KERNEL_STACK_LEN(size);
+	if (stack_len < size) {
+		return NULL;
+	}
+
+	return z_thread_aligned_alloc(Z_KERNEL_STACK_OBJ_ALIGN, stack_len);
 }
 
 k_thread_stack_t *z_impl_k_thread_stack_alloc(size_t size, int flags)
@@ -79,11 +86,11 @@ k_thread_stack_t *z_impl_k_thread_stack_alloc(size_t size, int flags)
 	if (IS_ENABLED(CONFIG_DYNAMIC_THREAD_PREFER_ALLOC)) {
 		stack = z_thread_stack_alloc_dyn(size, flags);
 		if (stack == NULL && CONFIG_DYNAMIC_THREAD_POOL_SIZE > 0) {
-			stack = z_thread_stack_alloc_pool(size);
+			stack = z_thread_stack_alloc_pool(size, flags);
 		}
 	} else if (IS_ENABLED(CONFIG_DYNAMIC_THREAD_PREFER_POOL)) {
 		if (CONFIG_DYNAMIC_THREAD_POOL_SIZE > 0) {
-			stack = z_thread_stack_alloc_pool(size);
+			stack = z_thread_stack_alloc_pool(size, flags);
 		}
 
 		if ((stack == NULL) && IS_ENABLED(CONFIG_DYNAMIC_THREAD_ALLOC)) {
@@ -121,8 +128,7 @@ int z_impl_k_thread_stack_free(k_thread_stack_t *stack)
 	k_thread_foreach(dyn_cb, &data);
 
 	if (data.tid != NULL) {
-		if (!(z_is_thread_state_set(data.tid, _THREAD_DUMMY) ||
-		      z_is_thread_state_set(data.tid, _THREAD_DEAD))) {
+		if (!z_is_thread_state_set(data.tid, _THREAD_DUMMY | _THREAD_DEAD)) {
 			LOG_ERR("tid %p is in use!", data.tid);
 			return -EBUSY;
 		}

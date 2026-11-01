@@ -15,9 +15,6 @@
 	compatible = "arduino,nicla-vision";
 
 	chosen {
-		zephyr,console = &lpuart1;
-		zephyr,shell-uart = &lpuart1;
-		zephyr,uart-mcumgr = &lpuart1;
 		zephyr,bt-hci = &bt_hci_uart;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
@@ -25,7 +22,16 @@
 		zephyr,camera = &dcmi;
 	};
 
+	ext_memory: memory@90000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x90000000 DT_SIZE_M(16)>; /* max addressable area */
+		zephyr,memory-region = "EXTMEM";
+		/* The ATTR_MPU_EXTMEM attribute causing a MPU FAULT */
+		zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_IO)>;
+	};
+
 	aliases {
+		dmic0 = &dmic_dev;
 		led0 = &red_led;
 		led1 = &green_led;
 	};
@@ -61,6 +67,16 @@
 	status = "okay";
 };
 
+&pll2 {
+	div-m = <5>;
+	mul-n = <96>;
+	div-p = <2>;
+	div-q = <4>;
+	div-r = <10>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
 &rcc {
 	clocks = <&pll>;
 	clock-frequency = <DT_FREQ_M(480)>;
@@ -86,7 +102,7 @@
 		status = "okay";
 
 		murata-1dx {
-			compatible = "infineon,cyw43xxx-bt-hci";
+			compatible = "infineon,bt-hci-uart";
 			bt-reg-on-gpios = <&gpiof 14 GPIO_ACTIVE_HIGH>;
 			bt-host-wake-gpios = <&gpiod 14 GPIO_ACTIVE_HIGH>;
 			bt-dev-wake-gpios = <&gpioe 9 GPIO_ACTIVE_HIGH>;
@@ -99,6 +115,8 @@ zephyr_i2c: &i2c1 {
 	status = "disabled";
 	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiob 8 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiob 9 GPIO_ACTIVE_HIGH>;
 	clock-frequency = <I2C_BITRATE_FAST>;
 };
 
@@ -106,6 +124,8 @@ zephyr_i2c: &i2c1 {
 	status = "okay";
 	pinctrl-0 = <&i2c2_scl_pf1 &i2c2_sda_pf0>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpiof 1 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpiof 0 GPIO_ACTIVE_HIGH>;
 	clock-frequency = <I2C_BITRATE_FAST>;
 
 	vl53l1x: vl53l1x@29 {
@@ -141,17 +161,19 @@ zephyr_i2c: &i2c1 {
 
 &flash0 {
 	partitions {
-		compatible = "fixed-partitions";
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
 		boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "bootloader";
 			reg = <0x0 0x40000>;
 			read-only;
 		};
 
 		slot0_partition: partition@40000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-0";
 			reg = <0x40000 0x000c0000>;
 		};
@@ -165,30 +187,16 @@ zephyr_i2c: &i2c1 {
 	pinctrl-names = "default";
 	status = "okay";
 
-	n25q128a1: qspi-nor-flash@0 {
+	qspi_flash: n25q128a1: qspi-nor-flash@0 {
 		compatible = "st,stm32-qspi-nor";
 		reg = <0>;
-		size = <DT_SIZE_M(128)>; /* 128 Mbits */
+		size = <DT_SIZE_M(128)>; /* 128 Mbits (16 MB) */
 		qspi-max-frequency = <72000000>;
+		cs-high-time = <4>; /* >= 50 ns */
 		status = "okay";
-
-		partitions {
-			compatible = "fixed-partitions";
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			slot1_partition: partition@0 {
-				label = "image-1";
-				reg = <0x00000000 DT_SIZE_M(1)>;
-			};
-
-			storage_partition: partition@100000 {
-				label = "storage";
-				reg = <0x00100000 DT_SIZE_M(15)>;
-			};
-		};
 	};
 };
+#include <arduino/partitions_qspi_h7.dtsi>
 
 &rng {
 	status = "okay";
@@ -196,27 +204,31 @@ zephyr_i2c: &i2c1 {
 
 zephyr_udc0: &usbotg_hs {
 	pinctrl-0 = <&usb_otg_hs_ulpi_ck_pa5
-			&usb_otg_hs_ulpi_d0_pa3
-			&usb_otg_hs_ulpi_d1_pb0
-			&usb_otg_hs_ulpi_d2_pb1
-			&usb_otg_hs_ulpi_d3_pb10
-			&usb_otg_hs_ulpi_d4_pb11
-			&usb_otg_hs_ulpi_d5_pb12
-			&usb_otg_hs_ulpi_d6_pb13
-			&usb_otg_hs_ulpi_d7_pb5
-			&usb_otg_hs_ulpi_stp_pc0
-			&usb_otg_hs_ulpi_dir_pc2_c
-			&usb_otg_hs_ulpi_nxt_pc3_c>;
+		     &usb_otg_hs_ulpi_d0_pa3
+		     &usb_otg_hs_ulpi_d1_pb0
+		     &usb_otg_hs_ulpi_d2_pb1
+		     &usb_otg_hs_ulpi_d3_pb10
+		     &usb_otg_hs_ulpi_d4_pb11
+		     &usb_otg_hs_ulpi_d5_pb12
+		     &usb_otg_hs_ulpi_d6_pb13
+		     &usb_otg_hs_ulpi_d7_pb5
+		     &usb_otg_hs_ulpi_stp_pc0
+		     &usb_otg_hs_ulpi_dir_pc2_c
+		     &usb_otg_hs_ulpi_nxt_pc3_c>;
 	pinctrl-names = "default";
 	maximum-speed = "high-speed";
 	phys = <&otghs_ulpi_phy>;
 	status = "okay";
 };
 
+#include <../boards/common/usb/cdc_acm_serial.dtsi>
+
 &i2c3 {
 	status = "okay";
 	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
 	pinctrl-names = "default";
+	scl-gpios = <&gpioa 8 GPIO_ACTIVE_HIGH>;
+	sda-gpios = <&gpioc 9 GPIO_ACTIVE_HIGH>;
 	clock-frequency = <I2C_BITRATE_FAST>;
 
 	gc2145: gc2145@3c {
@@ -229,7 +241,6 @@ zephyr_udc0: &usbotg_hs {
 				remote-endpoint-label = "dcmi_ep_in";
 			};
 		};
-
 	};
 };
 
@@ -283,4 +294,19 @@ zephyr_udc0: &usbotg_hs {
 
 &dmamux1 {
 	status = "okay";
+};
+
+&dfsdm {
+	status = "okay";
+};
+
+dmic_dev: &pdm0 {
+	pinctrl-0 = <&dfsdm1_ckout_pd10
+		     &dfsdm1_datin2_pe7>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	channel@2 {
+		reg = <2>;
+	};
 };

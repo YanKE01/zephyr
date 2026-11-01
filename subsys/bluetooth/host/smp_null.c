@@ -59,7 +59,10 @@ static int bt_smp_recv(struct bt_l2cap_chan *chan, struct net_buf *req_buf)
 	 */
 
 	buf = bt_l2cap_create_pdu(NULL, 0);
-	/* NULL is not a possible return due to K_FOREVER */
+	if (buf == NULL) {
+		LOG_ERR("Unable to allocate buffer for SMP response");
+		return 0;
+	}
 
 	hdr = net_buf_add(buf, sizeof(*hdr));
 	hdr->code = BT_SMP_CMD_PAIRING_FAIL;
@@ -102,7 +105,10 @@ static int bt_smp_accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)
 	return -ENOMEM;
 }
 
-BT_L2CAP_CHANNEL_DEFINE(smp_fixed_chan, BT_L2CAP_CID_SMP, bt_smp_accept, NULL);
+BT_L2CAP_FIXED_CHANNEL_DEFINE(smp_fixed_chan) = {
+	.cid = BT_L2CAP_CID_SMP,
+	.accept = bt_smp_accept,
+};
 
 int bt_smp_init(void)
 {

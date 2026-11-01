@@ -117,6 +117,7 @@ void posix_irq_handler(void)
 
 		currently_running_irq = irq_nbr;
 		vector_to_irq(irq_nbr, &may_swap);
+		nrfbsim_clear_excl_access();
 		currently_running_irq = last_running_irq;
 
 		hw_irq_ctrl_reeval_level_irq(cpu_n, irq_nbr);
@@ -233,6 +234,14 @@ void posix_irq_disable(unsigned int irq)
 int posix_irq_is_enabled(unsigned int irq)
 {
 	return hw_irq_ctrl_is_irq_enabled(CONFIG_NATIVE_SIMULATOR_MCU_N, irq);
+}
+
+/**
+ * Report whether an irq is pending (not necessarily active)
+ */
+int posix_irq_is_pending(unsigned int irq)
+{
+	return hw_irq_ctrl_is_irq_pending(CONFIG_NATIVE_SIMULATOR_MCU_N, irq);
 }
 
 int posix_get_current_irq(void)

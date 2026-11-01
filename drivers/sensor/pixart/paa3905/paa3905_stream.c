@@ -21,17 +21,29 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(PAA3905_STREAM, CONFIG_SENSOR_LOG_LEVEL);
 
+static inline void handle_result_on_error(const struct device *dev, int err)
+{
+	struct paa3905_data *data = dev->data;
+	struct rtio_iodev_sqe *iodev_sqe = data->stream.iodev_sqe;
+
+	k_timer_stop(&data->stream.timer);
+	data->stream.iodev_sqe = NULL;
+	rtio_iodev_sqe_err(iodev_sqe, err);
+}
+
 static void paa3905_chip_recovery_handler(struct rtio_iodev_sqe *iodev_sqe)
 {
 	const struct sensor_read_config *cfg = iodev_sqe->sqe.iodev->data;
 	const struct device *dev = cfg->sensor;
+	struct paa3905_data *data = dev->data;
 	int err;
 
 	err = paa3905_recover(dev);
 
 	if (err) {
-		rtio_iodev_sqe_err(iodev_sqe, err);
+		handle_result_on_error(dev, err);
 	} else {
+		data->stream.iodev_sqe = NULL;
 		rtio_iodev_sqe_ok(iodev_sqe, 0);
 	}
 }
@@ -46,8 +58,18 @@ static void start_drdy_backup_timer(const struct device *dev)
 		      K_NO_WAIT);
 }
 
+static void paa3905_led_work_handler(struct k_work *work)
+{
+	struct paa3905_stream *stream = CONTAINER_OF(work,
+						     struct paa3905_stream,
+						     led_work);
+
+	(void)paa3905_apply_led_config(stream->dev);
+}
+
 static void paa3905_complete_result(struct rtio *ctx,
 				    const struct rtio_sqe *sqe,
+				    int err,
 				    void *arg)
 {
 	const struct device *dev = (const struct device *)arg;
@@ -55,7 +77,6 @@ static void paa3905_complete_result(struct rtio *ctx,
 	struct rtio_iodev_sqe *iodev_sqe = data->stream.iodev_sqe;
 	struct paa3905_encoded_data *edata = sqe->userdata;
 	struct rtio_cqe *cqe;
-	int err;
 
 	edata->header.events.drdy = true &&
 				    data->stream.settings.enabled.drdy;
@@ -70,6 +91,27 @@ static void paa3905_complete_result(struct rtio *ctx,
 		edata->header.channels |= paa3905_encode_channel(SENSOR_CHAN_POS_DXYZ);
 	}
 
+	if (++data->stream.led_reassert_ctr >= 128) {
+		data->stream.led_reassert_ctr = 0;
+		k_work_submit(&data->stream.led_work);
+	}
+
+	/* Flush RTIO bus CQEs */
+	do {
+		cqe = rtio_cqe_consume(ctx);
+		if (cqe != NULL) {
+			if (err >= 0) {
+				err = cqe->result;
+			}
+			rtio_cqe_release(ctx, cqe);
+		}
+	} while (cqe != NULL);
+
+	if (err < 0) {
+		handle_result_on_error(dev, err);
+		return;
+	}
+
 	if (data->stream.settings.enabled.drdy) {
 		start_drdy_backup_timer(dev);
 	}
@@ -82,7 +124,7 @@ static void paa3905_complete_result(struct rtio *ctx,
 
 		CHECKIF(!req) {
 			LOG_ERR("Failed to allocate RTIO work request");
-			rtio_iodev_sqe_err(iodev_sqe, -ENOMEM);
+			handle_result_on_error(dev, -ENOMEM);
 			return;
 		}
 
@@ -90,15 +132,6 @@ static void paa3905_complete_result(struct rtio *ctx,
 	} else {
 		rtio_iodev_sqe_ok(iodev_sqe, 0);
 	}
-
-	/* Flush RTIO bus CQEs */
-	do {
-		cqe = rtio_cqe_consume(ctx);
-		if (cqe != NULL) {
-			err = cqe->result;
-			rtio_cqe_release(ctx, cqe);
-		}
-	} while (cqe != NULL);
 }
 
 static void paa3905_stream_get_data(const struct device *dev)
@@ -128,12 +161,8 @@ static void paa3905_stream_get_data(const struct device *dev)
 
 	/** Still throw an error even if asserts are off */
 	if (err) {
-		struct rtio_iodev_sqe *iodev_sqe = data->stream.iodev_sqe;
-
 		LOG_ERR("Failed to acquire buffer for encoded data: %d", err);
-
-		data->stream.iodev_sqe = NULL;
-		rtio_iodev_sqe_err(iodev_sqe, err);
+		handle_result_on_error(dev, err);
 		return;
 	}
 
@@ -144,19 +173,15 @@ static void paa3905_stream_get_data(const struct device *dev)
 
 	err = sensor_clock_get_cycles(&cycles);
 	CHECKIF(err) {
-		struct rtio_iodev_sqe *iodev_sqe = data->stream.iodev_sqe;
-
 		LOG_ERR("Failed to get timestamp: %d", err);
-
-		data->stream.iodev_sqe = NULL;
-		rtio_iodev_sqe_err(iodev_sqe, err);
+		handle_result_on_error(dev, err);
 		return;
 	}
 	buf->header.timestamp = sensor_clock_cycles_to_ns(cycles);
 
 	CHECKIF(!write_sqe || !read_sqe || !cb_sqe) {
 		LOG_ERR("Failed to acquire RTIO SQE's");
-		rtio_iodev_sqe_err(data->stream.iodev_sqe, -ENOMEM);
+		handle_result_on_error(dev, -ENOMEM);
 		return;
 	}
 
@@ -202,6 +227,7 @@ static void paa3905_gpio_callback(const struct device *gpio_dev,
 					      GPIO_INT_MODE_DISABLED);
 	if (err) {
 		LOG_ERR("Failed to disable interrupt");
+		handle_result_on_error(dev, err);
 		return;
 	}
 
@@ -222,6 +248,7 @@ static void paa3905_stream_drdy_timeout(struct k_timer *timer)
 					      GPIO_INT_MODE_DISABLED);
 	if (err) {
 		LOG_ERR("Failed to disable interrupt");
+		handle_result_on_error(dev, err);
 		return;
 	}
 
@@ -255,7 +282,7 @@ void paa3905_stream_submit(const struct device *dev,
 	struct paa3905_stream stream = {0};
 
 	for (size_t i = 0 ; i < read_config->count ; i++) {
-		switch (read_config->channels[i].chan_type) {
+		switch (read_config->triggers[i].trigger) {
 		case SENSOR_TRIG_DATA_READY:
 			stream.settings.enabled.drdy = true;
 			stream.settings.opt.drdy = read_config->triggers[i].opt;
@@ -284,7 +311,7 @@ void paa3905_stream_submit(const struct device *dev,
 						      GPIO_INT_MODE_DISABLED);
 		if (err) {
 			LOG_ERR("Failed to disable interrupt");
-			rtio_iodev_sqe_err(iodev_sqe, err);
+			handle_result_on_error(dev, err);
 			return;
 		}
 
@@ -292,7 +319,7 @@ void paa3905_stream_submit(const struct device *dev,
 		err = paa3905_bus_read(dev, REG_MOTION, motion_data, sizeof(motion_data));
 		if (err) {
 			LOG_ERR("Failed to read motion data");
-			rtio_iodev_sqe_err(iodev_sqe, err);
+			handle_result_on_error(dev, err);
 			return;
 		}
 	}
@@ -302,7 +329,7 @@ void paa3905_stream_submit(const struct device *dev,
 						GPIO_INT_LEVEL_ACTIVE);
 	if (err) {
 		LOG_ERR("Failed to enable interrupt");
-		rtio_iodev_sqe_err(iodev_sqe, err);
+		handle_result_on_error(dev, err);
 		return;
 	}
 
@@ -330,7 +357,7 @@ int paa3905_stream_init(const struct device *dev)
 	}
 
 	if (!gpio_is_ready_dt(&cfg->int_gpio)) {
-		LOG_ERR("Interrupt GPIO not ready");
+		LOG_ERR_DEVICE_NOT_READY(cfg->int_gpio.port);
 		return -ENODEV;
 	}
 
@@ -351,6 +378,7 @@ int paa3905_stream_init(const struct device *dev)
 	}
 
 	k_timer_init(&data->stream.timer, paa3905_stream_drdy_timeout, NULL);
+	k_work_init(&data->stream.led_work, paa3905_led_work_handler);
 
 	return err;
 }

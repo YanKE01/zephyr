@@ -47,6 +47,8 @@ struct btp_bap_broadcast_remote_source {
 	/* BIS Index bitfield read from sync request */
 	uint32_t requested_bis_sync;
 	bool assistant_request;
+	bool biginfo_received;
+	bool broadcast_code_received;
 	uint8_t sink_broadcast_code[BT_ISO_BROADCAST_CODE_SIZE];
 	const struct bt_bap_scan_delegator_recv_state *sink_recv_state;
 };
@@ -60,6 +62,7 @@ struct btp_bap_broadcast_local_source {
 	struct btp_bap_broadcast_stream streams[CONFIG_BT_BAP_BROADCAST_SRC_STREAM_COUNT];
 	struct bt_audio_codec_cfg subgroup_codec_cfg[CONFIG_BT_BAP_BROADCAST_SRC_SUBGROUP_COUNT];
 	uint8_t stream_count;
+	uint8_t subgroup_count;
 	struct bt_data per_adv_local;
 	/* Only for BTP BAP commands */
 	struct bt_bap_broadcast_source *bap_broadcast;
@@ -74,10 +77,16 @@ uint8_t btp_bap_broadcast_local_source_idx_get(struct btp_bap_broadcast_local_so
 struct btp_bap_broadcast_stream *btp_bap_broadcast_stream_alloc(
 	struct btp_bap_broadcast_local_source *source);
 
+struct btp_bap_broadcast_local_source *
+btp_bap_broadcast_local_source_allocate(uint32_t broadcast_id);
+int btp_bap_broadcast_local_source_free(struct btp_bap_broadcast_local_source *source);
+
 uint8_t btp_bap_broadcast_source_setup(const void *cmd, uint16_t cmd_len,
 				       void *rsp, uint16_t *rsp_len);
 uint8_t btp_bap_broadcast_source_setup_v2(const void *cmd, uint16_t cmd_len,
 					  void *rsp, uint16_t *rsp_len);
+uint8_t btp_bap_broadcast_source_reconfigure(const void *cmd, uint16_t cmd_len,
+					     void *rsp, uint16_t *rsp_len);
 uint8_t btp_bap_broadcast_source_release(const void *cmd, uint16_t cmd_len,
 					 void *rsp, uint16_t *rsp_len);
 uint8_t btp_bap_broadcast_adv_start(const void *cmd, uint16_t cmd_len,
@@ -118,3 +127,7 @@ uint8_t btp_bap_broadcast_assistant_set_broadcast_code(const void *cmd, uint16_t
 						       void *rsp, uint16_t *rsp_len);
 uint8_t btp_bap_broadcast_assistant_send_past(const void *cmd, uint16_t cmd_len,
 					      void *rsp, uint16_t *rsp_len);
+uint8_t btp_bap_scan_delegator_add_src(const void *cmd, uint16_t cmd_len,
+				       void *rsp, uint16_t *rsp_len);
+uint8_t btp_bap_set_sink_broadcast_code(const void *cmd, uint16_t cmd_len, void *rsp,
+					uint16_t *rsp_len);

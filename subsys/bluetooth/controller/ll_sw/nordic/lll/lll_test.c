@@ -220,7 +220,7 @@ static void isr_rx(void *param)
 
 #if defined(CONFIG_BT_CTLR_DF_CTE_RX)
 	bool cte_ready;
-	bool cte_ok = 0;
+	bool cte_ok = false;
 #endif /* CONFIG_BT_CTLR_DF_CTE_RX */
 
 	/* Read radio status and events */
@@ -245,7 +245,7 @@ static void isr_rx(void *param)
 	if (test_cte_len > 0) {
 		/* Get free iq report node for next Rx operation. */
 		node_rx = ull_df_iq_report_alloc_peek(1);
-		LL_ASSERT(node_rx);
+		LL_ASSERT_DBG(node_rx);
 
 		radio_df_iq_data_packet_set(node_rx->pdu, IQ_SAMPLE_TOTAL_CNT);
 	}
@@ -442,7 +442,7 @@ static uint8_t cte_rx_init(uint8_t expected_cte_len, uint8_t expected_cte_type,
 	struct node_rx_iq_report *node_rx;
 
 	node_rx = ull_df_iq_report_alloc_peek(1);
-	LL_ASSERT(node_rx);
+	LL_ASSERT_DBG(node_rx);
 
 	radio_df_iq_data_packet_set(node_rx->pdu, IQ_SAMPLE_TOTAL_CNT);
 #else
@@ -491,7 +491,7 @@ static uint32_t calculate_tifs(uint8_t len)
 }
 
 static uint8_t init(uint8_t chan, uint8_t phy, int8_t tx_power,
-		    bool cte, void (*isr)(void *))
+		    bool cte, void (*isr)(void *param))
 {
 	int err;
 	uint8_t ret;
@@ -505,7 +505,7 @@ static uint8_t init(uint8_t chan, uint8_t phy, int8_t tx_power,
 
 	/* Setup resources required by Radio */
 	err = lll_hfclock_on_wait();
-	LL_ASSERT(err >= 0);
+	LL_ASSERT_ERR(err >= 0);
 
 	/* Reset Radio h/w */
 	radio_reset();
@@ -751,7 +751,7 @@ uint8_t ll_test_end(uint16_t *num_rx)
 
 	/* Release resources acquired for Radio */
 	err = lll_hfclock_off();
-	LL_ASSERT(err >= 0);
+	LL_ASSERT_ERR(err >= 0);
 
 	/* Stop coarse timer */
 	cntr_stop();

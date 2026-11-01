@@ -35,7 +35,6 @@ enum bt_keys_type {
 
 enum {
 	BT_KEYS_ID_PENDING_ADD = BIT(0),
-	BT_KEYS_ID_PENDING_DEL = BIT(1),
 	BT_KEYS_ID_ADDED = BIT(2),
 };
 
@@ -45,6 +44,20 @@ enum {
 	/* Bit 2 and 3 might accidentally exist in old stored keys */
 	BT_KEYS_SC = BIT(4),
 	BT_KEYS_OOB = BIT(5),
+	/* Whether the value of the peer's Central Address Resolution
+	 * characteristic is known, and if so, whether address resolution is
+	 * supported. Keys stored before these flags were introduced load
+	 * with both bits cleared, i.e. as unknown.
+	 */
+	BT_KEYS_CENTRAL_ADDR_RES_KNOWN = BIT(6),
+	BT_KEYS_CENTRAL_ADDR_RES_SUPPORT = BIT(7),
+};
+
+enum bt_keys_cfg_flags {
+	BT_KEYS_CFG_SIGNING = BIT(0),
+	BT_KEYS_CFG_SC_PAIR_ONLY = BIT(1),
+	BT_KEYS_CFG_OVERWRITE_OLDEST = BIT(2),
+	/* BIT(24) and higher: Invalid. See STORAGE_CFG_FLAGS. */
 };
 
 struct bt_ltk {
@@ -74,6 +87,9 @@ struct bt_keys {
 	bt_addr_le_t addr;
 	uint8_t state;
 	uint8_t storage_start[0] __aligned(sizeof(void *));
+	/* cfg_version and cfg_flags total 4 octets to maintain struct alignment */
+	uint8_t cfg_version;
+	uint8_t cfg_flags[3];
 	uint8_t enc_size;
 	uint8_t flags;
 	uint16_t keys;
@@ -98,6 +114,8 @@ struct bt_keys {
  * Keys stored in settings are not cleared.
  */
 void bt_keys_reset(void);
+
+bool bt_keys_has_bond(uint8_t id);
 
 /**
  * @brief Get a call through the callback for each key with the same type
@@ -217,6 +235,7 @@ enum {
 
 struct bt_keys_link_key {
 	bt_addr_t addr;
+	uint8_t enc_key_size;
 	uint8_t storage_start[0] __aligned(sizeof(void *));
 	uint8_t flags;
 	uint8_t val[16];

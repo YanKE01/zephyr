@@ -9,6 +9,7 @@
 		out {
 			pinmux = <GSPI_CLK_HP25>, <GSPI_MOSI_HP27>;
 		};
+
 		in {
 			pinmux = <GSPI_MISO_HP26>;
 		};
@@ -21,21 +22,15 @@
 	pinctrl-0 = <&spi0_default>;
 	pinctrl-names = "default";
 
-	dmas =  <&dma0 11>, <&dma0 10>;
-	dma-names = "tx", "rx";
-
 	slow@0 {
 		compatible = "test-spi-loopback-slow";
 		reg = <0>;
 		spi-max-frequency = <500000>;
 	};
+
 	fast@1 {
 		compatible = "test-spi-loopback-fast";
-		reg = <1>;
+		reg = <0>;
 		spi-max-frequency = <10000000>;
 	};
-};
-
-&dma0 {
-	status = "okay";
 };

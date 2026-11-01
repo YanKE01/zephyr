@@ -52,7 +52,7 @@ required information (ex. include paths). You may do it from VS Code embedded te
 .. code-block:: console
 
    $ cd zephyr
-   $ west build -p always -b native_sim/native/64
+   $ west build -p always -b native_sim/native/64 samples/basic/blinky
 
 
 Configure the C/C++ extension
@@ -74,6 +74,15 @@ Additional resources
 
 There are many other extensions that can be useful when working with Zephyr and VS Code. While this
 guide does not cover them yet, you may refer to their documentation to set them up:
+
+Zephyr workflow extensions
+==========================
+
+The following third-party extensions add Zephyr-specific workflows to VS Code, such as toolchain
+management, project creation, building, flashing and debugging (in alphabetical order):
+
+- :ref:`ide_for_zephyr_vscode_ext` (Mylonics)
+- :ref:`workbench_for_zephyr` (Ac6)
 
 Contribution tooling
 ====================

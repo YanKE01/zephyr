@@ -7,6 +7,7 @@
 /**
  * @file
  * @brief Macros to abstract toolchain specific capabilities
+ * @ingroup toolchain
  *
  * This file contains various macros to abstract compiler capabilities that
  * utilize toolchain specific attributes and/or pragmas.
@@ -16,11 +17,23 @@
 #define ZEPHYR_INCLUDE_TOOLCHAIN_H_
 
 /**
+ * @addtogroup toolchain
+ * @{
+ */
+
+/** @name Compiler builtins, versions, and feature probes
+ * @{
+ */
+
+/**
  * @def HAS_BUILTIN(x)
  * @brief Check if the compiler supports the built-in function \a x.
  *
  * This macro is for use with conditional compilation to enable code using a
  * builtin function that may not be available in every compiler.
+ *
+ * @param x Built-in function identifier, including the leading underscores.
+ * @return Nonzero if the built-in function is supported, or zero otherwise.
  */
 #ifdef __has_builtin
 #define HAS_BUILTIN(x) __has_builtin(x)
@@ -46,7 +59,8 @@
 #include <zephyr/toolchain/armclang.h>
 #elif defined(__IAR_SYSTEMS_ICC__)
 #include <zephyr/toolchain/iar.h>
-#elif defined(__llvm__) || (defined(_LINKER) && defined(__LLD_LINKER_CMD__))
+#elif defined(__llvm__) ||                                                                         \
+	(defined(_LINKER) && (defined(__LLD_LINKER_CMD__) || defined(__ELD_LINKER_CMD__)))
 #include <zephyr/toolchain/llvm.h>
 #elif defined(__GNUC__) || (defined(_LINKER) && defined(__GCC_LINKER_CMD__))
 #include <zephyr/toolchain/gcc.h>
@@ -128,12 +142,20 @@
 /**
  * @def TOOLCHAIN_PRAGMA
  * @brief Helper for using pragma in macros.
+ *
+ * @param x Pragma directive body.
  */
-#ifdef TOOLCHAIN_HAS_PRAGMA_DIAG
+#if TOOLCHAIN_HAS_PRAGMA_DIAG
 #define TOOLCHAIN_PRAGMA(x) _Pragma(#x)
 #else
 #define TOOLCHAIN_PRAGMA(x)
 #endif
+
+/** @} */
+
+/** @name Compiler warning identifiers
+ * @{
+ */
 
 /**
  * @def TOOLCHAIN_WARNING_ADDRESS_OF_PACKED_MEMBER
@@ -192,6 +214,18 @@
 #endif
 
 /**
+ * @def TOOLCHAIN_WARNING_ARM_INTERRUPT_VFP_CLOBBER
+ * @brief Toolchain-specific warning for ARM interrupt service routines with VFP enabled that may
+ * clobber the VFP state.
+ *
+ * Use this as an argument to the @ref TOOLCHAIN_DISABLE_WARNING and
+ * @ref TOOLCHAIN_ENABLE_WARNING family of macros.
+ */
+#ifndef TOOLCHAIN_WARNING_ARM_INTERRUPT_VFP_CLOBBER
+#define TOOLCHAIN_WARNING_ARM_INTERRUPT_VFP_CLOBBER
+#endif
+
+/**
  * @def TOOLCHAIN_WARNING_NONNULL
  * @brief Toolchain-specific warning for null pointer arguments to functions marked with "nonnull".
  *
@@ -247,8 +281,38 @@
 #endif
 
 /**
+ * @def TOOLCHAIN_WARNING_ALWAYS_INLINE
+ * @brief Toolchain-specific warning for inline functions.
+ *
+ * Use this as an argument to the @ref TOOLCHAIN_DISABLE_WARNING and
+ * @ref TOOLCHAIN_ENABLE_WARNING family of macros.
+ */
+#ifndef TOOLCHAIN_WARNING_ALWAYS_INLINE
+#define TOOLCHAIN_WARNING_ALWAYS_INLINE
+#endif
+
+/**
+ * @def TOOLCHAIN_WARNING_CAST_QUAL
+ * @brief Toolchain-specific warning for pointer casts removing a type qualifier.
+ *
+ * Use this as an argument to the @ref TOOLCHAIN_DISABLE_WARNING and
+ * @ref TOOLCHAIN_ENABLE_WARNING family of macros.
+ */
+#ifndef TOOLCHAIN_WARNING_CAST_QUAL
+#define TOOLCHAIN_WARNING_CAST_QUAL
+#endif
+
+/** @} */
+
+/** @name Compiler warning control
+ * @{
+ */
+
+/**
  * @def TOOLCHAIN_DISABLE_WARNING
  * @brief Disable the specified compiler warning for all compilers.
+ *
+ * @param warning Toolchain-specific warning identifier.
  */
 #ifndef TOOLCHAIN_DISABLE_WARNING
 #define TOOLCHAIN_DISABLE_WARNING(warning)
@@ -259,6 +323,8 @@
  * @brief Re-enable the specified compiler warning for all compilers.
  *
  * Can only be used after a call to @ref TOOLCHAIN_DISABLE_WARNING.
+ *
+ * @param warning Toolchain-specific warning identifier.
  */
 #ifndef TOOLCHAIN_ENABLE_WARNING
 #define TOOLCHAIN_ENABLE_WARNING(warning)
@@ -267,6 +333,8 @@
 /**
  * @def TOOLCHAIN_DISABLE_CLANG_WARNING
  * @brief Disable the specified compiler warning for clang.
+ *
+ * @param warning Clang warning identifier.
  */
 #ifndef TOOLCHAIN_DISABLE_CLANG_WARNING
 #define TOOLCHAIN_DISABLE_CLANG_WARNING(warning)
@@ -277,6 +345,8 @@
  * @brief Re-enable the specified compiler warning for clang.
  *
  * Can only be used after a call to @ref TOOLCHAIN_DISABLE_CLANG_WARNING.
+ *
+ * @param warning Clang warning identifier.
  */
 #ifndef TOOLCHAIN_ENABLE_CLANG_WARNING
 #define TOOLCHAIN_ENABLE_CLANG_WARNING(warning)
@@ -285,6 +355,8 @@
 /**
  * @def TOOLCHAIN_DISABLE_GCC_WARNING
  * @brief Disable the specified compiler warning for gcc.
+ *
+ * @param warning GCC warning identifier.
  */
 #ifndef TOOLCHAIN_DISABLE_GCC_WARNING
 #define TOOLCHAIN_DISABLE_GCC_WARNING(warning)
@@ -295,6 +367,8 @@
  * @brief Re-enable the specified compiler warning for gcc.
  *
  * Can only be used after a call to @ref TOOLCHAIN_DISABLE_GCC_WARNING.
+ *
+ * @param warning GCC warning identifier.
  */
 #ifndef TOOLCHAIN_ENABLE_GCC_WARNING
 #define TOOLCHAIN_ENABLE_GCC_WARNING(warning)
@@ -303,6 +377,8 @@
 /**
  * @def TOOLCHAIN_DISABLE_IAR_WARNING
  * @brief Disable the specified compiler warning for IAR compilers.
+ *
+ * @param warning IAR warning identifier.
  */
 #ifndef TOOLCHAIN_DISABLE_IAR_WARNING
 #define TOOLCHAIN_DISABLE_IAR_WARNING(warning)
@@ -313,10 +389,14 @@
  * @brief Re-enable the specified compiler warning for IAR compilers.
  *
  * Can only be used after a call to @ref TOOLCHAIN_DISABLE_IAR_WARNING.
+ *
+ * @param warning IAR warning identifier.
  */
 #ifndef TOOLCHAIN_ENABLE_IAR_WARNING
 #define TOOLCHAIN_ENABLE_IAR_WARNING(warning)
 #endif
+
+/** @} */
 
 /*
  * Ensure that __BYTE_ORDER__ and related preprocessor definitions are defined,
@@ -357,5 +437,7 @@
 #endif /* all _ORDER_ macros defined */
 
 #endif /* !_LINKER */
+
+/** @} */
 
 #endif /* ZEPHYR_INCLUDE_TOOLCHAIN_H_ */

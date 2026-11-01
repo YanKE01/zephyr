@@ -6,8 +6,11 @@
 menuconfig IEEE802154_MCXW
 	bool "NXP MCXW series IEEE 802.15.4 Driver"
 	default y
-	depends on DT_HAS_NXP_MCXW_IEEE802154_ENABLED
+	depends on DT_HAS_NXP_MCXW_IEEE802154_ENABLED && !OPENTHREAD_RADIO_VENDOR_IMPLEMENTATION
 	select COUNTER
+	select NVMEM
+	select NET_PKT_TXTIME
+	select NET_PKT_TIMESTAMP
 
 if IEEE802154_MCXW
 
@@ -19,10 +22,8 @@ config IEEE802154_MCXW_RX_STACK_SIZE
 	int "Driver's internal RX thread stack size"
 	default 800
 
-
 config IEEE802154_MCXW_CSL_ACCURACY
 	int "Csl accuracy for delayed operations"
-	default 100
-
+	default 50
 
 endif

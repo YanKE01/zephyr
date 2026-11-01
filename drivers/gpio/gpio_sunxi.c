@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT allwinner_sunxi_gpio
+#define DT_DRV_COMPAT allwinner_sun252i_f101_gpio
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>

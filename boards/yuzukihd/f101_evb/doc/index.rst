@@ -23,6 +23,9 @@ Build
 
    west build -b f101_evb samples/hello_world
 
+The Zephyr 4.5 environment, optional RVV/MMU configurations and rollback
+procedure are shared with :ref:`f101-zephyr-4-5`.
+
 References
 **********
 

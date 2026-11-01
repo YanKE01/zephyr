@@ -250,7 +250,7 @@ board directory to a separate repository once it's working.)
 .. note::
 
   The board directory name does not need to match the name of the board.
-  Multiple boards can even defined be in one directory.
+  Multiple boards can even be defined in one directory.
 
 Your board directory should look like this:
 
@@ -326,6 +326,7 @@ The skeleton of the board YAML file is:
 
    board:
      name: <board-name>
+     full_name: <board-full-name>
      vendor: <board-vendor>
      revision:
        format: <major.minor.patch|letter|number|custom>
@@ -355,9 +356,11 @@ If multiple boards are placed in the same board folder, then the file
    boards:
    - name: <board-name-1>
      vendor: <board-vendor>
+     full_name: <board-full-name>
      ...
    - name: <board-name-2>
      vendor: <board-vendor>
+     full_name: <board-full-name>
      ...
    ...
 
@@ -395,7 +398,7 @@ In general, :file:`plank_<qualifiers>.dts` should look like this:
            leds {
                    compatible = "gpio-leds";
                    led0: led_0 {
-                           gpios = < /* GPIO your LED is hooked up to */ >;
+                           gpios = </* GPIO your LED is hooked up to */>;
                            label = "LED 0";
                    };
                    /* ... other LEDs ... */
@@ -443,17 +446,18 @@ devicetree.
 
 The FRDM-K64F and Hexiwear K64 board devicetrees are defined in
 :zephyr_file:`frdm_k64fs.dts <boards/nxp/frdm_k64f/frdm_k64f.dts>` and
-:zephyr_file:`hexiwear_k64.dts <boards/nxp/hexiwear/hexiwear_mk64f12.dts>`
+:zephyr_file:`hexiwear_k64.dts <boards/mikroe/hexiwear/hexiwear_mk64f12.dts>`
 respectively. Both boards have NXP SoCs from the same Kinetis SoC family, the
 K6X.
 
 Common devicetree definitions for K6X are stored in :zephyr_file:`nxp_k6x.dtsi
-<dts/arm/nxp/nxp_k6x.dtsi>`, which is included by both board :file:`.dts`
-files. :zephyr_file:`nxp_k6x.dtsi<dts/arm/nxp/nxp_k6x.dtsi>` in turn includes
+<dts/arm/nxp/kinetis/k6x/nxp_k6x.dtsi>`, which is included by both board
+:file:`.dts` files. :zephyr_file:`nxp_k6x.dtsi<dts/arm/nxp/kinetis/k6x/nxp_k6x.dtsi>`
+in turn includes
 :zephyr_file:`armv7-m.dtsi<dts/arm/armv7-m.dtsi>`, which has common definitions
 for Arm v7-M cores.
 
-Since :zephyr_file:`nxp_k6x.dtsi<dts/arm/nxp/nxp_k6x.dtsi>` is meant to be
+Since :zephyr_file:`nxp_k6x.dtsi<dts/arm/nxp/kinetis/k6x/nxp_k6x.dtsi>` is meant to be
 generic across K6X-based boards, it leaves many devices disabled by default
 using ``status`` properties.  For example, there is a CAN controller defined as
 follows (with unimportant parts skipped):
@@ -515,7 +519,7 @@ files for a board named ``plank``:
   Kconfig trees.
 
   This file selects the SoC in the Kconfig tree and potential other SoC related
-  Kconfig settings. This file must not select anything outside the re-usable
+  Kconfig settings. This file must not select anything outside the reusable
   Kconfig board and SoC trees.
 
   A :file:`Kconfig.plank` may look like this:
@@ -620,55 +624,83 @@ For ``west flash`` to work, see :ref:`flash-and-debug-support` below. You can
 also just flash :file:`build/zephyr/zephyr.elf`, :file:`zephyr.hex`, or
 :file:`zephyr.bin` with any other tools you prefer.
 
+Before submitting a board upstream, verify that every board target you add can
+pass the project's minimum open source test suite using only code from the
+mainline Zephyr repository and its modules. The suite currently consists of:
+
+- :file:`samples/philosophers`
+- :file:`tests/kernel`
+
+For example, build the suite for a board target with:
+
+.. code-block:: console
+
+   west twister -p plank -T samples/philosophers -T tests/kernel
+
+For boards with multiple SoCs, CPU clusters, variants, or revisions, repeat the
+test suite for each new board target. A :zephyr:code-sample:`hello_world` build
+is also recommended as a quick smoke check, for example:
+
+.. code-block:: console
+
+   west build -p always -b plank/soc1/foo samples/hello_world
+   west build -p always -b plank@1.0.0/soc1/foo samples/hello_world
+
+Use :ref:`sysbuild` if the board target requires it. When using board testing
+metadata, such as ``testing: only_tags`` in the board target YAML file, make
+sure the target is still validated against the minimum test suite in local
+testing or CI.
+
 .. _porting-general-recommendations:
 
 General recommendations
 ***********************
 
-For consistency and to make it easier for users to build generic applications
-that are not board specific for your board, please follow these guidelines
-while porting.
+For consistency and to make it easier for users to build applications which remain board agnostic,
+please follow these guidelines when porting a board you intend to contribute to Zephyr:
 
-- Unless explicitly recommended otherwise by this section, leave peripherals
-  and their drivers disabled by default.
+Enable valuable components in Devicetree
+  Devicetree nodes for valuable onboard components (LEDs, buttons, sensors, onboard
+  USB/Ethernet/BLE/Wi-Fi, etc.) must be **enabled by default** and have correct pin control and
+  driver configuration so that they work out of the box.
 
-- Configure and enable a system clock, along with a tick source.
+Keep subsystems disabled by default (Kconfig)
+  Do not enable subsystems in the board defconfig unless they are strictly required for basic board
+  operation, or are explicitly listed as exceptions in these recommendations.
 
-- Provide pin and driver configuration that matches the board's valuable
-  components such as sensors, buttons or LEDs, and communication interfaces
-  such as USB, Ethernet connector, or Bluetooth/Wi-Fi chip.
+Configure system clock and tick source
+  Set up a functioning system clock and tick source.
 
-- If your board uses a well-known connector standard (like Arduino, Mikrobus,
-  Grove, or 96Boards connectors), add connector nodes to your DTS and configure
-  pin muxes accordingly.
+Provide a default console
+  Use the ``zephyr,console`` chosen node to point to the UART controller used for console output.
 
-- Configure components that enable the use of these pins, such as
-  configuring an SPI instance to use the usual Arduino SPI pins.
+  Boards with built-in debug or a USB-to-UART adapter should set the console to the UART controller
+  connected to that adapter.
 
-- If available, configure and enable a serial output for the console
-  using the ``zephyr,console`` chosen node in the devicetree.
-  Development boards with a built-in debug adapter or USB-to-UART adapter should
-  by default configure and use the UART controller connected to that adapter.
-  For boards like :zephyr:board:`nrf52840dongle`, that do not
-  have a debug adapter, but a USB device controller, there is a common
-  :zephyr_file:`Kconfig file <boards/common/usb/Kconfig.cdc_acm_serial.defconfig>`
-  that must be included in the board's Kconfig.defconfig file and
-  :zephyr_file:`devicetree file <boards/common/usb/cdc_acm_serial.dtsi>`
-  that must be included if the board's devicetree, if the board want to use the
-  CDC ACM UART as the default backend for logging and shell.
+  USB-only boards without any debug adapter must include the common USB CDC-ACM
+  :zephyr_file:`Kconfig <boards/common/usb/Kconfig.cdc_acm_serial.defconfig>` and :zephyr_file:`DTS
+  <boards/common/usb/cdc_acm_serial.dtsi>` fragments to enable CDC-ACM UART as a default backend
+  for logging and shell.
 
-- If your board supports networking, configure a default interface.
+Add :ref:`shield interface <shield-interfaces>` definitions
+  For boards exposing standard expansion headers, add connector nodes and pin-muxing. Enable only
+  the peripherals needed for the expected/standard connector functionality.
 
-- Enable all GPIO ports connected to peripherals or expansion connectors.
+Configure pins and peripheral instances
+  Map peripherals to the correct pins (e.g., SPI on Arduino SPI pins) and provide default pinmux
+  entries supporting the board's features.
 
-- If available, enable pinmux and interrupt controller drivers.
+Enable networking interfaces
+  If networking hardware is present, configure default interfaces for each supported technology so
+  that networking samples work out of the box.
 
-- It is recommended to enable the MPU by default, if there is support for it
-  in hardware. For boards with limited memory resources it is acceptable to
-  disable it. When the MPU is enabled, it is recommended to also enable
-  hardware stack protection (CONFIG_HW_STACK_PROTECTION=y) and, thus, allow the
-  kernel to detect stack overflows when the system is running in privileged
-  mode.
+Enable GPIO controllers
+  All GPIO ports connected to onboard components or expansion headers should be enabled.
+
+Enable MPU and stack protection
+  It is recommended to enable the MPU when available (unless memory resources are too limited).
+  When the MPU is enabled, it is recommended to also enable hardware stack protection
+  (:kconfig:option:`CONFIG_HW_STACK_PROTECTION`) to ease debugging by allowing the kernel to detect stack overflows.
 
 .. _flash-and-debug-support:
 
@@ -798,9 +830,9 @@ The build system will print this at CMake configuration time:
 This allows you to only create revision configuration files for board revision
 numbers that introduce incompatible changes.
 
-Similar for ``letter`` where revision ``A``, ``D``, and ``F`` could be defined
-and the user builds for ``plank@E``, the build system will target revision ``D``
-.
+Similarly for ``letter`` revision format, if revisions ``A``, ``D``, and ``F``
+are defined and the user builds for ``plank@E``, the build system will target
+revision ``D``.
 
 Exact revision matching
 =======================
@@ -832,15 +864,9 @@ starting point and the following board files will be used in addition:
   defconfig which is only used for the board and SOC / variants identified by
   ``<board>_<qualifiers>``.
 
-- :file:`<board>_<revision>_defconfig`: a specific revision defconfig which is
-  used for the board regardless of the SOC / variants.
-
 - :file:`<board>_<qualifiers>_<revision>.overlay`: a specific revision dts
   overlay which is only used for the board and SOC / variants identified by
   ``<board>_<qualifiers>``.
-
-- :file:`<board>_<revision>.overlay`: a specific revision dts overlay which is
-  used for the board regardless of the SOC / variants.
 
 This split allows boards with multiple SoCs, multi-core SoCs, or variants to
 place common revision adjustments which apply to all SoCs and variants in a
@@ -853,8 +879,7 @@ revision adjustments:
 .. code-block:: none
 
    boards/zephyr/plank
-   ├── plank_0_5_0_defconfig          # Kconfig adjustment for all plank board qualifiers on revision 0.5.0
-   ├── plank_0_5_0.overlay            # DTS overlay for all plank board qualifiers on revision 0.5.0
+   ├── plank_soc1_foo_1_5_0.overlay   # DTS overlay for plank board when building for soc1 variant foo on revision 1.5.0
    └── plank_soc1_foo_1_5_0_defconfig # Kconfig adjustment for plank board when building for soc1 variant foo on revision 1.5.0
 
 Custom revision.cmake files
@@ -893,8 +918,8 @@ The :makevar:`BOARD_REVISION` variable holds the revision value specified by the
 user.
 
 To signal to the build system that it should use a different revision than the
-one specified by the user, :file:`revision.cmake` can set the variable
-``ACTIVE_BOARD_REVISION`` to the revision to use instead. The corresponding
+one specified by the user, :file:`revision.cmake` can set the CMake variable
+:cmake:variable:`ACTIVE_BOARD_REVISION` to the revision to use instead. The corresponding
 Kconfig files and devicetree overlays must be named
 :file:`<board>_<ACTIVE_BOARD_REVISION>_defconfig` and
 :file:`<board>_<ACTIVE_BOARD_REVISION>.overlay`.
@@ -942,7 +967,7 @@ The skeleton of the board YAML file for extending a board is:
 
    board:
      extend: <existing-board-name>
-      variants:
+     variants:
        - name: <new-variant>
          qualifier: <existing-qualifier>
 
@@ -970,50 +995,3 @@ extending a board.
    ├── Kconfig.plank
    ├── Kconfig.defconfig
    └── plank_<new-qualifiers>.yaml
-
-Board extensions (Old hardware model)
-*************************************
-
-.. note::
-
-  This extension mechanism is intended for boards in old hardware description
-  format. For boards described in new hardware model format, use the extension
-  feature described in :ref:`extend-board`.
-
-Boards already supported by Zephyr can be extended by downstream users, such as
-``example-application`` or vendor SDKs. In some situations, certain hardware
-description or :ref:`choices <devicetree-chosen-nodes>` can not be added in the
-upstream Zephyr repository, but they can be in a downstream project, where
-custom bindings or driver classes can also be created. This feature may also be
-useful in development phases, when the board skeleton lives upstream, but other
-features are developed in a downstream module.
-
-Board extensions are board fragments that can be present in an out-of-tree board
-root folder, under ``${BOARD_ROOT}/boards/extensions``. Here is an example
-structure of an extension for the ``plank`` board and its revisions:
-
-.. code-block:: none
-
-   boards/extensions/plank
-   ├── plank.conf                # optional
-   ├── plank_<revision>.conf     # optional
-   ├── plank.overlay             # optional
-   └── plank_<revision>.overlay  # optional
-
-A board extension directory must follow the naming structure of the original
-board it extends. It may contain Kconfig fragments and/or devicetree overlays.
-Extensions are, by default, automatically loaded and applied on top of board
-files, before anything else. There is no guarantee on which order extensions are
-applied, in case multiple exist. This feature can be disabled by passing
-``-DBOARD_EXTENSIONS=OFF`` when building.
-
-Note that board extensions need to follow the
-:ref:`same guidelines <porting-general-recommendations>` as regular boards. For
-example, it is wrong to enable extra peripherals or subsystems in a board
-extension.
-
-.. warning::
-
-   Board extensions are not allowed in any module referenced in Zephyr's
-   ``west.yml`` manifest file. Any board changes are required to be submitted to
-   the main Zephyr repository.

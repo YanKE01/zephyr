@@ -18,4 +18,3 @@ properties:
     type: phandle
     required: true
     description: Combo D-PHY of the DSI link.
-

@@ -25,7 +25,7 @@ LOG_MODULE_REGISTER(net_test, CONFIG_NET_MGMT_EVENT_LOG_LEVEL);
 #define TEST_MGMT_EVENT			0x97AB1234
 #define TEST_MGMT_EVENT_UNHANDLED	0x97AB4321
 #define TEST_MGMT_EVENT_INFO_SIZE	\
-	MAX(sizeof(TEST_INFO_STRING), sizeof(struct in6_addr))
+	MAX(sizeof(TEST_INFO_STRING), sizeof(struct net_in6_addr))
 
 /* Notifier infra */
 static uint64_t event2throw;
@@ -44,7 +44,7 @@ static size_t info_length_in_test;
 static struct net_mgmt_event_callback rx_cb;
 static char *info_string = TEST_INFO_STRING;
 
-static struct in6_addr addr6 = { { { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+static struct net_in6_addr addr6 = { { { 0xfe, 0x80, 0, 0, 0, 0, 0, 0,
 				     0, 0, 0, 0, 0, 0, 0, 0x1 } } };
 
 static char info_data[TEST_MGMT_EVENT_INFO_SIZE];
@@ -107,9 +107,12 @@ int fake_dev_init(const struct device *dev)
 
 static void fake_iface_init(struct net_if *iface)
 {
-	static uint8_t mac[8] = { 0x00, 0x00, 0x00, 0x00, 0x0a, 0x0b, 0x0c, 0x0d};
+	static uint8_t mac[6] = { 0x00, 0x00, 0x0a, 0x0b, 0x0c, 0x0d};
+	int ret;
 
-	net_if_set_link_addr(iface, mac, 8, NET_LINK_DUMMY);
+	ret = net_if_set_link_addr(iface, mac, 6, NET_LINK_DUMMY);
+
+	zassert_equal(ret, 0, "Setting link address failed (%d)", ret);
 }
 
 static int fake_iface_send(const struct device *dev, struct net_pkt *pkt)
@@ -190,6 +193,18 @@ static void receiver_cb(struct net_mgmt_event_callback *cb,
 	rx_calls++;
 }
 
+/* Wait (bounded) for the async net_mgmt worker to deliver `target` events.
+ * A single fixed sleep races on platforms where the worker drains its queue
+ * slower than THREAD_SLEEP (e.g. mps2/an385 under QEMU deterministic icount),
+ * so poll rx_calls and return as soon as delivery has completed.
+ */
+static void wait_for_rx_calls(uint32_t target)
+{
+	for (int i = 0; i < 200 && rx_calls < target; i++) {
+		k_msleep(10);
+	}
+}
+
 static int sending_event(uint32_t times, bool receiver, bool info)
 {
 	TC_PRINT("- Sending event %u times, %s a receiver, %s info\n",
@@ -207,7 +222,7 @@ static int sending_event(uint32_t times, bool receiver, bool info)
 	k_sem_give(&thrower_lock);
 
 	/* Let the network stack to proceed */
-	k_msleep(THREAD_SLEEP);
+	wait_for_rx_calls(receiver ? times : 0);
 
 	if (receiver) {
 		TC_PRINT("\tReceived 0x%" PRIx64 " %u times\n",
@@ -284,7 +299,7 @@ static int test_static_event_listener(uint32_t times, bool info)
 	k_sem_give(&thrower_lock);
 
 	/* Let the network stack to proceed */
-	k_msleep(THREAD_SLEEP);
+	wait_for_rx_calls(times);
 
 	TC_PRINT("\tReceived 0x%" PRIx64 " %u times\n",
 			rx_event, rx_calls);
@@ -326,7 +341,7 @@ static int test_core_event(uint64_t event, bool (*func)(void))
 {
 	TC_PRINT("- Triggering core event: 0x%" PRIx64 "\n", event);
 
-	info_length_in_test = sizeof(struct in6_addr);
+	info_length_in_test = sizeof(struct net_in6_addr);
 	memcpy(info_data, &addr6, sizeof(addr6));
 
 	net_mgmt_init_event_callback(&rx_cb, receiver_cb, event);
@@ -336,7 +351,7 @@ static int test_core_event(uint64_t event, bool (*func)(void))
 	zassert_true(func(), "func() check failed");
 
 	/* Let the network stack to proceed */
-	k_msleep(THREAD_SLEEP);
+	wait_for_rx_calls(1);
 
 	zassert_true(rx_calls > 0 && rx_calls != -1, "rx_calls empty");
 	zassert_equal(rx_event, event, "rx_event check failed, "

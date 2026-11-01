@@ -17,6 +17,7 @@
 		pwm-0 = &pwm0;
 		led0 = &yellow_led;
 		watchdog0 = &wdt;
+		dac-0 = &dacc;
 	};
 
 	chosen {
@@ -80,4 +81,11 @@
 	pinctrl-names = "default";
 };
 
-arduino_i2c: &twi1 { };
+&dacc {
+	status = "okay";
+
+	pinctrl-0 = <&dacc_default>;
+	pinctrl-names = "default";
+};
+
+arduino_i2c: &twi1 {};

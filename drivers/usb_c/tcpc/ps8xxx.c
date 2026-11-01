@@ -11,6 +11,7 @@
 #include <zephyr/usb_c/usbc.h>
 #include <zephyr/usb_c/tcpci.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/byteorder.h>
 #include "ps8xxx_priv.h"
 
 #define DT_DRV_COMPAT parade_ps8xxx
@@ -41,8 +42,10 @@ struct ps8xxx_data {
 
 	/** VCONN discharge callback set by USB-C stack */
 	tcpc_vconn_discharge_cb_t vconn_discharge_cb;
-	/** VCONN discharge callback data set by USB-C stack */
+	/** VCONN control callback set by USB-C stack */
 	tcpc_vconn_control_cb_t vconn_cb;
+	/** USB-C connector device passed to VCONN callbacks */
+	const struct device *usbc_dev;
 	/** Polarity of CC lines for PD and VCONN */
 	enum tc_cc_polarity cc_polarity;
 
@@ -154,18 +157,22 @@ int ps8xxx_tcpc_set_cc(const struct device *dev, enum tc_cc_pull pull)
 	return tcpci_tcpm_set_cc(&cfg->bus, pull);
 }
 
-void ps8xxx_tcpc_set_vconn_discharge_cb(const struct device *dev, tcpc_vconn_discharge_cb_t cb)
+void ps8xxx_tcpc_set_vconn_discharge_cb(const struct device *dev, tcpc_vconn_discharge_cb_t cb,
+					const struct device *usbc_dev)
 {
 	struct ps8xxx_data *data = dev->data;
 
 	data->vconn_discharge_cb = cb;
+	data->usbc_dev = usbc_dev;
 }
 
-void ps8xxx_tcpc_set_vconn_cb(const struct device *dev, tcpc_vconn_control_cb_t vconn_cb)
+void ps8xxx_tcpc_set_vconn_cb(const struct device *dev, tcpc_vconn_control_cb_t vconn_cb,
+			      const struct device *usbc_dev)
 {
 	struct ps8xxx_data *data = dev->data;
 
 	data->vconn_cb = vconn_cb;
+	data->usbc_dev = usbc_dev;
 }
 
 int ps8xxx_tcpc_vconn_discharge(const struct device *dev, bool enable)
@@ -195,7 +202,7 @@ int ps8xxx_tcpc_set_vconn(const struct device *dev, bool enable)
 	}
 
 	if (data->vconn_cb != NULL) {
-		ret = data->vconn_cb(dev, data->cc_polarity, enable);
+		ret = data->vconn_cb(dev, data->usbc_dev, data->cc_polarity, enable);
 	}
 
 	return ret;
@@ -216,6 +223,7 @@ int ps8xxx_tcpc_get_rx_pending_msg(const struct device *dev, struct pd_msg *msg)
 	struct i2c_msg buf[5];
 	uint8_t msg_len = 0;
 	uint8_t unused;
+	uint8_t header_le[2] = {0};
 	int buf_count;
 	int reg = TCPC_REG_RX_BUFFER;
 	int ret;
@@ -251,9 +259,8 @@ int ps8xxx_tcpc_get_rx_pending_msg(const struct device *dev, struct pd_msg *msg)
 	buf[2].len = 1;
 	buf[2].flags = I2C_MSG_RESTART | I2C_MSG_READ;
 
-	msg->header.raw_value = 0;
-	buf[3].buf = (uint8_t *)&msg->header.raw_value;
-	buf[3].len = 2;
+	buf[3].buf = header_le;
+	buf[3].len = sizeof(header_le);
 	buf[3].flags = I2C_MSG_RESTART | I2C_MSG_READ;
 
 	if (msg_len > 3) {
@@ -273,6 +280,7 @@ int ps8xxx_tcpc_get_rx_pending_msg(const struct device *dev, struct pd_msg *msg)
 	if (ret != 0) {
 		LOG_ERR("I2C transfer error: %d", ret);
 	} else {
+		msg->header.raw_value = sys_get_le16(header_le);
 		msg->len = (msg_len > 3) ? msg_len - 3 : 0;
 		ret = sizeof(msg->header.raw_value) + msg->len;
 	}
@@ -324,22 +332,6 @@ int ps8xxx_tcpc_dump_std_reg(const struct device *dev)
 	LOG_INF("TCPC %s:%s registers:", cfg->bus.bus->name, dev->name);
 
 	return tcpci_tcpm_dump_std_reg(&cfg->bus);
-}
-
-void ps8xxx_tcpc_alert_handler_cb(const struct device *dev, void *data, enum tcpc_alert alert)
-{
-}
-
-int ps8xxx_tcpc_get_status_register(const struct device *dev, enum tcpc_status_reg reg,
-				    uint32_t *status)
-{
-	return -ENOSYS;
-}
-
-int ps8xxx_tcpc_clear_status_register(const struct device *dev, enum tcpc_status_reg reg,
-				      uint32_t mask)
-{
-	return -ENOSYS;
 }
 
 int ps8xxx_tcpc_mask_status_register(const struct device *dev, enum tcpc_status_reg reg,
@@ -463,9 +455,6 @@ static DEVICE_API(tcpc, ps8xxx_driver_api) = {
 	.set_cc_polarity = ps8xxx_tcpc_set_cc_polarity,
 	.transmit_data = ps8xxx_tcpc_transmit_data,
 	.dump_std_reg = ps8xxx_tcpc_dump_std_reg,
-	.alert_handler_cb = ps8xxx_tcpc_alert_handler_cb,
-	.get_status_register = ps8xxx_tcpc_get_status_register,
-	.clear_status_register = ps8xxx_tcpc_clear_status_register,
 	.mask_status_register = ps8xxx_tcpc_mask_status_register,
 	.set_debug_accessory = ps8xxx_tcpc_set_debug_accessory,
 	.set_debug_detach = ps8xxx_tcpc_set_debug_detach,
@@ -500,7 +489,7 @@ void ps8xxx_alert_work_cb(struct k_work *work)
 		return;
 	}
 
-	tcpci_tcpm_get_status_register(&cfg->bus, TCPC_ALERT_STATUS, &alert_reg);
+	tcpci_tcpm_get_alert_status(&cfg->bus, &alert_reg);
 
 	while (alert_reg != 0) {
 		enum tcpc_alert alert_type = tcpci_alert_reg_to_enum(alert_reg);
@@ -512,8 +501,7 @@ void ps8xxx_alert_work_cb(struct k_work *work)
 		} else if (alert_type == TCPC_ALERT_FAULT_STATUS) {
 			uint8_t fault;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_FAULT_STATUS,
-						       (uint16_t *)&fault);
+			tcpci_tcpm_get_fault_status(&cfg->bus, &fault);
 			tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_FAULT_STATUS,
 							 (uint16_t)fault);
 
@@ -521,8 +509,7 @@ void ps8xxx_alert_work_cb(struct k_work *work)
 		} else if (alert_type == TCPC_ALERT_EXTENDED_STATUS) {
 			uint8_t ext_status;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_EXTENDED_STATUS,
-						       (uint16_t *)&ext_status);
+			tcpci_tcpm_get_extended_status(&cfg->bus, &ext_status);
 			tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_EXTENDED_STATUS,
 							 (uint16_t)ext_status);
 
@@ -531,15 +518,13 @@ void ps8xxx_alert_work_cb(struct k_work *work)
 		} else if (alert_type == TCPC_ALERT_POWER_STATUS) {
 			uint8_t pwr_status;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_POWER_STATUS,
-						       (uint16_t *)&pwr_status);
+			tcpci_tcpm_get_power_status(&cfg->bus, &pwr_status);
 
 			LOG_DBG("PS8xxx power status: %02x", pwr_status);
 		} else if (alert_type == TCPC_ALERT_EXTENDED) {
 			uint8_t alert_status;
 
-			tcpci_tcpm_get_status_register(&cfg->bus, TCPC_EXTENDED_ALERT_STATUS,
-						       (uint16_t *)&alert_status);
+			tcpci_tcpm_get_extended_alert_status(&cfg->bus, &alert_status);
 			tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_EXTENDED_ALERT_STATUS,
 							 (uint16_t)alert_status);
 
@@ -559,7 +544,7 @@ void ps8xxx_alert_work_cb(struct k_work *work)
 	}
 
 	tcpci_tcpm_clear_status_register(&cfg->bus, TCPC_ALERT_STATUS, clear_flags);
-	tcpci_tcpm_get_status_register(&cfg->bus, TCPC_ALERT_STATUS, &alert_reg);
+	tcpci_tcpm_get_alert_status(&cfg->bus, &alert_reg);
 
 	if (alert_reg != 0) {
 		k_work_submit(work);
@@ -577,7 +562,7 @@ void ps8xxx_init_work_cb(struct k_work *work)
 	int ret;
 
 	LOG_INF("Initializing PS8xxx chip: %s", data->dev->name);
-	ret = tcpci_tcpm_get_status_register(&cfg->bus, TCPC_POWER_STATUS, (uint16_t *)&power_reg);
+	ret = tcpci_tcpm_get_power_status(&cfg->bus, &power_reg);
 	if (ret != 0 || (power_reg & TCPC_REG_POWER_STATUS_UNINIT)) {
 		data->init_retries++;
 
@@ -597,11 +582,24 @@ void ps8xxx_init_work_cb(struct k_work *work)
 		chip_info.device_id);
 
 	/* Initialize alert interrupt */
-	gpio_pin_configure_dt(&cfg->alert_gpio, GPIO_INPUT);
+	ret = gpio_pin_configure_dt(&cfg->alert_gpio, GPIO_INPUT);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure alert GPIO: %d", ret);
+		return;
+	}
 
 	gpio_init_callback(&data->alert_cb, ps8xxx_alert_cb, BIT(cfg->alert_gpio.pin));
-	gpio_add_callback(cfg->alert_gpio.port, &data->alert_cb);
-	gpio_pin_interrupt_configure_dt(&cfg->alert_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	ret = gpio_add_callback(cfg->alert_gpio.port, &data->alert_cb);
+	if (ret != 0) {
+		LOG_ERR("Failed to add alert callback: %d", ret);
+		return;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(&cfg->alert_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure alert interrupt: %d", ret);
+		return;
+	}
 
 	tcpci_init_alert_mask(data->dev);
 	data->initialized = true;

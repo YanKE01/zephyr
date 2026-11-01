@@ -33,6 +33,7 @@ LOG_MODULE_REGISTER(net_pkt, CONFIG_NET_PKT_LOG_LEVEL);
 
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/net_ip.h>
+#include <zephyr/net/net_log.h>
 #include <zephyr/net_buf.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/net/ethernet.h>
@@ -44,7 +45,7 @@ LOG_MODULE_REGISTER(net_pkt, CONFIG_NET_PKT_LOG_LEVEL);
 /* Make sure net_buf data size is large enough that IPv6
  * and possible extensions fit to the network buffer.
  * The check is done using an arbitrarily chosen value 96 by monitoring
- * wireshark traffic to see what the typical header lengts are.
+ * wireshark traffic to see what the typical header lengths are.
  * It is still recommended to use the default value 128 but allow smaller
  * value if really needed.
  */
@@ -142,8 +143,11 @@ NET_BUF_POOL_FIXED_DEFINE(tx_bufs, CONFIG_NET_BUF_TX_COUNT, CONFIG_NET_BUF_DATA_
 
 NET_BUF_POOL_VAR_DEFINE(rx_bufs, CONFIG_NET_BUF_RX_COUNT, CONFIG_NET_PKT_BUF_RX_DATA_POOL_SIZE,
 			CONFIG_NET_PKT_BUF_USER_DATA_SIZE, NULL);
-NET_BUF_POOL_VAR_DEFINE(tx_bufs, CONFIG_NET_BUF_TX_COUNT, CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE,
-			CONFIG_NET_PKT_BUF_USER_DATA_SIZE, NULL);
+
+NET_BUF_POOL_VAR_ALIGN_DEFINE(tx_bufs, CONFIG_NET_BUF_TX_COUNT,
+			      CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE,
+			      CONFIG_NET_PKT_BUF_USER_DATA_SIZE, NULL,
+			      CONFIG_NET_PKT_BUF_TX_DATA_ALLOC_ALIGN_LEN);
 
 #endif /* CONFIG_NET_BUF_FIXED_DATA_SIZE */
 
@@ -174,21 +178,38 @@ static struct net_pkt_alloc net_pkt_allocs[MAX_NET_PKT_ALLOCS];
 static void net_pkt_alloc_add(void *alloc_data, bool is_pkt,
 			      const char *func, int line)
 {
+	int slot = -1;
 	int i;
 
+	/* Reuse the free record of this address if there is one, so that
+	 * net_pkt_alloc_find() never sees a stale free of it.
+	 */
 	for (i = 0; i < MAX_NET_PKT_ALLOCS; i++) {
 		if (net_pkt_allocs[i].in_use) {
 			continue;
 		}
 
-		net_pkt_allocs[i].in_use = true;
-		net_pkt_allocs[i].is_pkt = is_pkt;
-		net_pkt_allocs[i].alloc_data = alloc_data;
-		net_pkt_allocs[i].func_alloc = func;
-		net_pkt_allocs[i].line_alloc = line;
+		if (net_pkt_allocs[i].alloc_data == alloc_data) {
+			slot = i;
+			break;
+		}
 
+		if (slot < 0) {
+			slot = i;
+		}
+	}
+
+	if (slot < 0) {
 		return;
 	}
+
+	net_pkt_allocs[slot].in_use = true;
+	net_pkt_allocs[slot].is_pkt = is_pkt;
+	net_pkt_allocs[slot].alloc_data = alloc_data;
+	net_pkt_allocs[slot].func_alloc = func;
+	net_pkt_allocs[slot].line_alloc = line;
+	net_pkt_allocs[slot].func_free = NULL;
+	net_pkt_allocs[slot].line_free = 0;
 }
 
 static void net_pkt_alloc_del(void *alloc_data, const char *func, int line)
@@ -311,7 +332,8 @@ void net_pkt_print_frags(struct net_pkt *pkt)
 {
 	struct net_buf *frag;
 	size_t total = 0;
-	int count = 0, frag_size = 0;
+	size_t occupied = 0;
+	int count = 0;
 
 	if (!pkt) {
 		NET_INFO("pkt %p", pkt);
@@ -325,21 +347,19 @@ void net_pkt_print_frags(struct net_pkt *pkt)
 	frag = pkt->frags;
 	while (frag) {
 		total += frag->len;
+		occupied += frag->size;
 
-		frag_size = net_buf_max_len(frag);
-
-		NET_INFO("[%d] frag %p len %d max len %u size %d pool %p",
-			 count, frag, frag->len, frag->size,
-			 frag_size, net_buf_pool_get(frag->pool_id));
+		NET_INFO("[%d] frag %p len %d tailroom %zu size %d pool %p",
+			 count, frag, frag->len, net_buf_tailroom(frag),
+			 frag->size, net_buf_pool_get(frag->pool_id));
 
 		count++;
 
 		frag = frag->frags;
 	}
 
-	NET_INFO("Total data size %zu, occupied %d bytes, utilization %zu%%",
-		 total, count * frag_size,
-		 count ? (total * 100) / (count * frag_size) : 0);
+	NET_INFO("Total data size %zu, occupied %zu bytes, utilization %zu%%",
+		 total, occupied, occupied ? (total * 100) / occupied : 0);
 }
 #endif
 
@@ -412,7 +432,7 @@ struct net_buf *net_pkt_get_reserve_data(struct net_buf_pool *pool,
 	net_pkt_alloc_add(frag, false, caller, line);
 
 #if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
-	NET_DBG("%s (%s) [%d] frag %p ref %d (%s():%d)",
+	NET_DBG("%s (%s) [%d] frag %p ref %u (%s():%d)",
 		pool2str(pool), get_name(pool), get_frees(pool),
 		frag, frag->ref, caller, line);
 #endif
@@ -527,9 +547,6 @@ void net_pkt_unref(struct net_pkt *pkt)
 	atomic_val_t ref;
 
 	if (!pkt) {
-#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
-		NET_ERR("*** ERROR *** pkt %p (%s():%d)", pkt, caller, line);
-#endif
 		return;
 	}
 
@@ -567,7 +584,7 @@ void net_pkt_unref(struct net_pkt *pkt)
 	frag = pkt->frags;
 	while (frag) {
 #if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
-		NET_DBG("%s (%s) [%d] frag %p ref %d frags %p (%s():%d)",
+		NET_DBG("%s (%s) [%d] frag %p ref %u frags %p (%s():%d)",
 			pool2str(net_buf_pool_get(frag->pool_id)),
 			get_name(net_buf_pool_get(frag->pool_id)),
 			get_frees(net_buf_pool_get(frag->pool_id)), frag,
@@ -661,7 +678,7 @@ struct net_buf *net_pkt_frag_ref(struct net_buf *frag)
 	}
 
 #if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
-	NET_DBG("%s (%s) [%d] frag %p ref %d (%s():%d)",
+	NET_DBG("%s (%s) [%d] frag %p ref %u (%s():%d)",
 		pool2str(net_buf_pool_get(frag->pool_id)),
 		get_name(net_buf_pool_get(frag->pool_id)),
 		get_frees(net_buf_pool_get(frag->pool_id)),
@@ -686,19 +703,85 @@ void net_pkt_frag_unref(struct net_buf *frag)
 		return;
 	}
 
+	/*
+	 * Walk the frag chain like net_buf_unref() does, but slot the
+	 * net_pkt_alloc_del() tracker call in atomically with the
+	 * "I'm the last reference" decision.
+	 *
+	 * The previous pattern --
+	 *
+	 *	if (frag->ref == 1U) net_pkt_alloc_del(...);
+	 *	net_buf_unref(frag);
+	 *
+	 * -- was racy under SMP: two threads could both observe ref==1
+	 * (and both call alloc_del) or neither does (alloc_del skipped
+	 * even though one of them is going to free the buf). Doing the
+	 * atomic dec here makes "am I the last reference?" authoritative,
+	 * and the count before the decrement is what the log reports.
+	 *
+	 * Snapshot the chain link and the pool *before* the atomic dec:
+	 * once our reference is dropped, another holder may free the
+	 * frag at any moment, so frag->frags and frag->pool_id can no
+	 * longer be safely read. The pool itself is a static struct
+	 * that remains valid in either case.
+	 */
+	while (frag) {
+		struct net_buf *next = frag->frags;
+		struct net_buf_pool *pool = net_buf_pool_get(frag->pool_id);
+		atomic_val_t old_word;
+		uint8_t old_ref;
+
+		/* A zero count must not be decremented, not even by an unref
+		 * racing with the last one: the borrow would go into the other
+		 * bytes of ref_word of a buffer that has already been freed.
+		 */
+		do {
+			old_word = atomic_get(&frag->ref_word);
+			old_ref = (uint8_t)old_word;
+			if (old_ref == 0U) {
+				break;
+			}
+		} while (!atomic_cas(&frag->ref_word, old_word, old_word - 1));
+
 #if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
-	NET_DBG("%s (%s) [%d] frag %p ref %d (%s():%d)",
-		pool2str(net_buf_pool_get(frag->pool_id)),
-		get_name(net_buf_pool_get(frag->pool_id)),
-		get_frees(net_buf_pool_get(frag->pool_id)),
-		frag, frag->ref - 1U, caller, line);
+		NET_DBG("%s (%s) [%d] frag %p ref %u (%s():%d)",
+			pool2str(pool), get_name(pool), get_frees(pool),
+			frag, old_ref - 1U, caller, line);
 #endif
 
-	if (frag->ref == 1U) {
-		net_pkt_alloc_del(frag, caller, line);
-	}
+		__ASSERT(old_ref != 0, "frag %p double free", frag);
+		if (old_ref != 1) {
+			/*
+			 * Not the last reference (or a double free). Some
+			 * other holder still owns the rest of the frag
+			 * chain; we must not touch the buffer further.
+			 */
+			return;
+		}
 
-	net_buf_unref(frag);
+		/*
+		 * Last reference: record the unref site, then finalize
+		 * destruction (mirrors net_buf_unref()'s last-ref block).
+		 */
+		net_pkt_alloc_del(frag, caller, line);
+
+		frag->data = NULL;
+		frag->frags = NULL;
+
+#if defined(CONFIG_NET_BUF_POOL_USAGE)
+		__maybe_unused atomic_val_t old_avail =
+			atomic_inc(&pool->avail_count);
+
+		__ASSERT_NO_MSG(old_avail + 1 <= pool->buf_count);
+#endif
+		if (pool->destroy) {
+			pool->destroy(frag);
+		} else {
+			net_buf_destroy(frag);
+		}
+
+		frag = next;
+	}
 }
 
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
@@ -712,29 +795,36 @@ struct net_buf *net_pkt_frag_del(struct net_pkt *pkt,
 				 struct net_buf *frag)
 #endif
 {
+	struct net_buf *next;
+
 #if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
 	NET_DBG("pkt %p parent %p frag %p ref %u (%s:%d)",
 		pkt, parent, frag, frag->ref, caller, line);
 #endif
 
-	if (pkt->frags == frag && !parent) {
-		struct net_buf *tmp;
-
-		if (frag->ref == 1U) {
-			net_pkt_alloc_del(frag, caller, line);
-		}
-
-		tmp = net_buf_frag_del(NULL, frag);
-		pkt->frags = tmp;
-
-		return tmp;
+	/*
+	 * Unlink frag from its chain ourselves, then route the unref
+	 * through net_pkt_frag_unref() so the alloc_del tracker call
+	 * is performed atomically with the "I'm the last reference"
+	 * decision (see the comment in net_pkt_frag_unref()).
+	 */
+	if (parent) {
+		__ASSERT_NO_MSG(parent->frags == frag);
+		parent->frags = frag->frags;
+	} else if (pkt->frags == frag) {
+		pkt->frags = frag->frags;
 	}
 
-	if (frag->ref == 1U) {
-		net_pkt_alloc_del(frag, caller, line);
-	}
+	next = frag->frags;
+	frag->frags = NULL;
 
-	return net_buf_frag_del(parent, frag);
+#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
+	net_pkt_frag_unref_debug(frag, caller, line);
+#else
+	net_pkt_frag_unref(frag);
+#endif
+
+	return next;
 }
 
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
@@ -948,9 +1038,24 @@ static struct net_buf *pkt_alloc_buffer(struct net_pkt *pkt,
 	do {
 		struct net_buf *new;
 
-		new = net_buf_alloc_fixed(pool, timeout);
-		if (!new) {
-			goto error;
+		/* An allocation that does not block cannot have consumed any
+		 * of the caller's timeout, so only work out how much of it is
+		 * left when the pool was empty and we actually have to wait.
+		 * That keeps the clock out of the common path: with K_NO_WAIT
+		 * the deadline handling in net_buf_alloc_len() short circuits
+		 * too, so nothing below here reads it either.
+		 */
+		new = net_buf_alloc_fixed(pool, K_NO_WAIT);
+		if (new == NULL) {
+			if (K_TIMEOUT_EQ(timeout, K_NO_WAIT)) {
+				goto error;
+			}
+
+			new = net_buf_alloc_fixed(pool,
+						  sys_timepoint_timeout(end));
+			if (new == NULL) {
+				goto error;
+			}
 		}
 
 		if (!first && !current) {
@@ -980,14 +1085,14 @@ static struct net_buf *pkt_alloc_buffer(struct net_pkt *pkt,
 			size -= current->size;
 		}
 
-		timeout = sys_timepoint_timeout(end);
-
-#if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
+#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 		NET_FRAG_CHECK_IF_NOT_IN_USE(new, new->ref + 1);
+#endif
 
 		net_pkt_alloc_add(new, false, caller, line);
 
-		NET_DBG("%s (%s) [%d] frag %p ref %d (%s():%d)",
+#if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
+		NET_DBG("%s (%s) [%d] frag %p ref %u (%s():%d)",
 			pool2str(pool), get_name(pool), get_frees(pool),
 			new, new->ref, caller, line);
 #endif
@@ -1002,7 +1107,7 @@ static struct net_buf *pkt_alloc_buffer(struct net_pkt *pkt,
 	return first;
 error:
 	if (first) {
-		net_buf_unref(first);
+		net_pkt_frag_unref(first);
 	}
 
 #if defined(CONFIG_NET_PKT_ALLOC_STATS)
@@ -1040,15 +1145,19 @@ static struct net_buf *pkt_alloc_buffer(struct net_pkt *pkt,
 
 	buf = net_buf_alloc_len(pool, size + headroom, timeout);
 
-#if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
-	NET_FRAG_CHECK_IF_NOT_IN_USE(buf, buf->ref + 1);
-
-	net_pkt_alloc_add(buf, false, caller, line);
-
-	NET_DBG("%s (%s) [%d] frag %p ref %d (%s():%d)",
-		pool2str(pool), get_name(pool), get_frees(pool),
-		buf, buf->ref, caller, line);
+	if (buf) {
+#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
+		NET_FRAG_CHECK_IF_NOT_IN_USE(buf, buf->ref + 1);
 #endif
+
+		net_pkt_alloc_add(buf, false, caller, line);
+
+#if CONFIG_NET_PKT_LOG_LEVEL >= LOG_LEVEL_DBG
+		NET_DBG("%s (%s) [%d] frag %p ref %u (%s():%d)",
+			pool2str(pool), get_name(pool), get_frees(pool),
+			buf, buf->ref, caller, line);
+#endif
+	}
 
 #if defined(CONFIG_NET_PKT_ALLOC_STATS)
 	if (buf) {
@@ -1072,7 +1181,7 @@ static size_t pkt_buffer_length(struct net_pkt *pkt,
 				enum net_ip_protocol proto,
 				size_t existing)
 {
-	sa_family_t family = net_pkt_family(pkt);
+	net_sa_family_t family = net_pkt_family(pkt);
 	size_t max_len;
 
 	if (net_pkt_iface(pkt)) {
@@ -1082,7 +1191,7 @@ static size_t pkt_buffer_length(struct net_pkt *pkt,
 	}
 
 	/* Family vs iface MTU */
-	if (IS_ENABLED(CONFIG_NET_IPV6) && family == AF_INET6) {
+	if (IS_ENABLED(CONFIG_NET_IPV6) && family == NET_AF_INET6) {
 		if (IS_ENABLED(CONFIG_NET_IPV6_FRAGMENT) && (size > max_len)) {
 			/* We support larger packets if IPv6 fragmentation is
 			 * enabled.
@@ -1091,14 +1200,14 @@ static size_t pkt_buffer_length(struct net_pkt *pkt,
 		}
 
 		max_len = MAX(max_len, NET_IPV6_MTU);
-	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == AF_INET) {
+	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == NET_AF_INET) {
 		if (IS_ENABLED(CONFIG_NET_IPV4_FRAGMENT) && (size > max_len)) {
 			/* We support larger packets if IPv4 fragmentation is enabled */
 			max_len = size;
 		}
 
 		max_len = MAX(max_len, NET_IPV4_MTU);
-	} else { /* family == AF_UNSPEC */
+	} else { /* family == NET_AF_UNSPEC */
 #if defined (CONFIG_NET_L2_ETHERNET)
 		if (net_if_l2(net_pkt_iface(pkt)) ==
 		    &NET_L2_GET_NAME(ETHERNET)) {
@@ -1119,28 +1228,28 @@ static size_t pkt_buffer_length(struct net_pkt *pkt,
 }
 
 static size_t pkt_estimate_headers_length(struct net_pkt *pkt,
-					  sa_family_t family,
+					  net_sa_family_t family,
 					  enum net_ip_protocol proto)
 {
 	size_t hdr_len = 0;
 
-	if (family == AF_UNSPEC) {
+	if (family == NET_AF_UNSPEC) {
 		return  0;
 	}
 
 	/* Family header */
-	if (IS_ENABLED(CONFIG_NET_IPV6) && family == AF_INET6) {
+	if (IS_ENABLED(CONFIG_NET_IPV6) && family == NET_AF_INET6) {
 		hdr_len += NET_IPV6H_LEN;
-	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == AF_INET) {
+	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == NET_AF_INET) {
 		hdr_len += NET_IPV4H_LEN;
 	}
 
 	/* + protocol header */
-	if (IS_ENABLED(CONFIG_NET_TCP) && proto == IPPROTO_TCP) {
+	if (IS_ENABLED(CONFIG_NET_TCP) && proto == NET_IPPROTO_TCP) {
 		hdr_len += NET_TCPH_LEN + NET_TCP_MAX_OPT_SIZE;
-	} else if (IS_ENABLED(CONFIG_NET_UDP) && proto == IPPROTO_UDP) {
+	} else if (IS_ENABLED(CONFIG_NET_UDP) && proto == NET_IPPROTO_UDP) {
 		hdr_len += NET_UDPH_LEN;
-	} else if (proto == IPPROTO_ICMP || proto == IPPROTO_ICMPV6) {
+	} else if (proto == NET_IPPROTO_ICMP || proto == NET_IPPROTO_ICMPV6) {
 		hdr_len += NET_ICMPH_LEN;
 	}
 
@@ -1149,17 +1258,17 @@ static size_t pkt_estimate_headers_length(struct net_pkt *pkt,
 	return hdr_len;
 }
 
-static size_t pkt_get_max_len(struct net_pkt *pkt)
+static size_t pkt_get_tailroom(struct net_pkt *pkt)
 {
 	struct net_buf *buf = pkt->buffer;
-	size_t size = 0;
+	size_t tailroom = 0;
 
 	while (buf) {
-		size += net_buf_max_len(buf);
+		tailroom += net_buf_tailroom(buf);
 		buf = buf->frags;
 	}
 
-	return size;
+	return tailroom;
 }
 
 size_t net_pkt_available_buffer(struct net_pkt *pkt)
@@ -1168,7 +1277,7 @@ size_t net_pkt_available_buffer(struct net_pkt *pkt)
 		return 0;
 	}
 
-	return pkt_get_max_len(pkt) - net_pkt_get_len(pkt);
+	return pkt_get_tailroom(pkt);
 }
 
 size_t net_pkt_available_payload_buffer(struct net_pkt *pkt,
@@ -1209,7 +1318,7 @@ void net_pkt_trim_buffer(struct net_pkt *pkt)
 			}
 
 			buf->frags = NULL;
-			net_buf_unref(buf);
+			net_pkt_frag_unref(buf);
 		} else {
 			prev = buf;
 		}
@@ -1269,7 +1378,7 @@ int net_pkt_alloc_buffer_with_reserve(struct net_pkt *pkt,
 	size_t hdr_len = 0;
 	struct net_buf *buf;
 
-	if (!size && proto == 0 && net_pkt_family(pkt) == AF_UNSPEC) {
+	if (!size && proto == 0 && net_pkt_family(pkt) == NET_AF_UNSPEC) {
 		return 0;
 	}
 
@@ -1363,7 +1472,7 @@ int net_pkt_alloc_buffer(struct net_pkt *pkt,
 	struct net_if *iface;
 	int ret;
 
-	if (!size && proto == 0 && net_pkt_family(pkt) == AF_UNSPEC) {
+	if (!size && proto == 0 && net_pkt_family(pkt) == NET_AF_UNSPEC) {
 		return 0;
 	}
 
@@ -1523,9 +1632,7 @@ static struct net_pkt *pkt_alloc(struct k_mem_slab *slab, k_timeout_t timeout)
 
 	net_pkt_set_vlan_tag(pkt, NET_VLAN_TAG_UNSPEC);
 
-#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 	net_pkt_alloc_add(pkt, true, caller, line);
-#endif
 
 	net_pkt_cursor_init(pkt);
 
@@ -1646,7 +1753,7 @@ static struct net_pkt *
 pkt_alloc_with_buffer(struct k_mem_slab *slab,
 		      struct net_if *iface,
 		      size_t size,
-		      sa_family_t family,
+		      net_sa_family_t family,
 		      enum net_ip_protocol proto,
 		      k_timeout_t timeout,
 		      const char *caller,
@@ -1656,12 +1763,11 @@ static struct net_pkt *
 pkt_alloc_with_buffer(struct k_mem_slab *slab,
 		      struct net_if *iface,
 		      size_t size,
-		      sa_family_t family,
+		      net_sa_family_t family,
 		      enum net_ip_protocol proto,
 		      k_timeout_t timeout)
 #endif
 {
-	k_timepoint_t end = sys_timepoint_calc(timeout);
 	struct net_pkt *pkt;
 	int ret;
 
@@ -1672,19 +1778,40 @@ pkt_alloc_with_buffer(struct k_mem_slab *slab,
 	NET_DBG("On iface %d (%p) size %zu", net_if_get_by_iface(iface), iface, size);
 #endif /* CONFIG_NET_RAW_MODE */
 
+	/* As in pkt_alloc_buffer(), take the slab without waiting first. When
+	 * that works none of the caller's timeout has gone, so it can be
+	 * handed to the buffer allocation untouched and the clock stays out
+	 * of the common path entirely.
+	 */
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
-	pkt = pkt_alloc_on_iface(slab, iface, timeout, caller, line);
+	pkt = pkt_alloc_on_iface(slab, iface, K_NO_WAIT, caller, line);
 #else
-	pkt = pkt_alloc_on_iface(slab, iface, timeout);
+	pkt = pkt_alloc_on_iface(slab, iface, K_NO_WAIT);
 #endif
 
-	if (!pkt) {
-		return NULL;
+	if (pkt == NULL) {
+		k_timepoint_t end;
+
+		if (K_TIMEOUT_EQ(timeout, K_NO_WAIT)) {
+			return NULL;
+		}
+
+		end = sys_timepoint_calc(timeout);
+
+#if NET_LOG_LEVEL >= LOG_LEVEL_DBG
+		pkt = pkt_alloc_on_iface(slab, iface, timeout, caller, line);
+#else
+		pkt = pkt_alloc_on_iface(slab, iface, timeout);
+#endif
+		if (pkt == NULL) {
+			return NULL;
+		}
+
+		/* Waiting for the slab used up part of the caller's budget. */
+		timeout = sys_timepoint_timeout(end);
 	}
 
 	net_pkt_set_family(pkt, family);
-
-	timeout = sys_timepoint_timeout(end);
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 	ret = net_pkt_alloc_buffer_debug(pkt, size, proto, timeout,
 					 caller, line);
@@ -1703,7 +1830,7 @@ pkt_alloc_with_buffer(struct k_mem_slab *slab,
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 struct net_pkt *net_pkt_alloc_with_buffer_debug(struct net_if *iface,
 						size_t size,
-						sa_family_t family,
+						net_sa_family_t family,
 						enum net_ip_protocol proto,
 						k_timeout_t timeout,
 						const char *caller,
@@ -1711,7 +1838,7 @@ struct net_pkt *net_pkt_alloc_with_buffer_debug(struct net_if *iface,
 #else
 struct net_pkt *net_pkt_alloc_with_buffer(struct net_if *iface,
 					  size_t size,
-					  sa_family_t family,
+					  net_sa_family_t family,
 					  enum net_ip_protocol proto,
 					  k_timeout_t timeout)
 #endif
@@ -1728,7 +1855,7 @@ struct net_pkt *net_pkt_alloc_with_buffer(struct net_if *iface,
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 struct net_pkt *net_pkt_rx_alloc_with_buffer_debug(struct net_if *iface,
 						   size_t size,
-						   sa_family_t family,
+						   net_sa_family_t family,
 						   enum net_ip_protocol proto,
 						   k_timeout_t timeout,
 						   const char *caller,
@@ -1736,7 +1863,7 @@ struct net_pkt *net_pkt_rx_alloc_with_buffer_debug(struct net_if *iface,
 #else
 struct net_pkt *net_pkt_rx_alloc_with_buffer(struct net_if *iface,
 					     size_t size,
-					     sa_family_t family,
+					     net_sa_family_t family,
 					     enum net_ip_protocol proto,
 					     k_timeout_t timeout)
 #endif
@@ -1770,6 +1897,14 @@ void net_pkt_cursor_init(struct net_pkt *pkt)
 	}
 }
 
+/* Offset from buf->data past which nothing can be appended: the current
+ * payload plus the tailroom behind it.
+ */
+static size_t pkt_buf_write_limit(struct net_buf *buf)
+{
+	return buf->len + net_buf_tailroom(buf);
+}
+
 static void pkt_cursor_jump(struct net_pkt *pkt, bool write)
 {
 	struct net_pkt_cursor *cursor = &pkt->cursor;
@@ -1777,7 +1912,7 @@ static void pkt_cursor_jump(struct net_pkt *pkt, bool write)
 	cursor->buf = cursor->buf->frags;
 	while (cursor->buf) {
 		const size_t len =
-			write ? net_buf_max_len(cursor->buf) : cursor->buf->len;
+			write ? pkt_buf_write_limit(cursor->buf) : cursor->buf->len;
 
 		if (!len) {
 			cursor->buf = cursor->buf->frags;
@@ -1802,7 +1937,7 @@ static void pkt_cursor_advance(struct net_pkt *pkt, bool write)
 		return;
 	}
 
-	len = write ? net_buf_max_len(cursor->buf) : cursor->buf->len;
+	len = write ? pkt_buf_write_limit(cursor->buf) : cursor->buf->len;
 	if ((cursor->pos - cursor->buf->data) == len) {
 		pkt_cursor_jump(pkt, write);
 	}
@@ -1818,10 +1953,10 @@ static void pkt_cursor_update(struct net_pkt *pkt,
 		write = false;
 	}
 
-	len = write ? net_buf_max_len(cursor->buf) : cursor->buf->len;
+	len = write ? pkt_buf_write_limit(cursor->buf) : cursor->buf->len;
 	if (length + (cursor->pos - cursor->buf->data) == len &&
 	    !(net_pkt_is_being_overwritten(pkt) &&
-	      len < net_buf_max_len(cursor->buf))) {
+	      net_buf_tailroom(cursor->buf) > 0U)) {
 		pkt_cursor_jump(pkt, write);
 	} else {
 		cursor->pos += length;
@@ -1835,55 +1970,60 @@ static int net_pkt_cursor_operate(struct net_pkt *pkt,
 {
 	/* We use such variable to avoid lengthy lines */
 	struct net_pkt_cursor *c_op = &pkt->cursor;
+	const bool ow = net_pkt_is_being_overwritten(pkt);
+	const bool append = write && !ow;
 
-	while (c_op->buf && length) {
-		size_t d_len, len;
+	while ((c_op->buf != NULL) && (length > 0U)) {
+		size_t limit, d_len, len;
 
-		pkt_cursor_advance(pkt, net_pkt_is_being_overwritten(pkt) ?
-				   false : write);
-		if (c_op->buf == NULL) {
-			break;
+		/* Compute the fragment limit only once per fragment */
+		limit = append ? pkt_buf_write_limit(c_op->buf) : c_op->buf->len;
+		d_len = limit - (c_op->pos - c_op->buf->data);
+
+		if (d_len == 0U) {
+			/* End of this fragment reached, move to the next
+			 * non-empty one.
+			 */
+			pkt_cursor_jump(pkt, append);
+			continue;
 		}
 
-		if (write && !net_pkt_is_being_overwritten(pkt)) {
-			d_len = net_buf_max_len(c_op->buf) -
-				(c_op->pos - c_op->buf->data);
-		} else {
-			d_len = c_op->buf->len - (c_op->pos - c_op->buf->data);
+		len = MIN(length, d_len);
+
+		if (data != NULL) {
+			if (copy) {
+				memcpy(write ? c_op->pos : data,
+				       write ? data : c_op->pos,
+				       len);
+			} else {
+				memset(c_op->pos, *(int *)data, len);
+			}
 		}
 
-		if (!d_len) {
-			break;
-		}
-
-		if (length < d_len) {
-			len = length;
-		} else {
-			len = d_len;
-		}
-
-		if (copy && data) {
-			memcpy(write ? c_op->pos : data,
-			       write ? data : c_op->pos,
-			       len);
-		} else if (data) {
-			memset(c_op->pos, *(int *)data, len);
-		}
-
-		if (write && !net_pkt_is_being_overwritten(pkt)) {
+		if (append) {
 			net_buf_add(c_op->buf, len);
 		}
 
-		pkt_cursor_update(pkt, len, write);
+		/* Update the cursor: when the end of the fragment has been
+		 * reached, jump to the next non-empty one, except in
+		 * overwrite mode when the fragment still has room for
+		 * subsequent appends.
+		 */
+		if (len == d_len &&
+		    !(ow && net_buf_tailroom(c_op->buf) > 0U)) {
+			pkt_cursor_jump(pkt, append);
+		} else {
+			c_op->pos += len;
+		}
 
-		if (copy && data) {
+		if (copy && (data != NULL)) {
 			data = (uint8_t *) data + len;
 		}
 
 		length -= len;
 	}
 
-	if (length) {
+	if (length > 0U) {
 		NET_DBG("Still some length to go %zu", length);
 		return -ENOBUFS;
 	}
@@ -1914,37 +2054,72 @@ int net_pkt_read(struct net_pkt *pkt, void *data, size_t length)
 
 int net_pkt_read_be16(struct net_pkt *pkt, uint16_t *data)
 {
-	uint8_t d16[2];
+	uint8_t d16[sizeof(uint16_t)];
 	int ret;
 
 	ret = net_pkt_read(pkt, d16, sizeof(uint16_t));
 
-	*data = d16[0] << 8 | d16[1];
+	*data = sys_get_be16(d16);
 
 	return ret;
 }
 
 int net_pkt_read_le16(struct net_pkt *pkt, uint16_t *data)
 {
-	uint8_t d16[2];
+	uint8_t d16[sizeof(uint16_t)];
 	int ret;
 
 	ret = net_pkt_read(pkt, d16, sizeof(uint16_t));
 
-	*data = d16[1] << 8 | d16[0];
+	*data = sys_get_le16(d16);
 
 	return ret;
 }
 
 int net_pkt_read_be32(struct net_pkt *pkt, uint32_t *data)
 {
-	uint8_t d32[4];
+	uint8_t d32[sizeof(uint32_t)];
 	int ret;
 
 	ret = net_pkt_read(pkt, d32, sizeof(uint32_t));
 
-	*data = (uint32_t)d32[0] << 24 | (uint32_t)d32[1] << 16 |
-		(uint32_t)d32[2] << 8 | (uint32_t)d32[3];
+	*data = sys_get_be32(d32);
+
+	return ret;
+}
+
+int net_pkt_read_le32(struct net_pkt *pkt, uint32_t *data)
+{
+	uint8_t d32[sizeof(uint32_t)];
+	int ret;
+
+	ret = net_pkt_read(pkt, d32, sizeof(uint32_t));
+
+	*data = sys_get_le32(d32);
+
+	return ret;
+}
+
+int net_pkt_read_be64(struct net_pkt *pkt, uint64_t *data)
+{
+	uint8_t d64[sizeof(uint64_t)];
+	int ret;
+
+	ret = net_pkt_read(pkt, d64, sizeof(uint64_t));
+
+	*data = sys_get_be64(d64);
+
+	return ret;
+}
+
+int net_pkt_read_le64(struct net_pkt *pkt, uint64_t *data)
+{
+	uint8_t d64[sizeof(uint64_t)];
+	int ret;
+
+	ret = net_pkt_read(pkt, d64, sizeof(uint64_t));
+
+	*data = sys_get_le64(d64);
 
 	return ret;
 }
@@ -1978,7 +2153,7 @@ int net_pkt_copy(struct net_pkt *pkt_dst,
 		}
 
 		s_len = c_src->buf->len - (c_src->pos - c_src->buf->data);
-		d_len = net_buf_max_len(c_dst->buf) - (c_dst->pos - c_dst->buf->data);
+		d_len = pkt_buf_write_limit(c_dst->buf) - (c_dst->pos - c_dst->buf->data);
 		if (length < s_len && length < d_len) {
 			len = length;
 		} else {
@@ -2013,7 +2188,7 @@ int net_pkt_copy(struct net_pkt *pkt_dst,
 	return 0;
 }
 
-#if defined(NET_PKT_HAS_CONTROL_BLOCK)
+#if defined(CONFIG_NET_PKT_CONTROL_BLOCK)
 static inline void clone_pkt_cb(struct net_pkt *pkt, struct net_pkt *clone_pkt)
 {
 	memcpy(net_pkt_cb(clone_pkt), net_pkt_cb(pkt), sizeof(clone_pkt->cb));
@@ -2039,24 +2214,25 @@ static void clone_pkt_attributes(struct net_pkt *pkt, struct net_pkt *clone_pkt)
 	net_pkt_set_orig_iface(clone_pkt, net_pkt_orig_iface(pkt));
 	net_pkt_set_captured(clone_pkt, net_pkt_is_captured(pkt));
 	net_pkt_set_eof(clone_pkt, net_pkt_eof(pkt));
-	net_pkt_set_ptp(clone_pkt, net_pkt_is_ptp(pkt));
 	net_pkt_set_ppp(clone_pkt, net_pkt_is_ppp(pkt));
-	net_pkt_set_lldp(clone_pkt, net_pkt_is_lldp(pkt));
 	net_pkt_set_ipv4_acd(clone_pkt, net_pkt_ipv4_acd(pkt));
 	net_pkt_set_tx_timestamping(clone_pkt, net_pkt_is_tx_timestamping(pkt));
 	net_pkt_set_rx_timestamping(clone_pkt, net_pkt_is_rx_timestamping(pkt));
 	net_pkt_set_forwarding(clone_pkt, net_pkt_forwarding(pkt));
 	net_pkt_set_chksum_done(clone_pkt, net_pkt_is_chksum_done(pkt));
+	net_pkt_set_loopback(pkt, net_pkt_is_loopback(pkt));
 	net_pkt_set_ip_reassembled(pkt, net_pkt_is_ip_reassembled(pkt));
 	net_pkt_set_cooked_mode(clone_pkt, net_pkt_is_cooked_mode(pkt));
 	net_pkt_set_ipv4_pmtu(clone_pkt, net_pkt_ipv4_pmtu(pkt));
+	net_pkt_set_ipv4_ll_resolve_addr(clone_pkt,
+					 net_pkt_ipv4_ll_resolve_addr(pkt));
 	net_pkt_set_l2_bridged(clone_pkt, net_pkt_is_l2_bridged(pkt));
 	net_pkt_set_l2_processed(clone_pkt, net_pkt_is_l2_processed(pkt));
 	net_pkt_set_ll_proto_type(clone_pkt, net_pkt_ll_proto_type(pkt));
 
 #if defined(CONFIG_NET_OFFLOAD) || defined(CONFIG_NET_L2_IPIP)
 	net_pkt_set_remote_address(clone_pkt, net_pkt_remote_address(pkt),
-				   sizeof(struct sockaddr_storage));
+				   sizeof(struct net_sockaddr_storage));
 #endif
 
 	if (pkt->buffer && clone_pkt->buffer) {
@@ -2066,12 +2242,12 @@ static void clone_pkt_attributes(struct net_pkt *pkt, struct net_pkt *clone_pkt)
 		       sizeof(struct net_linkaddr));
 	}
 
-	if (IS_ENABLED(CONFIG_NET_IPV4) && net_pkt_family(pkt) == AF_INET) {
+	if (IS_ENABLED(CONFIG_NET_IPV4) && net_pkt_family(pkt) == NET_AF_INET) {
 		net_pkt_set_ipv4_ttl(clone_pkt, net_pkt_ipv4_ttl(pkt));
 		net_pkt_set_ipv4_opts_len(clone_pkt,
 					  net_pkt_ipv4_opts_len(pkt));
 	} else if (IS_ENABLED(CONFIG_NET_IPV6) &&
-		   net_pkt_family(pkt) == AF_INET6) {
+		   net_pkt_family(pkt) == NET_AF_INET6) {
 		net_pkt_set_ipv6_hop_limit(clone_pkt,
 					   net_pkt_ipv6_hop_limit(pkt));
 		net_pkt_set_ipv6_ext_len(clone_pkt, net_pkt_ipv6_ext_len(pkt));
@@ -2098,12 +2274,12 @@ static struct net_pkt *net_pkt_clone_internal(struct net_pkt *pkt,
 #if NET_LOG_LEVEL >= LOG_LEVEL_DBG
 	clone_pkt = pkt_alloc_with_buffer(slab, net_pkt_iface(pkt),
 					  net_pkt_get_len(pkt),
-					  AF_UNSPEC, 0, timeout,
+					  NET_AF_UNSPEC, 0, timeout,
 					  __func__, __LINE__);
 #else
 	clone_pkt = pkt_alloc_with_buffer(slab, net_pkt_iface(pkt),
 					  net_pkt_get_len(pkt),
-					  AF_UNSPEC, 0, timeout);
+					  NET_AF_UNSPEC, 0, timeout);
 #endif
 	if (!clone_pkt) {
 		return NULL;
@@ -2125,8 +2301,11 @@ static struct net_pkt *net_pkt_clone_internal(struct net_pkt *pkt,
 
 	net_pkt_cursor_init(clone_pkt);
 
-	if (cursor_offset) {
-		net_pkt_skip(clone_pkt, cursor_offset);
+	if (net_pkt_skip(clone_pkt, cursor_offset) < 0) {
+		net_pkt_unref(clone_pkt);
+		net_pkt_cursor_restore(pkt, &backup);
+		net_pkt_set_overwrite(pkt, overwrite);
+		return NULL;
 	}
 	net_pkt_set_overwrite(clone_pkt, overwrite);
 
@@ -2233,6 +2412,17 @@ int net_pkt_pull(struct net_pkt *pkt, size_t length)
 			rem = length;
 		}
 
+		if (rem < left && c_op->pos == c_op->buf->data) {
+			/* Pulling from the front of the fragment: advance
+			 * the data pointer instead of moving the remaining
+			 * payload down.
+			 */
+			(void)net_buf_pull(c_op->buf, rem);
+			c_op->pos = c_op->buf->data;
+			length -= rem;
+			continue;
+		}
+
 		c_op->buf->len -= rem;
 		left -= rem;
 		if (left) {
@@ -2243,7 +2433,7 @@ int net_pkt_pull(struct net_pkt *pkt, size_t length)
 			if (buf) {
 				pkt->buffer = buf->frags;
 				buf->frags = NULL;
-				net_buf_unref(buf);
+				net_pkt_frag_unref(buf);
 			}
 
 			net_pkt_cursor_init(pkt);
@@ -2298,7 +2488,7 @@ size_t net_pkt_get_contiguous_len(struct net_pkt *pkt)
 		size_t len;
 
 		len = net_pkt_is_being_overwritten(pkt) ?
-			pkt->cursor.buf->len : net_buf_max_len(pkt->cursor.buf);
+			pkt->cursor.buf->len : pkt_buf_write_limit(pkt->cursor.buf);
 		len -= pkt->cursor.pos - pkt->cursor.buf->data;
 
 		return len;

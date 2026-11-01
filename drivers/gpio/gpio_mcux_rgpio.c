@@ -11,6 +11,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/irq.h>
+#include <zephyr/spinlock.h>
 #include <fsl_common.h>
 #include <fsl_rgpio.h>
 
@@ -35,6 +36,7 @@ struct mcux_rgpio_config {
 
 	const struct pinctrl_soc_pinmux *pin_muxes;
 	uint8_t mux_count;
+	uint8_t irq_sel;
 };
 
 struct mcux_rgpio_data {
@@ -45,6 +47,8 @@ struct mcux_rgpio_data {
 
 	/* port ISR callback routine address */
 	sys_slist_t callbacks;
+
+	struct k_spinlock lock;
 };
 
 static int mcux_rgpio_configure(const struct device *dev,
@@ -52,9 +56,11 @@ static int mcux_rgpio_configure(const struct device *dev,
 {
 	RGPIO_Type *base = (RGPIO_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
 	const struct mcux_rgpio_config *config = dev->config;
+	struct mcux_rgpio_data *data = dev->data;
 
 	struct pinctrl_soc_pin pin_cfg;
 	int cfg_idx = pin, i;
+	k_spinlock_key_t key;
 
 	if (flags == GPIO_DISCONNECTED) {
 		return -ENOTSUP;
@@ -89,6 +95,9 @@ static int mcux_rgpio_configure(const struct device *dev,
 #endif
 
 #if defined(CONFIG_SOC_SERIES_IMXRT118X)
+	/* Enable Software Input On (SION) so PDIR reflects the driven pad value. */
+	reg |= BIT(MCUX_IMX_INPUT_ENABLE_SHIFT);
+
 	/* PUE/PDRV types have the same ODE bit */
 	if ((flags & GPIO_SINGLE_ENDED)) {
 		/* Set ODE bit */
@@ -97,7 +106,7 @@ static int mcux_rgpio_configure(const struct device *dev,
 		reg &= ~IOMUXC_SW_PAD_CTL_PAD_ODE_MASK;
 	}
 
-	if (config->pin_muxes[pin].pue_mux) {
+	if (config->pin_muxes[cfg_idx].pue_mux) {
 		if (flags & GPIO_PULL_UP) {
 			reg |= (IOMUXC_SW_PAD_CTL_PAD_PUS_MASK | IOMUXC_SW_PAD_CTL_PAD_PUE_MASK);
 		} else if (flags & GPIO_PULL_DOWN) {
@@ -144,7 +153,15 @@ static int mcux_rgpio_configure(const struct device *dev,
 	}
 #endif
 
-	memcpy(&pin_cfg.pinmux, &config->pin_muxes[cfg_idx], sizeof(pin_cfg));
+#if !defined(__ARM_FEATURE_CMSE) && !defined(CONFIG_CPU_CORTEX_A)
+	base->PCNS &= ~BIT(pin);
+	if (base->PCNS & BIT(pin)) {
+		/* We don't have access to this pin */
+		return -ENOTSUP;
+	}
+#endif
+
+	memcpy(&pin_cfg.pinmux, &config->pin_muxes[cfg_idx], sizeof(pin_cfg.pinmux));
 	/* cfg register will be set by pinctrl_configure_pins */
 	pin_cfg.pin_ctrl_flags = reg;
 	pinctrl_configure_pins(&pin_cfg, 1, PINCTRL_REG_NONE);
@@ -161,7 +178,9 @@ static int mcux_rgpio_configure(const struct device *dev,
 		RGPIO_WritePinOutput(base, pin, 0);
 	}
 
+	key = k_spin_lock(&data->lock);
 	WRITE_BIT(base->PDDR, pin, flags & GPIO_OUTPUT);
+	k_spin_unlock(&data->lock, key);
 
 	return 0;
 }
@@ -170,6 +189,7 @@ static int mcux_rgpio_port_get_raw(const struct device *dev, uint32_t *value)
 {
 	RGPIO_Type *base = (RGPIO_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
 
+	/* Read actual pad state from the input data register. */
 	*value = base->PDIR;
 
 	return 0;
@@ -180,8 +200,11 @@ static int mcux_rgpio_port_set_masked_raw(const struct device *dev,
 					  uint32_t value)
 {
 	RGPIO_Type *base = (RGPIO_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
+	uint32_t set_mask = mask & value;
+	uint32_t clear_mask = mask & ~value;
 
-	base->PDOR = (base->PDOR & ~mask) | (mask & value);
+	RGPIO_PortSet(base, set_mask);
+	RGPIO_PortClear(base, clear_mask);
 
 	return 0;
 }
@@ -223,15 +246,24 @@ static int mcux_rgpio_pin_interrupt_configure(const struct device *dev,
 {
 	RGPIO_Type *base = (RGPIO_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
 	const struct mcux_rgpio_config *config = dev->config;
-	unsigned int key;
+	struct mcux_rgpio_data *data = dev->data;
+	k_spinlock_key_t key;
 	uint8_t irqs, irqc;
+
+#if !defined(__ARM_FEATURE_CMSE) && !defined(CONFIG_CPU_CORTEX_A)
+	base->ICNS &= ~BIT(config->irq_sel);
+	if (base->ICNS & BIT(config->irq_sel)) {
+		/* We don't have access to this IRQ */
+		return -ENOTSUP;
+	}
+#endif
 
 	/* Make sure pin is supported */
 	if ((config->common.port_pin_mask & BIT(pin)) == 0) {
 		return -ENOTSUP;
 	}
 
-	irqs = 0; /* only irq0 is used for irq */
+	irqs = config->irq_sel;
 
 	if (mode == GPIO_INT_MODE_DISABLED) {
 		irqc = kRGPIO_InterruptOrDMADisabled;
@@ -254,9 +286,9 @@ static int mcux_rgpio_pin_interrupt_configure(const struct device *dev,
 		return -EINVAL; /* should never end up here */
 	}
 
-	key = irq_lock();
+	key = k_spin_lock(&data->lock);
 	RGPIO_SetPinInterruptConfig(base, pin, irqs, irqc);
-	irq_unlock(key);
+	k_spin_unlock(&data->lock, key);
 
 	return 0;
 }
@@ -277,9 +309,9 @@ static void mcux_rgpio_port_isr(const struct device *dev)
 	struct mcux_rgpio_data *data = dev->data;
 	uint32_t int_flags;
 
-	int_flags = base->ISFR[0]; /* Notice: only irq0 is used for now */
+	int_flags = base->ISFR[config->irq_sel];
 	int_flags &= config->common.port_pin_mask; /* don't handle unusable pin */
-	base->ISFR[0] = int_flags;
+	base->ISFR[config->irq_sel] = int_flags;
 
 	gpio_fire_callbacks(&data->callbacks, dev, int_flags);
 }
@@ -303,7 +335,8 @@ static DEVICE_API(gpio, mcux_rgpio_driver_api) = {
 	};
 #define MCUX_RGPIO_PIN_INIT(n)							\
 	.pin_muxes = mcux_rgpio_pinmux_##n,					\
-	.mux_count = DT_PROP_LEN(DT_DRV_INST(n), pinmux),
+	.mux_count = DT_PROP_LEN(DT_DRV_INST(n), pinmux),   \
+	.irq_sel   = DT_INST_PROP(n, irq_output_select)     \
 
 #define MCUX_RGPIO_IRQ_INIT(n, i)					\
 	do {								\
@@ -317,13 +350,12 @@ static DEVICE_API(gpio, mcux_rgpio_driver_api) = {
 
 #define MCUX_RGPIO_INIT(n)						\
 	MCUX_RGPIO_PIN_DECLARE(n)					\
+	BUILD_ASSERT((DT_INST_PROP(n, irq_output_select) != 1) || DT_INST_IRQ_HAS_IDX(n, 1),       \
+		     "irq-output-select=1 but IRQ 1 is not defined");                              \
 	static int mcux_rgpio_##n##_init(const struct device *dev);	\
 									\
 	static const struct mcux_rgpio_config mcux_rgpio_##n##_config = { \
-		.common = {						\
-			.port_pin_mask = GPIO_DT_INST_PORT_PIN_MASK_NGPIOS_EXC( \
-					n, DT_INST_PROP(n, ngpios)) \
-		},							\
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(n),		\
 		DEVICE_MMIO_NAMED_ROM_INIT(reg_base, DT_DRV_INST(n)), \
 		MCUX_RGPIO_PIN_INIT(n)					\
 	};								\
@@ -343,12 +375,8 @@ static DEVICE_API(gpio, mcux_rgpio_driver_api) = {
 	{								\
 		DEVICE_MMIO_NAMED_MAP(dev, reg_base, \
 			K_MEM_CACHE_NONE | K_MEM_DIRECT_MAP); \
-		IF_ENABLED(DT_INST_IRQ_HAS_IDX(n, 0),			\
-		   (MCUX_RGPIO_IRQ_INIT(n, 0);))		\
-									\
-		IF_ENABLED(DT_INST_IRQ_HAS_IDX(n, 1),			\
-			   (MCUX_RGPIO_IRQ_INIT(n, 1);))		\
-									\
+		IF_ENABLED(DT_INST_IRQ_HAS_IDX(n, DT_INST_PROP(n, irq_output_select)), \
+		   (MCUX_RGPIO_IRQ_INIT(n, DT_INST_PROP(n, irq_output_select));)) \
 		return 0;						\
 	}
 

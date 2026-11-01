@@ -38,6 +38,10 @@ config SYSCON_INIT_PRIORITY
 	  initialized earlier in the startup cycle. If unsure, leave at default
 	  value
 
-source "drivers/syscon/Kconfig.bflb_efuse"
+config SYSCON_SHELL
+	bool "SYSCON Shell"
+	depends on SHELL
+	help
+	  Enable the SYSCON shell with SYSCON related commands.
 
 endif # SYSCON

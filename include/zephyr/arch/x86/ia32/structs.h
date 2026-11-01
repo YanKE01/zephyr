@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_X86_STRUCTS_H_
-#define ZEPHYR_INCLUDE_X86_STRUCTS_H_
+#ifndef ZEPHYR_INCLUDE_ARCH_X86_IA32_STRUCTS_H_
+#define ZEPHYR_INCLUDE_ARCH_X86_IA32_STRUCTS_H_
 
 #include <stdint.h>
 
@@ -24,10 +24,19 @@ struct _cpu_arch {
 	 */
 
 	struct k_thread *fpu_owner;
-#elif defined(__cplusplus)
-	/* Ensure this struct does not have a size of 0 which is not allowed in C++. */
+#endif
+#if defined(CONFIG_HW_SHADOW_STACK)
+	long *shstk_addr; /* Latest top of shadow stack */
+	long *shstk_base; /* Base of shadow stack */
+	size_t shstk_size;
+#endif
+#if defined(__cplusplus) && !defined(CONFIG_FPU_SHARING) && \
+		!defined(CONFIG_HW_SHADOW_STACK)
+	/* An empty struct is not valid C, and compilers that accept it give
+	 * it size 0 while C++ gives 1. Keep a byte so both languages agree.
+	 */
 	uint8_t dummy;
 #endif
 };
 
-#endif /* ZEPHYR_INCLUDE_X86_STRUCTS_H_ */
+#endif /* ZEPHYR_INCLUDE_ARCH_X86_IA32_STRUCTS_H_ */

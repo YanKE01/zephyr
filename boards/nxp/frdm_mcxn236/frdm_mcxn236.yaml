@@ -5,7 +5,7 @@
 #
 
 identifier: frdm_mcxn236
-name: NXP FRDM MCXN236
+name: NXP FRDM-MCXN236
 type: mcu
 arch: arm
 ram: 256
@@ -15,16 +15,22 @@ toolchain:
   - gnuarmemb
 supported:
   - adc
+  - arduino_gpio
+  - arduino_spi
   - can
   - counter
   - dma
+  - entropy
   - flash
   - gpio
   - i2c
+  - i2s
   - i3c
   - pwm
   - regulator
   - spi
   - usbd
+  - video
   - watchdog
+  - crc
 vendor: nxp

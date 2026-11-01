@@ -7,7 +7,13 @@
 #include <zephyr/sys/slist.h>
 #include <zephyr/arch/arm/mpu/arm_mpu.h>
 
-#include <zephyr/arch/arm/cortex_m/arm_mpu_mem_cfg.h>
+#include <zephyr/arch/arm/mpu/arm_mpu_mem_cfg.h>
+
+#ifdef CONFIG_ARM_MPU_SRAM_WRITE_THROUGH
+#define ARM_MPU_SRAM_REGION_ATTR  REGION_RAM_WT_ATTR
+#else
+#define ARM_MPU_SRAM_REGION_ATTR  REGION_RAM_ATTR
+#endif
 
 static const struct arm_mpu_region mpu_regions[] = {
 #ifdef CONFIG_XIP
@@ -24,12 +30,12 @@ static const struct arm_mpu_region mpu_regions[] = {
 
 	/* Region 1 */
 	MPU_REGION_ENTRY("SRAM_0",
-			 CONFIG_SRAM_BASE_ADDRESS,
+			 DT_CHOSEN_SRAM_ADDR,
 #if defined(CONFIG_ARMV8_M_BASELINE) || defined(CONFIG_ARMV8_M_MAINLINE)
-			 REGION_RAM_ATTR(CONFIG_SRAM_BASE_ADDRESS, \
-				 CONFIG_SRAM_SIZE * 1024)),
+			 ARM_MPU_SRAM_REGION_ATTR(DT_CHOSEN_SRAM_ADDR,
+				 DT_CHOSEN_SRAM_SIZE)),
 #else
-			 REGION_RAM_ATTR(REGION_SRAM_SIZE)),
+			 ARM_MPU_SRAM_REGION_ATTR(REGION_SRAM_SIZE)),
 #endif
 };
 

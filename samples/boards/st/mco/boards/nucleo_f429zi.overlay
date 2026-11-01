@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /* The clock that is output must be enabled. */
 &clk_hse {
 	status = "okay";
@@ -20,7 +25,6 @@
 	pinctrl-0 = <&rcc_mco_1_pa8>;
 	pinctrl-names = "default";
 };
-
 
 &mco2 {
 	status = "okay";

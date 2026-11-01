@@ -4,9 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
-#include <dt-bindings/pinctrl/esp32s3-pinctrl.h>
-#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
 
 &pinctrl {
 	uart0_default: uart0_default {
@@ -14,6 +12,7 @@
 			pinmux = <UART0_TX_GPIO5>;
 			output-high;
 		};
+
 		group2 {
 			pinmux = <UART0_RX_GPIO16>;
 			bias-pull-up;
@@ -25,6 +24,7 @@
 			pinmux = <SPIM2_MISO_GPIO37>,
 				 <SPIM2_SCLK_GPIO36>;
 		};
+
 		group2 {
 			pinmux = <SPIM2_MOSI_GPIO35>;
 			output-low;
@@ -61,7 +61,7 @@
 	twai_default: twai_default {
 		group1 {
 			pinmux = <TWAI_TX_GPIO9>,
-				<TWAI_RX_GPIO8>;
+				 <TWAI_RX_GPIO8>;
 		};
 	};
 };

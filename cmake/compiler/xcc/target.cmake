@@ -6,6 +6,7 @@ set_ifndef(C++ g++)
 # GCC-based toolchains
 
 find_program(CMAKE_C_COMPILER ${CROSS_COMPILE}${CC} PATHS ${TOOLCHAIN_HOME} NO_DEFAULT_PATH)
+find_program(CMAKE_GCOV ${CROSS_COMPILE}gcov   PATHS ${TOOLCHAIN_HOME} NO_DEFAULT_PATH)
 
 if(CONFIG_CPP)
   set(cplusplus_compiler ${CROSS_COMPILE}${C++})
@@ -54,17 +55,6 @@ foreach(file_name include/stddef.h include-fixed/limits.h)
     endif()
   endif()
 endforeach()
-
-# This libgcc code is partially duplicated in compiler/*/target.cmake
-execute_process(
-  COMMAND ${CMAKE_C_COMPILER} ${TOOLCHAIN_C_FLAGS} --print-libgcc-file-name
-  OUTPUT_VARIABLE LIBGCC_FILE_NAME
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  )
-
-get_filename_component(LIBGCC_DIR ${LIBGCC_FILE_NAME} DIRECTORY)
-
-list(APPEND LIB_INCLUDE_DIR "-L\"${LIBGCC_DIR}\"")
 
 # For CMake to be able to test if a compiler flag is supported by the
 # toolchain we need to give CMake the necessary flags to compile and

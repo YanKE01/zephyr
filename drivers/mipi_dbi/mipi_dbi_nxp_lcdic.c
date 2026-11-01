@@ -213,6 +213,8 @@ static int mipi_dbi_lcdic_start_dma(const struct device *dev)
 		}
 	}
 
+	stream->blk_cfg[0].dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	stream->blk_cfg[1].dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	ret = dma_config(stream->dma_dev, stream->channel, &stream->dma_cfg);
 	if (ret) {
 		return ret;
@@ -268,8 +270,8 @@ static int mipi_dbi_lcdic_configure(const struct device *dev,
 		LOG_ERR("Invalid clock frequency %d", spi_cfg->frequency);
 		return ret;
 	}
-	if (spi_cfg->slave != 0) {
-		/* Only one slave select line */
+	if (spi_cfg->peripheral != 0) {
+		/* Only one chip select line */
 		return -ENOTSUP;
 	}
 	if (SPI_WORD_SIZE_GET(spi_cfg->operation) > 8) {
@@ -870,12 +872,22 @@ static void mipi_dbi_lcdic_isr(const struct device *dev)
 
 static int mipi_dbi_lcdic_pm_action(const struct device *dev, enum pm_device_action action)
 {
+	const struct mipi_dbi_lcdic_config *config = dev->config;
 	struct mipi_dbi_lcdic_data *data = dev->data;
+	int ret;
 
 	switch (action) {
 	case PM_DEVICE_ACTION_RESUME:
+		ret = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+		if (ret < 0 && ret != -ENOENT) {
+			return ret;
+		}
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
+		ret = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_SLEEP);
+		if (ret < 0 && ret != -ENOENT) {
+			return ret;
+		}
 		break;
 	case PM_DEVICE_ACTION_TURN_OFF:
 		break;

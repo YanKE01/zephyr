@@ -13,8 +13,18 @@
 / {
 	model = "Arduino Uno R4 WiFi";
 
+	chosen {
+		/*
+		 * Reach the console over the USB-C connector, through the
+		 * ESP32-S3 bridge. SCI2 remains available on the D0/D1 header.
+		 */
+		zephyr,console = &uart9;
+		zephyr,shell-uart = &uart9;
+	};
+
 	leds {
 		compatible = "gpio-leds";
+
 		led: led {
 			gpios = <&arduino_header ARDUINO_HEADER_R3_D13 GPIO_ACTIVE_HIGH>;
 		};
@@ -23,6 +33,7 @@
 	pwm_leds {
 		compatible = "pwm-leds";
 		status = "disabled";
+
 		pwm_led: pwm_led {
 			pwms = <&arduino_pwm ARDUINO_HEADER_R3_D13 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
 			label = "PWM_LED";
@@ -106,17 +117,40 @@
 	status = "okay";
 };
 
+/*
+ * SCI9 is wired to the on-board ESP32-S3, which bridges it to the USB-C
+ * connector as a USB CDC ACM port. The RA4M1 ICU links events to NVIC slots
+ * freely, so the numbers below are arbitrary but must not repeat any slot
+ * claimed by another enabled node on this board.
+ */
+&sci9 {
+	pinctrl-0 = <&sci9_default>;
+	pinctrl-names = "default";
+	interrupts = <18 1>, <19 1>, <21 1>, <22 1>;
+	interrupt-names = "rxi", "txi", "tei", "eri";
+	status = "okay";
+
+	uart9: uart {
+		current-speed = <115200>;
+		status = "okay";
+	};
+};
+
 &iic0 {
 	pinctrl-0 = <&iic0_default>;
 	pinctrl-names = "default";
 	#address-cells = <1>;
 	#size-cells = <0>;
-	clock-frequency = <DT_FREQ_M(1)>;
+	clock-frequency = <DT_FREQ_K(400)>;
 	interrupts = <14 1>, <15 1>, <16 1>, <17 1>;
 	interrupt-names = "rxi", "txi", "tei", "eri";
 	status = "okay";
 };
 
 zephyr_i2c: &iic0 {};
+
 arduino_i2c: &iic1 {};
+
 arduino_spi: &spi0 {};
+
+arduino_serial: &uart2 {};

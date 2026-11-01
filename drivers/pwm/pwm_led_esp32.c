@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2017 Vitor Massaru Iha <vitor@massaru.org>
- * Copyright (c) 2025 Espressif Systems (Shanghai) Co., Ltd.
+ * Copyright (c) 2025-2026 Espressif Systems (Shanghai) Co., Ltd.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -8,18 +8,31 @@
 #define DT_DRV_COMPAT espressif_esp32_ledc
 
 #include <hal/ledc_hal.h>
+#include <hal/ledc_ll.h>
 #include <hal/ledc_types.h>
 #include <esp_clk_tree.h>
+#include <esp_private/esp_clk_tree_common.h>
 #include <soc/rtc.h>
-#include <clk_ctrl_os.h>
 
 #include <soc.h>
 #include <errno.h>
 #include <string.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/clock_control.h>
+
+#if CONFIG_ESP32_PM_POWER_DOWN_PERIPHERAL_IN_LIGHT_SLEEP && SOC_LEDC_SUPPORT_SLEEP_RETENTION
+#define LEDC_SLEEP_RETENTION_ENABLED 1
+#else
+#define LEDC_SLEEP_RETENTION_ENABLED 0
+#endif
+
+#if LEDC_SLEEP_RETENTION_ENABLED
+#include <hal/ledc_periph.h>
+#include <esp_private/sleep_retention.h>
+#endif
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pwm_ledc_esp32, CONFIG_PWM_LOG_LEVEL);
@@ -75,24 +88,31 @@ static struct pwm_ledc_esp32_channel_config *get_channel_config(const struct dev
 static void pwm_led_esp32_start(struct pwm_ledc_esp32_data *data,
 				struct pwm_ledc_esp32_channel_config *channel)
 {
-	ledc_hal_set_sig_out_en(&data->hal, channel->channel_num, true);
-	ledc_hal_set_duty_start(&data->hal, channel->channel_num, true);
+	unsigned int key = irq_lock();
+
+	ledc_hal_set_sig_out_en(&data->hal, channel->speed_mode, channel->channel_num, true);
+	ledc_hal_set_duty_start(&data->hal, channel->speed_mode, channel->channel_num);
 
 	if (channel->speed_mode == LEDC_LOW_SPEED_MODE) {
-		ledc_hal_ls_channel_update(&data->hal, channel->channel_num);
+		ledc_hal_ls_channel_update(&data->hal, channel->speed_mode, channel->channel_num);
 	}
+
+	irq_unlock(key);
 }
 
 static void pwm_led_esp32_stop(struct pwm_ledc_esp32_data *data,
 			       struct pwm_ledc_esp32_channel_config *channel, bool idle_level)
 {
-	ledc_hal_set_idle_level(&data->hal, channel->channel_num, idle_level);
-	ledc_hal_set_sig_out_en(&data->hal, channel->channel_num, false);
-	ledc_hal_set_duty_start(&data->hal, channel->channel_num, false);
+	unsigned int key = irq_lock();
+
+	ledc_hal_set_idle_level(&data->hal, channel->speed_mode, channel->channel_num, idle_level);
+	ledc_hal_set_sig_out_en(&data->hal, channel->speed_mode, channel->channel_num, false);
 
 	if (channel->speed_mode == LEDC_LOW_SPEED_MODE) {
-		ledc_hal_ls_channel_update(&data->hal, channel->channel_num);
+		ledc_hal_ls_channel_update(&data->hal, channel->speed_mode, channel->channel_num);
 	}
+
+	irq_unlock(key);
 }
 
 static void pwm_led_esp32_duty_set(const struct device *dev,
@@ -100,12 +120,17 @@ static void pwm_led_esp32_duty_set(const struct device *dev,
 {
 	struct pwm_ledc_esp32_data *data = (struct pwm_ledc_esp32_data *const)(dev)->data;
 
-	ledc_hal_set_hpoint(&data->hal, channel->channel_num, 0);
-	ledc_hal_set_duty_int_part(&data->hal, channel->channel_num, channel->duty_val);
-	ledc_hal_set_duty_direction(&data->hal, channel->channel_num, 1);
-	ledc_hal_set_duty_num(&data->hal, channel->channel_num, 1);
-	ledc_hal_set_duty_cycle(&data->hal, channel->channel_num, 1);
-	ledc_hal_set_duty_scale(&data->hal, channel->channel_num, 0);
+	ledc_hal_set_hpoint(&data->hal, channel->speed_mode, channel->channel_num, 0);
+	ledc_hal_set_duty_int_part(&data->hal, channel->speed_mode, channel->channel_num,
+				   channel->duty_val);
+	/* Set fade parameters: range=0, dir=1, cycle=1, scale=0, step=1 (no fading) */
+	ledc_hal_set_fade_param(&data->hal, channel->speed_mode, channel->channel_num,
+				0, 1, 1, 0, 1);
+#if SOC_LEDC_GAMMA_CURVE_FADE_SUPPORTED
+	ledc_hal_set_range_number(&data->hal, channel->speed_mode, channel->channel_num, 1);
+	ledc_hal_clear_left_off_fade_param(&data->hal, channel->speed_mode,
+					   channel->channel_num, 1);
+#endif
 }
 
 static int pwm_led_esp32_calculate_max_resolution(struct pwm_ledc_esp32_channel_config *channel)
@@ -153,16 +178,16 @@ static int pwm_led_esp32_timer_config(struct pwm_ledc_esp32_channel_config *chan
 	 */
 	for (int i = 0; i < clock_src_num; i++) {
 		if (clock_src[i] == LEDC_SLOW_CLK_RC_FAST) {
-			uint32_t rc_fast_freq = periph_rtc_dig_clk8m_get_freq();
+			uint32_t rc_fast_freq = 0;
 
-			if (!rtc_dig_8m_enabled() || rc_fast_freq == 0) {
-				/* RC_FAST requires enabling and calibrating */
-				if (!periph_rtc_dig_clk8m_enable()) {
-					/* skip RC_FAST as clock source */
-					continue;
-				}
-				rc_fast_freq = periph_rtc_dig_clk8m_get_freq();
+			/* RC_FAST requires enabling and calibrating */
+			if (esp_clk_tree_enable_src(SOC_MOD_CLK_RC_FAST, true) != ESP_OK) {
+				/* skip RC_FAST as clock source */
+				continue;
 			}
+			esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_RC_FAST,
+						     ESP_CLK_TREE_SRC_FREQ_PRECISION_APPROX,
+						     &rc_fast_freq);
 
 			channel->clock_src = clock_src[i];
 			channel->clock_src_hz = rc_fast_freq;
@@ -217,17 +242,18 @@ static int pwm_led_esp32_timer_set(const struct device *dev,
 		ledc_hal_set_slow_clk_sel(&data->hal, global_clk);
 	}
 
-	ledc_hal_set_clock_divider(&data->hal, channel->timer_num, prescaler);
-	ledc_hal_set_duty_resolution(&data->hal, channel->timer_num, channel->resolution);
+	ledc_hal_set_clock_divider(&data->hal, channel->speed_mode, channel->timer_num, prescaler);
+	ledc_hal_set_duty_resolution(&data->hal, channel->speed_mode, channel->timer_num,
+				     channel->resolution);
 
 #if SOC_LEDC_HAS_TIMER_SPECIFIC_MUX
 	ledc_clk_src_t timer_clk =
 		channel->clock_src == LEDC_REF_TICK ? channel->clock_src : LEDC_SCLK;
-	ledc_hal_set_clock_source(&data->hal, channel->timer_num, timer_clk);
+	ledc_hal_set_clock_source(&data->hal, channel->speed_mode, channel->timer_num, timer_clk);
 #endif
 
 	if (channel->speed_mode == LEDC_LOW_SPEED_MODE) {
-		ledc_hal_ls_timer_update(&data->hal, channel->timer_num);
+		ledc_hal_ls_timer_update(&data->hal, channel->speed_mode, channel->timer_num);
 	}
 
 	LOG_DBG("channel_num=%d, speed_mode=%d, timer_num=%d, clock_src=%d, prescaler=%d, "
@@ -331,9 +357,10 @@ static int pwm_led_esp32_set_cycles(const struct device *dev, uint32_t channel_i
 		channel->inverted = false;
 	}
 
-	ledc_hal_init(&data->hal, channel->speed_mode);
-
 	if ((pulse_cycles == period_cycles) || (pulse_cycles == 0)) {
+		channel->freq = 0;
+		channel->duty_val = 0;
+
 		/* For duty 0% and 100% stop PWM, set output level and return */
 		pwm_led_esp32_stop(data, channel, (pulse_cycles == period_cycles));
 		goto sem_give;
@@ -362,6 +389,111 @@ sem_give:
 	return ret;
 }
 
+#if LEDC_SLEEP_RETENTION_ENABLED
+static esp_err_t pwm_led_esp32_create_sleep_retention_cb(void *arg)
+{
+	ARG_UNUSED(arg);
+
+	sleep_retention_module_t module = ledc_reg_retention_info[0].module_id;
+
+	esp_err_t err = sleep_retention_entries_create(
+		ledc_reg_retention_info[0].common.regdma_entry_array,
+		ledc_reg_retention_info[0].common.array_size, REGDMA_LINK_PRI_LEDC, module);
+
+	if (err != ESP_OK) {
+		return err;
+	}
+
+	for (int i = 0; i < SOC_LEDC_TIMER_NUM; i++) {
+		err = sleep_retention_entries_create(
+			ledc_reg_retention_info[0].timer[i].regdma_entry_array,
+			ledc_reg_retention_info[0].timer[i].array_size, REGDMA_LINK_PRI_LEDC,
+			module);
+		if (err != ESP_OK) {
+			return err;
+		}
+	}
+
+	for (int j = 0; j < SOC_LEDC_CHANNEL_NUM; j++) {
+		err = sleep_retention_entries_create(
+			ledc_reg_retention_info[0].channel[j].regdma_entry_array,
+			ledc_reg_retention_info[0].channel[j].array_size, REGDMA_LINK_PRI_LEDC,
+			module);
+		if (err != ESP_OK) {
+			return err;
+		}
+	}
+
+	return ESP_OK;
+}
+
+static void pwm_led_esp32_sleep_retention_init(void)
+{
+	sleep_retention_module_t module = ledc_reg_retention_info[0].module_id;
+	sleep_retention_module_init_param_t init_param = {
+		.cbs = {.create = {.handle = pwm_led_esp32_create_sleep_retention_cb, .arg = NULL}},
+		.attribute = SLEEP_RETENTION_MODULE_ATTR_ATTACH,
+		.depends = RETENTION_MODULE_BITMAP_INIT(CLOCK_SYSTEM)};
+
+	esp_err_t err = sleep_retention_module_init(module, &init_param);
+
+	if (err == ESP_OK) {
+		err = sleep_retention_module_allocate(module);
+	}
+	if (err == ESP_OK) {
+		err = sleep_retention_module_attach(module);
+	}
+	if (err != ESP_OK) {
+		LOG_WRN("LEDC sleep retention init failed (%d)", err);
+	}
+}
+#endif /* LEDC_SLEEP_RETENTION_ENABLED */
+
+static int pwm_led_esp32_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	const struct pwm_ledc_esp32_config *config = dev->config;
+	struct pwm_ledc_esp32_data *data = dev->data;
+	struct pwm_ledc_esp32_channel_config *channel;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_SUSPEND:
+	case PM_DEVICE_ACTION_RESUME:
+
+		for (int i = 0; i < config->channel_len; ++i) {
+			channel = &config->channel_config[i];
+
+			/* Stop or restart PWM only if channel is active
+			 * and duty is neither 0% nor 100%
+			 */
+			if (channel->freq > 0) {
+				if (action == PM_DEVICE_ACTION_SUSPEND) {
+					pwm_led_esp32_stop(data, channel, channel->inverted);
+					ledc_hal_timer_rst(&data->hal, channel->speed_mode,
+							   channel->timer_num);
+				} else {
+					pwm_led_esp32_start(data, channel);
+				}
+			}
+		}
+
+		break;
+
+	case PM_DEVICE_ACTION_TURN_ON:
+#if LEDC_SLEEP_RETENTION_ENABLED
+		pwm_led_esp32_sleep_retention_init();
+#endif
+		break;
+
+	case PM_DEVICE_ACTION_TURN_OFF:
+		break;
+
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+
 int pwm_led_esp32_init(const struct device *dev)
 {
 	const struct pwm_ledc_esp32_config *config = dev->config;
@@ -376,6 +508,9 @@ int pwm_led_esp32_init(const struct device *dev)
 
 	/* Enable peripheral */
 	clock_control_on(config->clock_dev, config->clock_subsys);
+	ledc_ll_enable_clock(0, true);
+
+	ledc_hal_init(&data->hal, 0);
 
 #if SOC_LEDC_HAS_TIMER_SPECIFIC_MUX
 	/* Combine clock sources to include timer specific sources */
@@ -387,8 +522,6 @@ int pwm_led_esp32_init(const struct device *dev)
 	for (int i = 0; i < config->channel_len; ++i) {
 		channel = &config->channel_config[i];
 
-		ledc_hal_init(&data->hal, channel->speed_mode);
-
 		if (channel->speed_mode == LEDC_LOW_SPEED_MODE) {
 			channel->clock_src = global_clks[0];
 			ledc_hal_set_slow_clk_sel(&data->hal, channel->clock_src);
@@ -399,16 +532,18 @@ int pwm_led_esp32_init(const struct device *dev)
 		}
 #endif
 #if SOC_LEDC_HAS_TIMER_SPECIFIC_MUX
-		ledc_hal_set_clock_source(&data->hal, channel->timer_num, channel->clock_src);
+		ledc_hal_set_clock_source(&data->hal, channel->speed_mode, channel->timer_num,
+					  channel->clock_src);
 #endif
 
 		esp_clk_tree_src_get_freq_hz(channel->clock_src,
 					     ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
 					     &channel->clock_src_hz);
 
-		ledc_hal_bind_channel_timer(&data->hal, channel->channel_num, channel->timer_num);
+		ledc_hal_bind_channel_timer(&data->hal, channel->speed_mode, channel->channel_num,
+					    channel->timer_num);
 		pwm_led_esp32_stop(data, channel, channel->inverted);
-		ledc_hal_timer_rst(&data->hal, channel->timer_num);
+		ledc_hal_timer_rst(&data->hal, channel->speed_mode, channel->timer_num);
 	}
 
 	ret = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
@@ -418,7 +553,7 @@ int pwm_led_esp32_init(const struct device *dev)
 		return ret;
 	}
 
-	return 0;
+	return pm_device_driver_init(dev, pwm_led_esp32_pm_action);
 }
 
 static DEVICE_API(pwm, pwm_led_esp32_api) = {
@@ -456,5 +591,8 @@ static struct pwm_ledc_esp32_data pwm_ledc_esp32_data = {
 	.cmd_sem = Z_SEM_INITIALIZER(pwm_ledc_esp32_data.cmd_sem, 1, 1),
 };
 
-DEVICE_DT_INST_DEFINE(0, &pwm_led_esp32_init, NULL, &pwm_ledc_esp32_data, &pwm_ledc_esp32_config,
-		      POST_KERNEL, CONFIG_PWM_INIT_PRIORITY, &pwm_led_esp32_api);
+PM_DEVICE_DT_INST_DEFINE(0, pwm_led_esp32_pm_action);
+
+DEVICE_DT_INST_DEFINE(0, &pwm_led_esp32_init, PM_DEVICE_DT_INST_GET(0), &pwm_ledc_esp32_data,
+		      &pwm_ledc_esp32_config, POST_KERNEL, CONFIG_PWM_INIT_PRIORITY,
+		      &pwm_led_esp32_api);

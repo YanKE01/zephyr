@@ -16,7 +16,9 @@
 # Also does various checks (most via Kconfiglib warnings).
 
 import argparse
+import json
 import os
+import pickle
 import re
 import sys
 import textwrap
@@ -29,11 +31,16 @@ from kconfiglib import (
     OR,
     TRI_TO_STR,
     TRISTATE,
+    TYPE_TO_STR,
     Kconfig,
+    Symbol,
     expr_str,
     expr_value,
     split_expr,
 )
+
+# store warnings separately from kconf.warnings
+warnings = []
 
 
 def main():
@@ -43,8 +50,7 @@ def main():
         os.environ['ZEPHYR_BASE'] = args.zephyr_base
 
     print("Parsing " + args.kconfig_file)
-    kconf = Kconfig(args.kconfig_file, warn_to_stderr=False,
-                    suppress_traceback=True)
+    kconf = Kconfig(args.kconfig_file, warn_to_stderr=False, suppress_traceback=True)
 
     if args.handwritten_input_configs:
         # Warn for assignments to undefined symbols, but only for handwritten
@@ -106,10 +112,7 @@ def main():
     warn_only = r"warning:.*set more than once."
 
     if kconf.warnings:
-        if args.forced_input_configs:
-            error_out = False
-        else:
-            error_out = True
+        error_out = not args.forced_input_configs
 
         # Put a blank line between warnings to make them easier to read
         for warning in kconf.warnings:
@@ -128,9 +131,22 @@ def main():
         if error_out:
             err("Aborting due to Kconfig warnings")
 
+    # All warnings have already been printed above, either by warn() or by the
+    # kconf.warnings loop. With --warning-as-error, any of them is fatal, also
+    # the ones which are tolerated by default.
+    if args.werror and (warnings or kconf.warnings):
+        err("Aborting due to Kconfig warnings (--warning-as-error)")
+
     # Write the merged configuration and the C header
     print(kconf.write_config(args.config_out))
     print(kconf.write_autoconf(args.header_out))
+
+    # Write value origin information for the merged configuration
+    trace_data = collect_trace_data(kconf)
+    with open(args.config_out + '-trace.pickle', 'wb') as f:
+        pickle.dump(trace_data, f)
+    with open(args.config_out + '-trace.json', 'w') as f:
+        json.dump(trace_data, f, indent=2)
 
     # Write the list of parsed Kconfig files to a file
     write_kconfig_filenames(kconf, args.kconfig_list_out)
@@ -141,10 +157,13 @@ def check_no_promptless_assign(kconf):
 
     for sym in kconf.unique_defined_syms:
         if sym.user_value is not None and promptless(sym):
-            err(f"""\
+            err(
+                f"""\
 {sym.name_and_loc} is assigned in a configuration file, but is not directly
 user-configurable (has no prompt). It gets its value indirectly from other
-symbols. """ + SYM_INFO_HINT.format(sym))
+symbols. """
+                + SYM_INFO_HINT.format(sym)
+            )
 
 
 def check_assigned_sym_values(kconf):
@@ -166,8 +185,10 @@ def check_assigned_sym_values(kconf):
             user_value = TRI_TO_STR[user_value]
 
         if user_value != sym.str_value:
-            msg = f"{sym.name_and_loc} was assigned the value '{user_value}'" \
-                  f" but got the value '{sym.str_value}'. "
+            msg = (
+                f"{sym.name_and_loc} was assigned the value '{user_value}'"
+                f" but got the value '{sym.str_value}'. "
+            )
 
             # List any unsatisfied 'depends on' dependencies in the warning
             mdeps = missing_deps(sym)
@@ -180,11 +201,9 @@ def check_assigned_sym_values(kconf):
                         # Gives '(FOO || BAR) (=n)' instead of
                         # 'FOO || BAR (=n)', which might be clearer.
                         estr = f"({estr})"
-                    expr_strs.append(f"{estr} "
-                                     f"(={TRI_TO_STR[expr_value(expr)]})")
+                    expr_strs.append(f"{estr} (={TRI_TO_STR[expr_value(expr)]})")
 
-                msg += "Check these unsatisfied dependencies: " + \
-                    ", ".join(expr_strs) + ". "
+                msg += "Check these unsatisfied dependencies: " + ", ".join(expr_strs) + ". "
 
             warn(msg + SYM_INFO_HINT.format(sym))
 
@@ -228,13 +247,14 @@ def check_assigned_choice_values(kconf):
     # y ended up as n, and print a spurious warning.
 
     for choice in kconf.unique_choices:
-        if choice.user_selection and \
-           choice.user_selection is not choice.selection:
-
-            warn(f"""\
+        if choice.user_selection and choice.user_selection is not choice.selection:
+            warn(
+                f"""\
 The choice symbol {choice.user_selection.name_and_loc} was selected (set =y),
 but {choice.selection.name_and_loc if choice.selection else "no symbol"} ended
-up as the choice selection. """ + SYM_INFO_HINT.format(choice.user_selection))
+up as the choice selection. """
+                + SYM_INFO_HINT.format(choice.user_selection)
+            )
 
 
 # Hint on where to find symbol information. Used like
@@ -257,6 +277,12 @@ def check_deprecated(kconf):
             selector_name = split_expr(selector, AND)[0].name
             warn(f'Deprecated symbol {selector_name} is enabled.')
 
+        if (
+            kconf.syms.get('DEPRECATED_KCONFIGS_AS_ERRORS', kconf.y).tri_value == 2
+            and len(selectors) > 0
+        ):
+            err("Aborting due to Kconfig deprecation warnings")
+
 
 def check_experimental(kconf):
     experimental = kconf.syms.get('EXPERIMENTAL')
@@ -267,6 +293,7 @@ def check_experimental(kconf):
         for selector in selectors:
             selector_name = split_expr(selector, AND)[0].name
             warn(f'Experimental symbol {selector_name} is enabled.')
+
 
 def check_not_secure(kconf):
     not_secure = kconf.syms.get('NOT_SECURE')
@@ -286,6 +313,43 @@ def promptless(sym):
     return not any(node.prompt for node in sym.nodes)
 
 
+def collect_trace_data(kconf):
+    """
+    Collects trace data for all symbols in 'kconf'. The output is currently a
+    list of 6-tuples with one entry per symbol definition, with the following
+    layout:
+
+        (name, visibility, type, value, kind, location)
+
+    where the first 4 entries are the string representation of the symbol's
+    properties, and 'kind' and 'location' are taken from its 'origin'
+    attribute.
+    """
+
+    # NOTE: this data is used by scripts/kconfig/traceconfig.py and the tests
+    # under tests/kconfig/tracing. Make sure to keep them aligned if the
+    # format changes in any way.
+
+    trace_data = []
+    for node in kconf.node_iter(True):
+        item = node.item
+        if not isinstance(item, Symbol):
+            continue
+
+        origin = item.origin
+        if origin is None:
+            continue
+
+        name = kconf.config_prefix + item.name
+        kind, loc = origin
+        value = None if kind == "unset" else item.str_value
+
+        trace_entry = (name, TRI_TO_STR[item.visibility], TYPE_TO_STR[item.type], value, kind, loc)
+        trace_data.append(trace_entry)
+
+    return trace_data
+
+
 def write_kconfig_filenames(kconf, kconfig_list_path):
     # Writes a sorted list with the absolute paths of all parsed Kconfig files
     # to 'kconfig_list_path'. The paths are realpath()'d, and duplicates are
@@ -293,42 +357,50 @@ def write_kconfig_filenames(kconf, kconfig_list_path):
     # needs to be deterministic.
 
     with open(kconfig_list_path, 'w') as out:
-        for path in sorted({os.path.realpath(os.path.join(kconf.srctree, path))
-                            for path in kconf.kconfig_filenames}):
+        for path in sorted(
+            {
+                os.path.realpath(os.path.join(kconf.srctree, path))
+                for path in set(kconf.kconfig_filenames)
+            }
+        ):
             print(path, file=out)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(allow_abbrev=False)
 
-    parser.add_argument("--handwritten-input-configs",
-                        action="store_true",
-                        help="Assume the input configuration fragments are "
-                             "handwritten fragments and do additional checks "
-                             "on them, like no promptless symbols being "
-                             "assigned")
-    parser.add_argument("--forced-input-configs",
-                        action="store_true",
-                        help="Indicate the input configuration files are "
-                             "followed by an forced configuration file."
-                             "The forced configuration is used to forcefully "
-                             "set specific configuration settings to a "
-                             "pre-defined value and thereby remove any user "
-                             " adjustments.")
-    parser.add_argument("--zephyr-base",
-                        help="Path to current Zephyr installation")
-    parser.add_argument("kconfig_file",
-                        help="Top-level Kconfig file")
-    parser.add_argument("config_out",
-                        help="Output configuration file")
-    parser.add_argument("header_out",
-                        help="Output header file")
-    parser.add_argument("kconfig_list_out",
-                        help="Output file for list of parsed Kconfig files")
-    parser.add_argument("configs_in",
-                        nargs="+",
-                        help="Input configuration fragments. Will be merged "
-                             "together.")
+    parser.add_argument(
+        "--handwritten-input-configs",
+        action="store_true",
+        help="Assume the input configuration fragments are "
+        "handwritten fragments and do additional checks "
+        "on them, like no promptless symbols being "
+        "assigned",
+    )
+    parser.add_argument(
+        "--forced-input-configs",
+        action="store_true",
+        help="Indicate the input configuration files are "
+        "followed by an forced configuration file."
+        "The forced configuration is used to forcefully "
+        "set specific configuration settings to a "
+        "pre-defined value and thereby remove any user "
+        " adjustments.",
+    )
+    parser.add_argument(
+        "--warning-as-error",
+        action=argparse.BooleanOptionalAction,
+        dest='werror',
+        help="Turn Kconfig warnings into errors",
+    )
+    parser.add_argument("--zephyr-base", help="Path to current Zephyr installation")
+    parser.add_argument("kconfig_file", help="Top-level Kconfig file")
+    parser.add_argument("config_out", help="Output configuration file")
+    parser.add_argument("header_out", help="Output header file")
+    parser.add_argument("kconfig_list_out", help="Output file for list of parsed Kconfig files")
+    parser.add_argument(
+        "configs_in", nargs="+", help="Input configuration fragments. Will be merged together."
+    )
 
     return parser.parse_args()
 
@@ -338,7 +410,13 @@ def warn(msg):
     # reference link, and add some extra newlines to set the message off from
     # surrounding text (this usually gets printed as part of spammy CMake
     # output)
-    print("\n" + textwrap.fill("warning: " + msg, 100) + "\n", file=sys.stderr)
+    warning = "warning: " + msg
+
+    # store the warning unwrapped, so that --warning-as-error can tell whether
+    # any warning was emitted at all
+    warnings.append(warning)
+
+    print("\n" + textwrap.fill(warning, 100) + "\n", file=sys.stderr)
 
 
 def err(msg):

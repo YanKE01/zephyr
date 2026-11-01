@@ -176,8 +176,7 @@ Configuring a Debug Probe
 For the RT1024, J47/J48 are the SWD isolation jumpers, J42 is the DFU
 mode jumper, and J55 is the 10 pin JTAG/SWD header.
 
-.. include:: ../../common/rt1xxx-lpclink2-debug.rst
-   :start-after: rt1xxx-lpclink2-probes
+.. include:: ../../common/rt1xxx-lpclink2-debug.rst.inc
 
 Configuring a Console
 =====================
@@ -233,8 +232,7 @@ should see the following message in the terminal:
    ***** Booting Zephyr OS v2.4.0-rc1 *****
    Hello World! mimxrt1024_evk
 
-.. include:: ../../common/board-footer.rst
-   :start-after: nxp-board-footer
+.. include:: ../../common/board-footer.rst.inc
 
 .. _MIMXRT1024-EVK Website:
    https://www.nxp.com/design/development-boards/i-mx-evaluation-and-development-boards/i-mx-rt1024-evaluation-kit:MIMXRT1024-EVK
@@ -249,7 +247,7 @@ should see the following message in the terminal:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/i-mx-rt-crossover-mcus/i-mx-rt1024-crossover-processor-with-arm-cortex-m7-core:i.MX-RT1024
 
 .. _i.MX RT1024 Datasheet:
-   https://www.nxp.com.cn/docs/en/data-sheet/IMXRT1024CEC.pdf
+   https://www.nxp.com/docs/en/data-sheet/IMXRT1024CEC.pdf
 
 .. _i.MX RT1024 Reference Manual:
    https://www.nxp.com/webapp/Download?colCode=IMXRT1024RM

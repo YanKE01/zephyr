@@ -4,6 +4,7 @@ type: mcu
 arch: xtensa
 toolchain:
   - zephyr
+ram: 8192
 supported:
   - adc
   - dac
@@ -14,9 +15,12 @@ supported:
   - uart
   - nvs
   - pwm
-  - dac
   - spi
   - counter
   - entropy
   - input
+  - crypto
+  - retained_mem
+  - netif:wifi
+  - pulse_io
 vendor: espressif

@@ -22,6 +22,7 @@ extern "C" {
 /**
  * @brief Emulated ADC backend API
  * @defgroup adc_emul Emulated ADC
+ * @ingroup io_emulators
  * @ingroup adc_interface
  * @{
  *
@@ -123,6 +124,9 @@ int adc_emul_raw_value_func_set(const struct device *dev, unsigned int chan,
  *
  * @return 0 on success
  * @return -EINVAL if an invalid argument is provided
+ *
+ * @note Updates are also observed by @ref adc_ref_get() /
+ *       @ref adc_ref_internal() when the emul provides @c ref_get.
  */
 int adc_emul_ref_voltage_set(const struct device *dev, enum adc_reference ref,
 			     uint16_t value);

@@ -24,10 +24,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/check.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/util_macro.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/util_utf8.h>
+#include <zephyr/sys/clock.h>
+#include <zephyr/toolchain.h>
 
 #include "aics_internal.h"
 #include "audio_internal.h"
@@ -39,8 +40,8 @@ LOG_MODULE_REGISTER(bt_aics);
 #define VALID_AICS_OPCODE(opcode)                                              \
 	((opcode) >= BT_AICS_OPCODE_SET_GAIN && (opcode) <= BT_AICS_OPCODE_SET_AUTO)
 
-#define AICS_CP_LEN                 0x02
-#define AICS_CP_SET_GAIN_LEN        0x03
+#define AICS_CP_LEN                 0x02U
+#define AICS_CP_SET_GAIN_LEN        0x03U
 
 
 static ssize_t write_description(struct bt_conn *conn,
@@ -117,6 +118,8 @@ BT_GATT_SERVICE_INSTANCE_DEFINE(aics_service_list, aics_insts,
 static void aics_state_cfg_changed(const struct bt_gatt_attr *attr,
 				   uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -126,8 +129,9 @@ static ssize_t read_aics_state(struct bt_conn *conn,
 {
 	struct bt_aics *inst = BT_AUDIO_CHRC_USER_DATA(attr);
 
-	LOG_DBG("gain %d, mute %u, gain_mode %u, counter %u", inst->srv.state.gain,
-		inst->srv.state.mute, inst->srv.state.gain_mode, inst->srv.state.change_counter);
+	LOG_DBG("gain %d, mute %u, gain_mode %s (0x%02X), counter %u", inst->srv.state.gain,
+		inst->srv.state.mute, bt_aics_mode_to_str(inst->srv.state.gain_mode),
+		inst->srv.state.gain_mode, inst->srv.state.change_counter);
 
 	return bt_gatt_attr_read(conn, attr, buf, len, offset, &inst->srv.state,
 				 sizeof(inst->srv.state));
@@ -161,6 +165,8 @@ static ssize_t read_type(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static void aics_input_status_cfg_changed(const struct bt_gatt_attr *attr,
 					  uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -197,7 +203,7 @@ static void notify_work_reschedule(struct bt_aics *inst, enum bt_aics_notify not
 
 	atomic_set_bit(inst->srv.notify, notify);
 
-	err = k_work_reschedule(&inst->srv.notify_work, K_NO_WAIT);
+	err = k_work_reschedule(&inst->srv.notify_work, delay);
 	if (err < 0) {
 		LOG_ERR("Failed to reschedule %s notification err %d",
 			aics_notify_str(notify), err);
@@ -252,12 +258,12 @@ static uint8_t valid_control_point_write(uint16_t len, uint16_t offset,
 					 const struct bt_aics_gain_control *cp,
 					 uint8_t change_counter)
 {
-	if (offset != 0) {
+	if (offset != 0U) {
 		LOG_DBG("Invalid offset: %u", offset);
 		return BT_ATT_ERR_INVALID_OFFSET;
 	}
 
-	if (len == 0 || cp == NULL) {
+	if (len == 0U || cp == NULL) {
 		LOG_DBG("Invalid length (%u) or NULL data (%p)", len, cp);
 		return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
 	}
@@ -293,8 +299,7 @@ static uint8_t handle_set_gain_op(struct bt_aics *inst, const struct bt_aics_gai
 		return BT_AICS_ERR_OUT_OF_RANGE;
 	}
 
-	if (BT_AICS_INPUT_MODE_SETTABLE(inst->srv.state.gain_mode) &&
-	    inst->srv.state.gain != cp->gain_setting) {
+	if (inst->srv.state.gain != cp->gain_setting) {
 		inst->srv.state.gain = cp->gain_setting;
 		*state_change = true;
 	}
@@ -371,6 +376,9 @@ static ssize_t write_aics_control(struct bt_conn *conn, const struct bt_gatt_att
 	bool state_change = false;
 	int ret;
 
+	ARG_UNUSED(conn);
+	ARG_UNUSED(flags);
+
 	ret = valid_control_point_write(len, offset, cp, inst->srv.state.change_counter);
 	if (ret != BT_ATT_ERR_SUCCESS) {
 		return BT_GATT_ERR(ret);
@@ -403,8 +411,9 @@ static ssize_t write_aics_control(struct bt_conn *conn, const struct bt_gatt_att
 	if (state_change) {
 		inst->srv.state.change_counter++; /* May overflow which is OK */
 
-		LOG_DBG("New state: gain %d, mute %u, gain_mode %u, counter %u",
-			inst->srv.state.gain, inst->srv.state.mute, inst->srv.state.gain_mode,
+		LOG_DBG("New state: gain %d, mute %u, gain_mode %s (0x%02X), counter %u",
+			inst->srv.state.gain, inst->srv.state.mute,
+			bt_aics_mode_to_str(inst->srv.state.gain_mode), inst->srv.state.gain_mode,
 			inst->srv.state.change_counter);
 
 		value_changed(inst, AICS_NOTIFY_STATE);
@@ -425,6 +434,8 @@ static ssize_t write_aics_control(struct bt_conn *conn, const struct bt_gatt_att
 static void aics_description_cfg_changed(const struct bt_gatt_attr *attr,
 					 uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 #endif /* CONFIG_BT_AICS */
@@ -435,6 +446,13 @@ static ssize_t write_description(struct bt_conn *conn,
 				 uint8_t flags)
 {
 	struct bt_aics *inst = BT_AUDIO_CHRC_USER_DATA(attr);
+
+	ARG_UNUSED(conn);
+	ARG_UNUSED(flags);
+
+	if (offset != 0U) {
+		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+	}
 
 	if (len >= sizeof(inst->srv.description)) {
 		LOG_DBG("Output desc was clipped from length %u to %zu", len,
@@ -501,7 +519,7 @@ static ssize_t read_description(struct bt_conn *conn,
 /************************ PUBLIC API ************************/
 void *bt_aics_svc_decl_get(struct bt_aics *aics)
 {
-	CHECKIF(!aics) {
+	if (!aics) {
 		LOG_DBG("NULL instance");
 		return NULL;
 	}
@@ -521,12 +539,12 @@ int bt_aics_register(struct bt_aics *aics, struct bt_aics_register_param *param)
 	int err;
 	static bool instance_prepared;
 
-	CHECKIF(!aics) {
+	if (!aics) {
 		LOG_DBG("NULL aics pointer");
 		return -ENOTCONN;
 	}
 
-	CHECKIF(!param) {
+	if (!param) {
 		LOG_DBG("NULL param");
 		return -EINVAL;
 	}
@@ -536,37 +554,37 @@ int bt_aics_register(struct bt_aics *aics, struct bt_aics_register_param *param)
 		instance_prepared = true;
 	}
 
-	CHECKIF(aics->srv.initialized) {
+	if (aics->srv.initialized) {
 		return -EALREADY;
 	}
 
-	CHECKIF(param->mute > BT_AICS_STATE_MUTE_DISABLED) {
+	if (param->mute > BT_AICS_STATE_MUTE_DISABLED) {
 		LOG_DBG("Invalid AICS mute value: %u", param->mute);
 		return -EINVAL;
 	}
 
-	CHECKIF(param->gain_mode > BT_AICS_MODE_AUTO) {
+	if (param->gain_mode > BT_AICS_MODE_AUTO) {
 		LOG_DBG("Invalid AICS mode value: %u", param->gain_mode);
 		return -EINVAL;
 	}
 
-	CHECKIF(param->type > BT_AICS_INPUT_TYPE_AMBIENT) {
+	if (param->type > BT_AICS_INPUT_TYPE_AMBIENT) {
 		LOG_DBG("Invalid AICS input type value: %u", param->type);
 		return -EINVAL;
 	}
 
-	CHECKIF(param->units == 0) {
+	if (param->units == 0) {
 		LOG_DBG("AICS units value shall not be 0");
 		return -EINVAL;
 	}
 
-	CHECKIF(!(param->min_gain <= param->max_gain)) {
+	if (!(param->min_gain <= param->max_gain)) {
 		LOG_DBG("AICS min gain (%d) shall be lower than or equal to max gain (%d)",
 			param->min_gain, param->max_gain);
 		return -EINVAL;
 	}
 
-	CHECKIF(param->gain < param->min_gain || param->gain > param->max_gain) {
+	if (param->gain < param->min_gain || param->gain > param->max_gain) {
 		LOG_DBG("AICS gain (%d) shall be not lower than min gain (%d) "
 		       "or higher than max gain (%d)",
 		       param->gain, param->min_gain, param->max_gain);
@@ -622,7 +640,7 @@ int bt_aics_register(struct bt_aics *aics, struct bt_aics_register_param *param)
 	}
 
 	err = bt_gatt_service_register(aics->srv.service_p);
-	if (err) {
+	if (err != 0) {
 		LOG_DBG("Could not register AICS service");
 		return err;
 	}
@@ -644,7 +662,7 @@ struct bt_aics *bt_aics_free_instance_get(void)
 /****************************** PUBLIC API ******************************/
 int bt_aics_deactivate(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -671,7 +689,7 @@ int bt_aics_deactivate(struct bt_aics *inst)
 
 int bt_aics_activate(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -699,7 +717,7 @@ int bt_aics_activate(struct bt_aics *inst)
 #endif /* CONFIG_BT_AICS */
 int bt_aics_gain_set_manual_only(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -713,7 +731,7 @@ int bt_aics_gain_set_manual_only(struct bt_aics *inst)
 
 int bt_aics_gain_set_auto_only(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -727,7 +745,7 @@ int bt_aics_gain_set_auto_only(struct bt_aics *inst)
 
 int bt_aics_state_get(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -750,7 +768,7 @@ int bt_aics_state_get(struct bt_aics *inst)
 
 int bt_aics_gain_setting_get(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -774,7 +792,7 @@ int bt_aics_gain_setting_get(struct bt_aics *inst)
 
 int bt_aics_type_get(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -795,7 +813,7 @@ int bt_aics_type_get(struct bt_aics *inst)
 
 int bt_aics_status_get(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -816,7 +834,7 @@ int bt_aics_status_get(struct bt_aics *inst)
 
 int bt_aics_disable_mute(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -830,7 +848,7 @@ int bt_aics_disable_mute(struct bt_aics *inst)
 
 int bt_aics_unmute(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -851,7 +869,7 @@ int bt_aics_unmute(struct bt_aics *inst)
 
 int bt_aics_mute(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -872,7 +890,7 @@ int bt_aics_mute(struct bt_aics *inst)
 
 int bt_aics_manual_gain_set(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -893,7 +911,7 @@ int bt_aics_manual_gain_set(struct bt_aics *inst)
 
 int bt_aics_automatic_gain_set(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -914,7 +932,7 @@ int bt_aics_automatic_gain_set(struct bt_aics *inst)
 
 int bt_aics_gain_set(struct bt_aics *inst, int8_t gain)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -936,7 +954,7 @@ int bt_aics_gain_set(struct bt_aics *inst, int8_t gain)
 
 int bt_aics_description_get(struct bt_aics *inst)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
@@ -958,12 +976,12 @@ int bt_aics_description_get(struct bt_aics *inst)
 
 int bt_aics_description_set(struct bt_aics *inst, const char *description)
 {
-	CHECKIF(!inst) {
+	if (!inst) {
 		LOG_DBG("NULL instance");
 		return -EINVAL;
 	}
 
-	CHECKIF(!description) {
+	if (!description) {
 		LOG_DBG("NULL description");
 		return -EINVAL;
 	}

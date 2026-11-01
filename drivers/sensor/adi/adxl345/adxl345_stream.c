@@ -35,8 +35,17 @@ void adxl345_submit_stream(const struct device *dev, struct rtio_iodev_sqe *iode
 		uint8_t status;
 	if (fifo_watermark_irq != data->fifo_watermark_irq) {
 		data->fifo_watermark_irq = fifo_watermark_irq;
+
+		/* Disable watermark interrupt in INT_ENABLE before reconfiguring INT_MAP */
+		rc = adxl345_reg_write_mask(dev, ADXL345_INT_ENABLE,
+					    ADXL345_INT_MAP_WATERMARK_MSK, 0);
+		if (rc < 0) {
+			return;
+		}
+
+		/* Configure interrupt mapping */
 		rc = adxl345_reg_write_mask(dev, ADXL345_INT_MAP, ADXL345_INT_MAP_WATERMARK_MSK,
-						int_value);
+					    cfg_345->route_to_int2 ? int_value : ~int_value);
 		if (rc < 0) {
 			return;
 		}
@@ -52,6 +61,16 @@ void adxl345_submit_stream(const struct device *dev, struct rtio_iodev_sqe *iode
 		adxl345_configure_fifo(dev, current_fifo_mode, data->fifo_config.fifo_trigger,
 				data->fifo_config.fifo_samples);
 		rc = adxl345_reg_read_byte(dev, ADXL345_FIFO_STATUS_REG, &status);
+
+		/* Re-enable watermark interrupt in INT_ENABLE after configuration */
+		if (fifo_watermark_irq) {
+			rc = adxl345_reg_write_mask(dev, ADXL345_INT_ENABLE,
+						    ADXL345_INT_MAP_WATERMARK_MSK,
+						    ADXL345_INT_MAP_WATERMARK_MSK);
+			if (rc < 0) {
+				return;
+			}
+		}
 	}
 
 	rc = gpio_pin_interrupt_configure_dt(&cfg_345->interrupt,
@@ -62,8 +81,10 @@ void adxl345_submit_stream(const struct device *dev, struct rtio_iodev_sqe *iode
 	data->sqe = iodev_sqe;
 }
 
-static void adxl345_irq_en_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl345_irq_en_cb(struct rtio *r, const struct rtio_sqe *sqe, int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	const struct adxl345_dev_config *cfg = dev->config;
 
@@ -102,8 +123,11 @@ static void adxl345_fifo_flush_rtio(const struct device *dev)
 	rtio_submit(data->rtio_ctx, 0);
 }
 
-static void adxl345_fifo_read_cb(struct rtio *rtio_ctx, const struct rtio_sqe *sqe, void *arg)
+static void adxl345_fifo_read_cb(struct rtio *rtio_ctx, const struct rtio_sqe *sqe,
+				 int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	struct adxl345_dev_data *data = (struct adxl345_dev_data *) dev->data;
 	const struct adxl345_dev_config *cfg = (const struct adxl345_dev_config *) dev->config;
@@ -117,8 +141,11 @@ static void adxl345_fifo_read_cb(struct rtio *rtio_ctx, const struct rtio_sqe *s
 
 }
 
-static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sqe *sqe,
+					    int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	struct adxl345_dev_data *data = (struct adxl345_dev_data *) dev->data;
 	const struct adxl345_dev_config *cfg = (const struct adxl345_dev_config *) dev->config;
@@ -176,6 +203,8 @@ static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 
 	((struct adxl345_fifo_data *)buf)->fifo_byte_count = read_len;
 
+	uint16_t read_samples = read_len / sample_set_size;
+
 	uint8_t *read_buf = buf + sizeof(*hdr);
 
 	/* Flush completions */
@@ -200,8 +229,9 @@ static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 	}
 
 
-	data->fifo_samples = fifo_samples;
-	for (size_t i = 0; i < fifo_samples; i++) {
+	data->fifo_total_bytes = 0;
+	data->fifo_samples = read_samples;
+	for (size_t i = 0; i < read_samples; i++) {
 		struct rtio_sqe *write_fifo_addr = rtio_sqe_acquire(data->rtio_ctx);
 		struct rtio_sqe *read_fifo_data = rtio_sqe_acquire(data->rtio_ctx);
 
@@ -219,7 +249,7 @@ static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 		if (cfg->bus_type == ADXL345_BUS_I2C) {
 			read_fifo_data->iodev_flags |= RTIO_IODEV_I2C_STOP | RTIO_IODEV_I2C_RESTART;
 		}
-		if (i == fifo_samples-1) {
+		if (i == read_samples - 1U) {
 			struct rtio_sqe *complete_op = rtio_sqe_acquire(data->rtio_ctx);
 
 			read_fifo_data->flags |= RTIO_SQE_CHAINED;
@@ -231,8 +261,11 @@ static void adxl345_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 	}
 }
 
-static void adxl345_process_status1_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl345_process_status1_cb(struct rtio *r, const struct rtio_sqe *sqe,
+				       int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	struct adxl345_dev_data *data = (struct adxl345_dev_data *) dev->data;
 	const struct adxl345_dev_config *cfg = (const struct adxl345_dev_config *) dev->config;
@@ -241,6 +274,7 @@ static void adxl345_process_status1_cb(struct rtio *r, const struct rtio_sqe *sq
 	uint8_t status1 = data->status1;
 
 	if (data->sqe == NULL) {
+		data->fifo_watermark_irq = 0;
 		return;
 	}
 
@@ -298,11 +332,9 @@ static void adxl345_process_status1_cb(struct rtio *r, const struct rtio_sqe *sq
 		return;
 	}
 
-	enum sensor_stream_data_opt data_opt;
-
-	if (fifo_wmark_cfg != NULL) {
-		data_opt = fifo_wmark_cfg->opt;
-	}
+	/* fifo_wmark_cfg is guaranteed to be non-NULL here since fifo_full_irq is true */
+	__ASSERT_NO_MSG(fifo_wmark_cfg != NULL);
+	enum sensor_stream_data_opt data_opt = fifo_wmark_cfg->opt;
 
 	if (data_opt == SENSOR_STREAM_DATA_NOP || data_opt == SENSOR_STREAM_DATA_DROP) {
 		uint8_t *buf;
@@ -362,6 +394,7 @@ void adxl345_stream_irq_handler(const struct device *dev)
 	int rc;
 
 	if (data->sqe == NULL) {
+		data->fifo_watermark_irq = 0;
 		return;
 	}
 

@@ -1,0 +1,13 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Yuzuki Tsuru
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Internal loopback does not need the shared I2S or OWA pins. */
+&i2s0 {
+	status = "okay";
+};
+
+&owa {
+	status = "okay";
+};

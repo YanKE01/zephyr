@@ -198,7 +198,8 @@ provide:
 1. SWO trace end point: this virtual device is used by MCUXpresso to retrieve
    SWO trace data. See the MCUXpresso IDE documentation for more information.
 2. Virtual COM (VCOM) port / UART bridge connected to the target processor
-3. LPCSIO bridge that provides communication to I2C and SPI slave devices
+3. LPCSIO bridge that provides communication to I2C and SPI peripheral
+   devices
 
 This debug probe firmware is compatible with the following debug host tools:
 
@@ -457,6 +458,8 @@ Flash and debug with ST-Link
         with the RTT one if they are enabled by default in the particular sample or
         application you are running, such as disable UART_CONSOLE in menuconfig
 
+.. _stlink-adapter-firmware-update:
+
 Updating or restoring ST-Link firmware
 ======================================
 
@@ -474,6 +477,33 @@ following command
 Where board_uid can be obtained using twister's generate-hardware-map
 option. For more information about twister and available options, see
 :ref:`twister_script`.
+
+OpenOCD Deprecates HLA ST-Link Interface
+========================================
+
+OpenOCD has deprecated the legacy HLA interface used by ST-Link firmware in favor to the
+generic DAP interface in January 2024 (see `OpenOCD deprecates ST-Link HLA Interface`_)
+in favor of the generic DAP interface. DAP interface is supported by ST-Link firmware
+since 2015 (from version v2j24).
+
+Since OpenOCD deprecation, one using a recent OpenOCD tool (after release tag v0.12.0)
+may experience communication issues when the ST-Link adapter embeds a firmware prior version
+v2j24. In such case, it is recommended to update the ST-Link firmware (refer to
+`ST-LINK firmware update <#_stlink-adapter-firmware-update>`_).
+If it is not possible to update the firmware, one may still use the old HLA interface
+by modifying its OpenOCD configuration script replacing (if applicable) the 2 below lines:
+
+  .. code-block::
+
+    source [find interface/stlink-dap.cfg]
+    transport select dapdirect_swd
+
+with the 2 following lines:
+
+  .. code-block::
+
+    source [find interface/stlink-hla.cfg]
+    transport select hla_swd
 
 .. _nxp-s32-debug-probe:
 
@@ -529,6 +559,9 @@ See `Black Magic Debug supported hardware`_.
 .. _STM32CubeProgrammer Tool:
     https://www.st.com/en/development-tools/stm32cubeprog.html
 
+.. _OpenOCD deprecates ST-Link HLA Interface:
+    https://sourceforge.net/p/openocd/code/ci/34ec5536c0ba3315bc5a841244bbf70141ccfbb4
+
 .. _MCUXpresso Installer:
 	https://www.nxp.com/lgfiles/updates/mcuxpresso/MCUXpressoInstaller.exe
 
@@ -545,4 +578,4 @@ See `Black Magic Debug supported hardware`_.
    https://black-magic.org/index.html
 
 .. _Black Magic Debug supported hardware:
-   https://black-magic.org/hardware.html
+   https://black-magic.org/index.html#other-hardware-supported-by-black-magic-debug

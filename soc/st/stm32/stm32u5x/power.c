@@ -9,20 +9,21 @@
 #include <soc.h>
 #include <zephyr/init.h>
 
-#include <stm32u5xx_ll_utils.h>
-#include <stm32u5xx_ll_bus.h>
-#include <stm32u5xx_ll_cortex.h>
-#include <stm32u5xx_ll_pwr.h>
-#include <stm32u5xx_ll_rcc.h>
-#include <stm32u5xx_ll_system.h>
+#include <stm32_ll_utils.h>
+#include <stm32_ll_bus.h>
+#include <stm32_ll_cortex.h>
+#include <stm32_ll_pwr.h>
+#include <stm32_ll_rcc.h>
+#include <stm32_ll_system.h>
 #include <clock_control/clock_stm32_ll_common.h>
+#include <zephyr/drivers/clock_control/stm32_clock_control.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(soc, CONFIG_SOC_LOG_LEVEL);
 
-/* select MSI as wake-up system clock if configured, HSI otherwise */
-#if STM32_SYSCLK_SRC_MSI
-#define RCC_STOP_WAKEUPCLOCK_SELECTED LL_RCC_STOP_WAKEUPCLOCK_MSI
+/* select MSIS as wake-up system clock if configured, HSI otherwise */
+#if STM32_SYSCLK_SRC_MSIS
+#define RCC_STOP_WAKEUPCLOCK_SELECTED LL_RCC_STOP_WAKEUPCLOCK_MSIS
 #else
 #define RCC_STOP_WAKEUPCLOCK_SELECTED LL_RCC_STOP_WAKEUPCLOCK_HSI
 #endif
@@ -128,9 +129,11 @@ void pm_state_exit_post_ops(enum pm_state state, uint8_t substate_id)
 			LOG_DBG("Unsupported power substate-id %u",
 							substate_id);
 		}
+		break;
 	case PM_STATE_STANDBY:
 		/* To be tested */
 		LL_LPM_EnableSleep();
+		break;
 	case PM_STATE_SUSPEND_TO_RAM:
 		__fallthrough;
 	case PM_STATE_SUSPEND_TO_DISK:

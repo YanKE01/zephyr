@@ -11,8 +11,8 @@
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/logging/log_msg.h>
 #include <zephyr/sys/cbprintf.h>
-#ifdef CONFIG_NRF_ETR
-#include <zephyr/drivers/misc/coresight/nrf_etr.h>
+#ifdef CONFIG_DEBUG_NRF_ETR
+#include <zephyr/drivers/debug/debug_nrf_etr.h>
 #endif
 
 /* Only 32 bit platforms supported. */
@@ -335,7 +335,6 @@ void log_frontend_msg(const void *source, const struct log_msg_desc desc, uint8_
 {
 	uint16_t strl[4];
 	union log_frontend_stmesp_demux_header hdr = {.log = {.level = desc.level}};
-	bool use_timestamp = desc.level != LOG_LEVEL_INTERNAL_RAW_STRING;
 	const char *sname;
 	static const char null_c = '\0';
 	size_t sname_len;
@@ -357,6 +356,7 @@ void log_frontend_msg(const void *source, const struct log_msg_desc desc, uint8_
 					       ARRAY_SIZE(strl));
 	hdr.log.total_len = total_len + package_len;
 	hdr.log.package_len = package_len;
+	hdr.log.has_data = desc.data_len > 0 ? 1 : 0;
 
 	if ((EARLY_BUF_SIZE == 0) || etr_rdy) {
 		STMESP_Type *stm_esp;
@@ -370,7 +370,7 @@ void log_frontend_msg(const void *source, const struct log_msg_desc desc, uint8_
 		if (IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_MSG_END_TIMESTAMP)) {
 			STM_D32(stm_esp, hdr.raw, false, false);
 		} else {
-			STM_D32(stm_esp, hdr.raw, use_timestamp, true);
+			STM_D32(stm_esp, hdr.raw, true, true);
 		}
 		(void)cbprintf_package_convert(package, desc.package_len, package_cb, stm_esp,
 					       flags, strl, ARRAY_SIZE(strl));
@@ -574,15 +574,16 @@ void log_frontend_simple_2(const void *source, uint32_t level, const char *fmt, 
 void log_frontend_panic(void)
 {
 	in_panic = true;
-#ifdef CONFIG_NRF_ETR
-	nrf_etr_flush();
+#ifdef CONFIG_DEBUG_NRF_ETR
+	debug_nrf_etr_flush();
 #endif
 }
 
 void log_frontend_init(void)
 {
-#if	defined(CONFIG_LOG_FRONTEND_STPESP_TURBO_SOURCE_PORT_ID) && !defined(CONFIG_NRF_ETR) && \
-	!defined(CONFIG_LOG_MSG_APPEND_RO_STRING_LOC)
+#if defined(CONFIG_LOG_FRONTEND_STPESP_TURBO_SOURCE_PORT_ID) \
+	&& !defined(CONFIG_DEBUG_NRF_ETR) \
+	&& !defined(CONFIG_LOG_MSG_APPEND_RO_STRING_LOC)
 	/* Send location of section with constant source data. It is used by the
 	 * application core to retrieve source names of log messages coming from
 	 * coprocessors (FLPR and PPR).
@@ -665,28 +666,34 @@ int log_frontend_stmesp_etr_ready(void)
 
 void log_frontend_stmesp_log0(const void *source, uint32_t x)
 {
-	STMESP_Type *port;
-	int err = stmesp_get_port((uint32_t)x + 0x8000, &port);
-	uint16_t source_id = log_source_id(source);
+	if ((EARLY_BUF_SIZE == 0) || etr_rdy) {
+		STMESP_Type *port;
+		int err = stmesp_get_port((uint32_t)x +
+			CONFIG_LOG_FRONTEND_STMESP_TURBO_LOG_BASE, &port);
+		uint16_t source_id = log_source_id(source);
 
-	__ASSERT_NO_MSG(err == 0);
-	if (err == 0) {
-		stmesp_data16(port, source_id, true, true,
-			      IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
+		__ASSERT_NO_MSG(err == 0);
+		if (err == 0) {
+			stmesp_data16(port, source_id, true, true,
+				      IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
+		}
 	}
 }
 
 void log_frontend_stmesp_log1(const void *source, uint32_t x, uint32_t arg)
 {
-	STMESP_Type *port;
-	int err = stmesp_get_port((uint32_t)x + 0x8000, &port);
-	uint16_t source_id = log_source_id(source);
+	if ((EARLY_BUF_SIZE == 0) || etr_rdy) {
+		STMESP_Type *port;
+		int err = stmesp_get_port((uint32_t)x +
+			CONFIG_LOG_FRONTEND_STMESP_TURBO_LOG_BASE, &port);
+		uint16_t source_id = log_source_id(source);
 
-	__ASSERT_NO_MSG(err == 0);
-	if (err == 0) {
-		stmesp_data16(port, source_id, false, true,
-			      IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
-		stmesp_data32(port, arg, true, true,
-			      IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
+		__ASSERT_NO_MSG(err == 0);
+		if (err == 0) {
+			stmesp_data16(port, source_id, false, true,
+				IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
+			stmesp_data32(port, arg, true, true,
+				IS_ENABLED(CONFIG_LOG_FRONTEND_STMESP_GUARANTEED_ACCESS));
+		}
 	}
 }

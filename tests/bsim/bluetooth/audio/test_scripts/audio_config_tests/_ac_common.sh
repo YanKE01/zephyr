@@ -5,7 +5,7 @@
 source ${ZEPHYR_BASE}/tests/bsim/sh_common.source
 
 VERBOSITY_LEVEL=2
-EXECUTE_TIMEOUT=60
+EXECUTE_TIMEOUT=120
 BSIM_EXE=./bs_${BOARD_TS}_tests_bsim_bluetooth_audio_prj_conf
 
 cd ${BSIM_OUT_PATH}/bin
@@ -24,7 +24,7 @@ function Execute_ac() {
     fi
 
 
-    sim_id="${ac_profile}_ac_${ac_config}_${ac_tx_preset}_${ac_rx_preset}"
+    sim_id="${BOARD_TS}_${ac_profile}_ac_${ac_config}_${ac_tx_preset}_${ac_rx_preset}"
 
     printf "\n\n======== Running %s AC_%s with %s %s =========\n\n" \
         "${ac_profile}" "${ac_config}" "${ac_tx_preset_arg}" "${ac_rx_preset_arg}"

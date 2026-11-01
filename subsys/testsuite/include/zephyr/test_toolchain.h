@@ -9,10 +9,13 @@
 
 #include <zephyr/toolchain.h>
 
-#if defined(__llvm__) || (defined(_LINKER) && defined(__LLD_LINKER_CMD__))
+#if defined(__llvm__) ||                                                                           \
+	(defined(_LINKER) && (defined(__LLD_LINKER_CMD__) || defined(__ELD_LINKER_CMD__)))
 #include <zephyr/test_toolchain/llvm.h>
 #elif defined(__GNUC__) || (defined(_LINKER) && defined(__GCC_LINKER_CMD__))
 #include <zephyr/test_toolchain/gcc.h>
+#elif defined(__IAR_SYSTEMS_ICC__)
+#include <zephyr/test_toolchain/iar.h>
 #endif
 
 /**

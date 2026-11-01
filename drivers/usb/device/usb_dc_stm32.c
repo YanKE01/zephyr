@@ -25,7 +25,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pinctrl.h>
-#include "stm32_hsem.h"
+#include <stm32_hsem.h>
 
 #define LOG_LEVEL CONFIG_USB_DRIVER_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -233,13 +233,13 @@ static struct usb_dc_stm32_state usb_dc_stm32_state;
  */
 #define SEND_MSG_TO_LOWERHALF(_status_field, _status, _target)			\
 	do {									\
-		struct usb_dc_stm32_msg _msg = {				\
+		struct usb_dc_stm32_msg msg = {					\
 			. _status_field = _status,				\
 			.target = _target,					\
 		};								\
 										\
 		int _errcode = k_msgq_put(					\
-			&usb_dc_stm32_state.isr_msgq, &_msg, K_NO_WAIT);	\
+			&usb_dc_stm32_state.isr_msgq, &msg, K_NO_WAIT);		\
 		if (_errcode != 0) {						\
 			LOG_ERR("k_msgq_put() failed: %d", _errcode);		\
 			__ASSERT_NO_MSG(0);					\
@@ -305,6 +305,16 @@ static void usb_dc_stm32_isr_lower_half(void *a1, void *a2, void *a3)
 			}
 		}
 	}
+}
+
+static bool usb_dc_stm32_clock_enabled(void)
+{
+	const struct device *const clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
+
+	enum clock_control_status status = clock_control_get_status(
+						clk, (clock_control_subsys_t)&pclken[0]);
+
+	return status == CLOCK_CONTROL_STATUS_ON;
 }
 
 static struct usb_dc_stm32_ep_state *usb_dc_stm32_get_ep_state(uint8_t ep)
@@ -397,7 +407,7 @@ static int usb_dc_stm32_phy_specific_clock_enable(const struct device *const clk
 {
 	int err;
 
-	/* Sequence to enable the power of the OTG HS on a stm32U5 serie : Enable VDDUSB */
+	/* Sequence to enable the power of the OTG HS on a stm32U5 series : Enable VDDUSB */
 	bool pwr_clk = LL_AHB3_GRP1_IsEnabledClock(LL_AHB3_GRP1_PERIPH_PWR);
 
 	if (!pwr_clk) {
@@ -455,7 +465,7 @@ static int usb_dc_stm32_phy_specific_clock_enable(const struct device *const clk
 #elif DT_HAS_COMPAT_STATUS_OKAY(st_stm32n6_otghs)
 	/* Enable Vdd USB voltage monitoring */
 	LL_PWR_EnableVddUSBMonitoring();
-	while (__HAL_PWR_GET_FLAG(PWR_FLAG_USB33RDY)) {
+	while (!__HAL_PWR_GET_FLAG(PWR_FLAG_USB33RDY)) {
 		/* Wait for VDD33USB ready */
 	}
 	/* Enable VDDUSB */
@@ -553,12 +563,6 @@ static int usb_dc_stm32_clock_enable(void)
 
 #if USB_OTG_HS_EMB_PHYC
 #if !DT_HAS_COMPAT_STATUS_OKAY(st_stm32n6_otghs)
-	/*
-	 * STM32F723 and STM32F730 embedded HS PHY requires ULPI
-	 * clock to be enabled (RUN and LP) in addition to USBPHYC.
-	 */
-	LL_AHB1_GRP1_EnableClockLowPower(LL_AHB1_GRP1_PERIPH_OTGHSULPI);
-	LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_OTGHSULPI);
 	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_OTGPHYC);
 #endif
 #endif
@@ -1061,6 +1065,17 @@ int usb_dc_ep_disable(const uint8_t ep)
 
 	if (!ep_state) {
 		return -EINVAL;
+	}
+
+	if (!usb_dc_stm32_clock_enabled()) {
+		/*
+		 * During device teardown, EP disable is attempted after
+		 * the USB controller clock has been turned off. Accessing
+		 * it would do nothing and even deadlocks the SoC on certain
+		 * series: don't even bother trying. Return success as all
+		 * endpoints are disabled anyways when USB controller is off.
+		 */
+		return 0;
 	}
 
 	status = HAL_PCD_EP_Close(&usb_dc_stm32_state.pcd, ep);

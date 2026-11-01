@@ -11,9 +11,12 @@ toolchain:
   - zephyr
 testing:
   ignore_tags:
-    - net
     - bluetooth
 supported:
+  - gpio
   - pinctrl
   - uart
+  - dma
+  - flash
+  - netif:wifi
 vendor: bflb

@@ -92,6 +92,15 @@ PRs that are too large or complicated.
 PR Requirements
 ***************
 
+.. important::
+
+   Pull requests that do not meet the quality expectations outlined below are less likely to receive
+   reviewer engagement, and reviewers may request changes on such pull requests without detailed
+   feedback.
+
+   Contributors are expected to self-review their changes and ensure all requirements are met before
+   requesting a review.
+
 - Each commit in the PR must provide a commit message following the
   :ref:`commit-guidelines`.
 
@@ -203,21 +212,41 @@ request that they create an :ref:`RFC proposal <rfcs>`.
 Workflow Suggestions That Help Reviewers
 ========================================
 
-- Unless they applied the reviewer's recommendation exactly, authors must not
-  resolve and hide comments, they must let the initial reviewer do it. The
-  Zephyr project does not require all comments to be resolved before merge.
-  Leaving some completed discussions open can sometimes be useful to understand
-  the greater picture.
+- Describe in the PR what you tested and how: which boards or emulators, which twister scenarios
+  or samples, and what was not tested (for example, hardware you do not have). Reviewers cannot
+  tell the difference between "tested on hardware" and "compiles", so say which it is. For a bug
+  fix, say how the bug was reproduced and that the added test fails without the fix.
 
-- Respond to comments using the "Start Review" and "Add Review" green buttons in
-  the "Files changed" view. This allows responding to multiple comments and
-  publishing the responses in bulk. This reduces the number of emails sent to
-  reviewers.
+- Push follow-up changes as amendments to the commits they belong to (see the
+  :ref:`Contribution workflow`), not as extra "fix review comments" commits.
 
-- As GitHub does not implement |git range-diff|_, try to minimize rebases in the
-  middle of a review. If a rebase is required, push this as a separate update
-  with no other changes since the last push of the PR. When pushing a rebase
-  only, add a comment to the PR indicating which commit is the rebase.
+- Make dependencies between PRs explicit. If a PR carries commits from another open PR, say
+  so at the top of the description ("Depends on #N; the first two commits belong to #N, review
+  them there") so reviewers do not review the same code twice or comment in the wrong PR. Where
+  possible, keep such a dependent PR as a draft until the PR it depends on has merged, or put
+  both changes in one PR.
+
+- Do not rebase the PR onto ``main`` while a review is in progress unless there is a merge
+  conflict or CI needs a change that is only on ``main``. GitHub does not implement
+  |git range-diff|_, so after a rebase the reviewer can no longer see what changed since the
+  last round and has to re-read the whole PR, and existing approvals are dismissed. Rebasing
+  after the PR has been approved is fine. If a rebase is unavoidable, push it as a separate
+  update with no other changes and add a comment saying so.
+
+- Reply to every review comment, either with the change you made or with why you did not make
+  it. Do not resolve and hide a comment yourself unless you applied the reviewer's
+  recommendation exactly; leave that to the reviewer who raised it. The Zephyr project does not
+  require all comments to be resolved before merge. Leaving some completed discussions open can
+  sometimes be useful to understand the greater picture.
+
+- Respond to comments using the "Start Review" and "Add Review" green buttons in the "Files
+  changed" view. This allows responding to multiple comments and publishing the responses in
+  bulk. This reduces the number of emails sent to reviewers.
+
+- After pushing changes that address review comments, click "Re-request review" next to each
+  reviewer who requested changes, so the PR shows up in their review queue again. If the push
+  also contains changes that no review comment asked for, such as a rebase or an unrelated fix,
+  say so in a PR comment.
 
 .. |git range-diff| replace:: ``git range-diff``
 .. _`git range-diff`: https://git-scm.com/docs/git-range-diff
@@ -229,35 +258,11 @@ The Zephyr community is a diverse group of individuals, with different levels of
 commitment and priorities. As such, reviewers and maintainers may not get to a
 PR right away.
 
-The `Zephyr Dev Meeting`_ performs a triage of PRs missing reviewer approval,
-following this process:
-
-#. Identify and update PRs missing an Assignee.
-#. Identify PRs without any comments or reviews, ping the PR Assignee to start a
-   review or assign to a different maintainer.
-#. For PRs that have otherwise stalled, the Zephyr Dev Meeting pings the
-   Assignee and any reviewers that have left comments on the PR.
-
-Contributors may request PRs to be reviewed outside of the Zephyr Dev Meeting
-triage process as follows:
-
 - After 1 week of inactivity, ping the Assignee or reviewers on the PR by adding
   a comment to the PR.
 
 - After 2 weeks of inactivity, post a message on the `#pr-help`_ channel on
   Discord linking to the PR.
-
-- After 2 weeks of inactivity, add the `dev-review`_ label to the PR. This
-  explicitly adds the PR to the agenda for the next `Zephyr Dev Meeting`_
-  independent of the triage process. Not all contributors have the required
-  privileges to add labels to PRs, in this case the contributor should request
-  help on Discord or send an email to the `Zephyr devel mailing list`_.
-
-Note that for new PRs, contributors should generally wait for at least one
-Zephyr Dev Meeting before making a request themselves.
-
-.. _Zephyr devel mailing list: https://lists.zephyrproject.org/g/devel
-
 
 .. _pr_technical_escalation:
 
@@ -272,12 +277,6 @@ Before escalation of technical disagreements, follow the steps below:
 - Resolve in the PR among assignee, maintainers and reviewer.
 
   - Assignee to act as moderator if applicable.
-
-- Optionally resolve in the next `Zephyr Dev Meeting`_  meeting with more
-  Maintainers and project stakeholders.
-
-  - The involved parties and the Assignee to be present when the  issue is
-    discussed.
 
 - If no progress is made, the assignee (maintainer) has the right to dismiss
   stale, unrelated or irrelevant change requests by reviewers giving the
@@ -310,10 +309,6 @@ the steps below:
   outcome is documented in the related pull request or issues on Github.
 
 .. _#pr-help: https://discord.com/channels/720317445772017664/997527108844798012
-
-.. _dev-review: https://github.com/zephyrproject-rtos/zephyr/labels/dev-review
-
-.. _Zephyr Dev Meeting: https://github.com/zephyrproject-rtos/zephyr/wiki/Zephyr-Committee-and-Working-Groups#zephyr-dev-meeting
 
 .. _Architecture Project: https://github.com/zephyrproject-rtos/zephyr/projects/18
 

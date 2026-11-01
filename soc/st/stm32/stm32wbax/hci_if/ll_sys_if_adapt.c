@@ -10,13 +10,14 @@
 #define LOG_LEVEL CONFIG_SOC_LOG_LEVEL
 LOG_MODULE_REGISTER(ll_sys_if_adapt);
 
-#include "ll_sys.h"
-#include "ll_intf_cmn.h"
+#include <ll_sys.h>
+#include <ll_intf_cmn.h>
 #if defined(CONFIG_BT_STM32WBA_USE_TEMP_BASED_CALIB)
 #include <zephyr/drivers/sensor.h>
 #endif /* defined(CONFIG_BT_STM32WBA_USE_TEMP_BASED_CALIB) */
-
+#if defined(CONFIG_BT_STM32WBA)
 extern struct k_mutex ble_ctrl_stack_mutex;
+#endif /* CONFIG_BT_STM32WBA */
 extern struct k_work_q ll_work_q;
 struct k_work ll_sys_work;
 
@@ -27,9 +28,13 @@ static struct k_work temp_calibration_work;
 
 static void ll_sys_bg_process_handler(struct k_work *work)
 {
+#if defined(CONFIG_BT_STM32WBA)
 	k_mutex_lock(&ble_ctrl_stack_mutex, K_FOREVER);
 	ll_sys_bg_process();
 	k_mutex_unlock(&ble_ctrl_stack_mutex);
+#else
+	ll_sys_bg_process();
+#endif /* CONFIG_BT_STM32WBA */
 }
 
 void ll_sys_schedule_bg_process(void)

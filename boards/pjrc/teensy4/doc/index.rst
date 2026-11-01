@@ -1,4 +1,4 @@
-.. _teensy40:
+.. zephyr:board:: teensy40
 
 PJRC TEENSY 4
 #############
@@ -80,55 +80,7 @@ For more information, check the `i.MX RT1060 Datasheet`_.
 Supported Features
 ==================
 
-The Teensy 4.0 board configuration supports the following hardware
-features:
-
-+-----------+------------+----------------------+
-| Interface | Controller | Driver/Component     |
-+===========+============+======================+
-| ADC       | on-chip    | adc                  |
-+-----------+------------+----------------------+
-| CLOCK     | on-chip    | clock_control        |
-+-----------+------------+----------------------+
-| FLASH     | on-chip    | flash                |
-+-----------+------------+----------------------+
-| GPIO      | on-chip    | gpio                 |
-+-----------+------------+----------------------+
-| I2C       | on-chip    | i2c                  |
-+-----------+------------+----------------------+
-| I2S       | on-chip    | i2s                  |
-+-----------+------------+----------------------+
-| NVIC      | on-chip    | arch/arm             |
-+-----------+------------+----------------------+
-| PWM       | on-chip    | pwm                  |
-+-----------+------------+----------------------+
-| RTC       | on-chip    | system clock         |
-+-----------+------------+----------------------+
-| SPI       | on-chip    | spi                  |
-+-----------+------------+----------------------+
-| CAN       | on-chip    | can                  |
-+-----------+------------+----------------------+
-| UART      | on-chip    | serial               |
-+-----------+------------+----------------------+
-| USB       | on-chip    | usb                  |
-+-----------+------------+----------------------+
-| TRNG      | on-chip    | entropy              |
-+-----------+------------+----------------------+
-| WDT       | on-chip    | watchdog             |
-+-----------+------------+----------------------+
-
-The Teensy 4.1 board configuration supports additional hardware
-features:
-
-+-----------+------------+-------------------------------------+
-| Interface | Controller | Driver/Component                    |
-+===========+============+=====================================+
-| SDHC      | on-chip    | disk access                         |
-+-----------+------------+-------------------------------------+
-| ENET      | on-chip    | ethernet                            |
-+-----------+------------+-------------------------------------+
-
-Other hardware features have not been enabled yet for this board.
+.. zephyr:board-supported-hw::
 
 Connections and IOs
 ===================
@@ -460,13 +412,8 @@ Configuring a Console
       By mapping the console output to USB, a usb-to-serial adapter is no longer required.
       Utilizing the :ref:`snippet-cdc-acm-console` and a config option will enable this feature.
 
-      #. If application code doesn´t enable USB device support, this must be done via Kconfig option.
-
-         .. code-block:: kconfig
-
-            CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=y
-
-      #. Build application including the snippet.
+      #. Build application including the snippet. It initializes USB device
+         support automatically.
 
          .. zephyr-app-commands::
             :zephyr-app: samples/basic/blinky

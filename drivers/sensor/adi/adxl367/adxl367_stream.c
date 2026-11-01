@@ -9,7 +9,7 @@
 #include <zephyr/drivers/sensor_clock.h>
 #include "adxl367.h"
 
-LOG_MODULE_DECLARE(ADXL362, CONFIG_SENSOR_LOG_LEVEL);
+LOG_MODULE_DECLARE(ADXL367, CONFIG_SENSOR_LOG_LEVEL);
 
 static void adxl367_sqe_done(const struct adxl367_dev_config *cfg,
 	struct rtio_iodev_sqe *iodev_sqe, int res)
@@ -23,8 +23,10 @@ static void adxl367_sqe_done(const struct adxl367_dev_config *cfg,
 	gpio_pin_interrupt_configure_dt(&cfg->interrupt, GPIO_INT_EDGE_TO_ACTIVE);
 }
 
-static void adxl367_irq_en_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl367_irq_en_cb(struct rtio *r, const struct rtio_sqe *sqe, int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	const struct adxl367_dev_config *cfg = dev->config;
 
@@ -115,7 +117,7 @@ void adxl367_submit_stream(const struct device *dev, struct rtio_iodev_sqe *iode
 		data->fifo_wmark_irq = fifo_wmark_irq;
 		data->fifo_full_irq = fifo_full_irq;
 
-		rc = data->hw_tf->write_reg_mask(dev, ADXL367_INTMAP1_LOWER, int_mask, int_value);
+		rc = data->hw_tf->write_reg_mask(dev, cfg_367->int_map_reg, int_mask, int_value);
 		if (rc < 0) {
 			return;
 		}
@@ -148,8 +150,11 @@ void adxl367_submit_stream(const struct device *dev, struct rtio_iodev_sqe *iode
 	data->sqe = iodev_sqe;
 }
 
-static void adxl367_fifo_read_cb(struct rtio *rtio_ctx, const struct rtio_sqe *sqe, void *arg)
+static void adxl367_fifo_read_cb(struct rtio *rtio_ctx, const struct rtio_sqe *sqe,
+				 int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	const struct adxl367_dev_config *cfg = (const struct adxl367_dev_config *)dev->config;
 	struct rtio_iodev_sqe *iodev_sqe = sqe->userdata;
@@ -190,8 +195,11 @@ size_t adxl367_get_numb_of_samp_in_pkt(const struct adxl367_data *data)
 	return sample_numb;
 }
 
-static void adxl367_process_fifo_samples_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl367_process_fifo_samples_cb(struct rtio *r, const struct rtio_sqe *sqe,
+					    int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	struct adxl367_data *data = (struct adxl367_data *)dev->data;
 	const struct adxl367_dev_config *cfg = (const struct adxl367_dev_config *)dev->config;
@@ -204,7 +212,7 @@ static void adxl367_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 
 	switch (data->fifo_config.fifo_read_mode) {
 	case ADXL367_8B:
-		fifo_bytes = fifo_packet_cnt;
+		fifo_bytes = fifo_packet_cnt * sample_numb;
 		break;
 	case ADXL367_12B: {
 		unsigned int fifo_bits = fifo_packet_cnt * sample_numb * 12;
@@ -237,7 +245,7 @@ static void adxl367_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 		break;
 	}
 	default:
-		fifo_bytes = fifo_packet_cnt * 2;
+		fifo_bytes = fifo_packet_cnt * sample_numb * 2;
 		packet_size *= 2;
 		break;
 	}
@@ -401,13 +409,16 @@ static void adxl367_process_fifo_samples_cb(struct rtio *r, const struct rtio_sq
 	rtio_sqe_prep_read(read_fifo_data, data->iodev, RTIO_PRIO_NORM, read_buf, read_len,
 			   current_sqe);
 	read_fifo_data->flags = RTIO_SQE_CHAINED;
-	rtio_sqe_prep_callback(complete_op, adxl367_fifo_read_cb, (void *)dev, current_sqe);
+	rtio_sqe_prep_callback(complete_op, adxl367_fifo_read_cb, current_sqe, (void *)dev);
 
 	rtio_submit(data->rtio_ctx, 0);
 }
 
-static void adxl367_process_status_cb(struct rtio *r, const struct rtio_sqe *sqr, void *arg)
+static void adxl367_process_status_cb(struct rtio *r, const struct rtio_sqe *sqe,
+				      int result, void *arg)
 {
+	ARG_UNUSED(result);
+
 	const struct device *dev = (const struct device *)arg;
 	struct adxl367_data *data = (struct adxl367_data *) dev->data;
 	const struct adxl367_dev_config *cfg = (const struct adxl367_dev_config *) dev->config;

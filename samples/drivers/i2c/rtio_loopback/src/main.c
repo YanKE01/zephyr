@@ -17,17 +17,18 @@
 #define I2C_CONTROLLER_TARGET_DEVICE_GET DEVICE_DT_GET(I2C_CONTROLLER_TARGET_NODE)
 #define I2C_TARGET_ADDR                  0x0A
 #define SAMPLE_TIMEOUT                   K_SECONDS(1)
+#define I2C_CONTROLLER_DEV_CONFIG        (I2C_SPEED_SET(I2C_SPEED_STANDARD) | I2C_MODE_CONTROLLER)
 
 static const struct device *sample_i2c_controller = I2C_CONTROLLER_DEVICE_GET;
 static const struct device *sample_i2c_controller_target = I2C_CONTROLLER_TARGET_DEVICE_GET;
 
 /* Data to write and buffer to store write in */
-static uint8_t sample_write_data[] = {0x0A, 0x0B};
+static uint8_t sample_write_data[CONFIG_I2C_RTIO_LOOPBACK_DATA_WRITE_MAX_SIZE];
 static uint8_t sample_write_buf[sizeof(sample_write_data)];
 static uint32_t sample_write_buf_pos;
 
 /* Data to read and buffer to store read in */
-static uint8_t sample_read_data[] = {0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5};
+static uint8_t sample_read_data[CONFIG_I2C_RTIO_LOOPBACK_DATA_READ_MAX_SIZE];
 static uint32_t sample_read_data_pos;
 static uint8_t sample_read_buf[sizeof(sample_read_data)];
 
@@ -94,6 +95,7 @@ static int sample_target_read_processed(struct i2c_target_config *target_config,
 	return 0;
 }
 
+#ifdef CONFIG_I2C_TARGET_BUFFER_MODE
 static void sample_target_buf_write_received(struct i2c_target_config *target_config,
 					     uint8_t *data,
 					     uint32_t size)
@@ -110,6 +112,7 @@ static int sample_target_buf_read_requested(struct i2c_target_config *target_con
 	*size = sizeof(sample_read_data);
 	return 0;
 }
+#endif /* CONFIG_I2C_TARGET_BUFFER_MODE */
 
 static int sample_target_stop(struct i2c_target_config *config)
 {
@@ -122,8 +125,10 @@ static const struct i2c_target_callbacks sample_target_callbacks = {
 	.read_requested = sample_target_read_requested,
 	.write_received = sample_target_write_received,
 	.read_processed = sample_target_read_processed,
+#ifdef CONFIG_I2C_TARGET_BUFFER_MODE
 	.buf_write_received = sample_target_buf_write_received,
 	.buf_read_requested = sample_target_buf_read_requested,
+#endif
 	.stop = sample_target_stop,
 };
 
@@ -137,6 +142,18 @@ static int sample_init_i2c_target(void)
 	return i2c_target_register(sample_i2c_controller_target, &sample_target_config);
 }
 
+static int sample_standard_configure_and_recover(void)
+{
+	int ret;
+
+	ret = i2c_configure(sample_i2c_controller, I2C_CONTROLLER_DEV_CONFIG);
+	if (ret) {
+		return ret;
+	}
+
+	return i2c_recover_bus(sample_i2c_controller);
+}
+
 static void sample_reset_buffers(void)
 {
 	memset(sample_write_buf, 0, sizeof(sample_write_buf));
@@ -145,7 +162,6 @@ static void sample_reset_buffers(void)
 
 static int sample_standard_write_read(void)
 {
-	int ret;
 	struct i2c_msg msgs[2];
 
 	msgs[0].buf = sample_write_data;
@@ -156,15 +172,7 @@ static int sample_standard_write_read(void)
 	msgs[1].len = sizeof(sample_read_buf);
 	msgs[1].flags = I2C_MSG_RESTART | I2C_MSG_READ | I2C_MSG_STOP;
 
-	ret = i2c_transfer(sample_i2c_controller,
-			   msgs,
-			   ARRAY_SIZE(msgs),
-			   I2C_TARGET_ADDR);
-	if (ret) {
-		return -EIO;
-	}
-
-	return 0;
+	return i2c_transfer(sample_i2c_controller, msgs, ARRAY_SIZE(msgs), I2C_TARGET_ADDR);
 }
 
 static int sample_validate_write_read(void)
@@ -172,28 +180,118 @@ static int sample_validate_write_read(void)
 	int ret;
 
 	if (sample_write_buf_pos != sizeof(sample_write_data)) {
+		printk("Posittion error: %zu != %zu\n",
+		       sample_write_buf_pos, sizeof(sample_write_data));
 		return -EIO;
 	}
 
 	ret = memcmp(sample_write_buf, sample_write_data, sizeof(sample_write_data));
 	if (ret) {
-		return -EIO;
+		for (int n = 0; n < sizeof(sample_write_data); n++) {
+			if (sample_write_buf[n] != sample_write_data[n]) {
+				printk("Write at offset %u: %02x != %02x\n",
+				       n, sample_write_buf[n], sample_write_data[n]);
+			}
+		}
+		return ret;
 	}
 
 	ret = memcmp(sample_read_buf, sample_read_data, sizeof(sample_read_data));
 	if (ret) {
-		return -EIO;
+		for (int n = 0; n < sizeof(sample_read_data); n++) {
+			if (sample_read_buf[n] != sample_read_data[n]) {
+				printk("Read at offset %u: %02x != %02x\n",
+				       n, sample_read_buf[n], sample_read_data[n]);
+			}
+		}
+		return ret;
 	}
 
 	return 0;
 }
 
-/* This is functionally identical to sample_standard_write_read() but uses RTIO */
-static int sample_rtio_write_read(void)
+static int sample_rtio_configure_and_recover(void)
+{
+	struct rtio_sqe *sqe;
+	struct rtio_cqe *cqe;
+	int ret;
+
+	/*
+	 * We allocate one submission queue event (SQE) as defined by RTIO_DEFINE() and configure
+	 * it to apply an I2C controller configuration using sample_rtio_iodev.
+	 */
+	sqe = rtio_sqe_acquire(&sample_rtio);
+	rtio_sqe_prep_i2c_configure(sqe,
+				    &sample_rtio_iodev,
+				    0,
+				    I2C_CONTROLLER_DEV_CONFIG,
+				    NULL);
+
+	/*
+	 * In this case, we don't actually care which submission is handled first, we chain them
+	 * to ensure they remain ordered, so when we read the CQEs after they have completed,
+	 * we know that the first CQE is the result of the first SQE.
+	 */
+	sqe->flags |= RTIO_SQE_CHAINED;
+
+	/* We allocate another SQE to recover the I2C controller */
+	sqe = rtio_sqe_acquire(&sample_rtio);
+	rtio_sqe_prep_i2c_recover(sqe,
+				  &sample_rtio_iodev,
+				  0,
+				  NULL);
+
+	/* Submit the SQEs and await the results (CQEs) */
+	rtio_submit(&sample_rtio, 2);
+
+	/* Validate the result of the SQEs, relying on the order they where submitted */
+	ret = 0;
+
+	/* This is the result of the i2c configure SQE */
+	cqe = rtio_cqe_consume(&sample_rtio);
+	if (cqe->result) {
+		ret = cqe->result;
+	}
+	rtio_cqe_release(&sample_rtio, cqe);
+
+	/* This is the result of the i2c recover SQE */
+	cqe = rtio_cqe_consume(&sample_rtio);
+	if (cqe->result) {
+		ret = cqe->result;
+	}
+	rtio_cqe_release(&sample_rtio, cqe);
+
+	return ret;
+}
+
+static int sample_rtio_maybe_configure_write_read(bool do_configure)
 {
 	struct rtio_sqe *wr_sqe, *rd_sqe;
 	struct rtio_cqe *wr_rd_cqe;
 	int ret;
+
+	if (do_configure) {
+		struct rtio_sqe *sqe;
+
+		/*
+		 * We allocate one submission queue event (SQE) as defined by RTIO_DEFINE()
+		 * and configure it to apply an I2C controller configuration using
+		 * sample_rtio_iodev.
+		 */
+		sqe = rtio_sqe_acquire(&sample_rtio);
+		rtio_sqe_prep_i2c_configure(sqe,
+					    &sample_rtio_iodev,
+					    0,
+					    I2C_CONTROLLER_DEV_CONFIG,
+					    NULL);
+
+		/*
+		 * In this case, we don't actually care which submission is handled first, we
+		 * chain them to ensure they remain ordered, so when we read the CQEs after
+		 * they have completed, we know that the first CQE is the result of the first SQE.
+		 */
+		sqe->flags |= RTIO_SQE_CHAINED;
+	}
 
 	/*
 	 * We allocate one of the 3 submission queue events (SQEs) as defined by
@@ -241,9 +339,20 @@ static int sample_rtio_write_read(void)
 	 * In this case, we wait for the two SQEs to be completed before
 	 * continuing, similar to calling i2c_transfer().
 	 */
-	ret = rtio_submit(&sample_rtio, 2);
+	ret = rtio_submit(&sample_rtio, do_configure ? 3 : 2);
 	if (ret) {
-		return -EIO;
+		return ret;
+	}
+
+	if (do_configure) {
+		struct rtio_cqe *cqe;
+
+		/* This is the result of the i2c configure SQE */
+		cqe = rtio_cqe_consume(&sample_rtio);
+		if (cqe->result) {
+			ret = cqe->result;
+		}
+		rtio_cqe_release(&sample_rtio, cqe);
 	}
 
 	/*
@@ -255,15 +364,27 @@ static int sample_rtio_write_read(void)
 	 */
 	wr_rd_cqe = rtio_cqe_consume(&sample_rtio);
 	if (wr_rd_cqe->result) {
-		return -EIO;
+		ret = wr_rd_cqe->result;
 	}
 
 	/* Release the CQE after having checked its result. */
 	rtio_cqe_release(&sample_rtio, wr_rd_cqe);
-	return 0;
+	return ret;
 }
 
-static void rtio_write_read_done_callback(struct rtio *r, const struct rtio_sqe *sqe, void *arg0)
+/* This is functionally identical to sample_standard_write_read() but uses RTIO */
+static int sample_rtio_write_read(void)
+{
+	return sample_rtio_maybe_configure_write_read(false);
+}
+
+static int sample_rtio_configure_write_read(void)
+{
+	return sample_rtio_maybe_configure_write_read(true);
+}
+
+static void rtio_write_read_done_callback(struct rtio *r, const struct rtio_sqe *sqe,
+					  int result, void *arg0)
 {
 	struct k_sem *sem = arg0;
 	struct rtio_cqe *wr_rd_cqe;
@@ -335,7 +456,7 @@ static int sample_rtio_write_read_async(void)
 	 */
 	ret = rtio_submit(&sample_rtio, 0);
 	if (ret) {
-		return -EIO;
+		return ret;
 	}
 
 	/*
@@ -348,7 +469,7 @@ static int sample_rtio_write_read_async(void)
 	 */
 	ret = k_sem_take(&sample_write_read_sem, SAMPLE_TIMEOUT);
 	if (ret) {
-		return -EIO;
+		return ret;
 	}
 
 	return 0;
@@ -356,28 +477,67 @@ static int sample_rtio_write_read_async(void)
 
 int main(void)
 {
-	int ret;
+	int ret, n;
+	bool recover_supported = IS_ENABLED(CONFIG_I2C_BUS_RECOVERY);
+
+	for (n = 0; n < sizeof(sample_write_data); n++) {
+		sample_write_data[n] = (0xFF - n) % 0xFF;
+	}
+
+	for (n = 0; n < sizeof(sample_read_data); n++) {
+		sample_read_data[n] = n % 0xFF;
+	}
 
 	printk("%s %s\n", "init_i2c_target", "running");
 	ret = sample_init_i2c_target();
 	if (ret) {
-		printk("%s %s\n", "init_i2c_target", "failed");
+		printk("%s %s (%d)\n", "init_i2c_target", "failed", ret);
 		return 0;
 	}
 
+	if (recover_supported) {
+		ret = i2c_recover_bus(sample_i2c_controller);
+		if (ret == -ENOSYS) {
+			printk("%s\n", "I2C bus recovery is not supported");
+			recover_supported = false;
+			ret = 0;
+		}
+		if (ret) {
+			printk("%s %s (%d)\n", "test recovery support", "failed", ret);
+			return 0;
+		}
+	}
+
+	if (recover_supported) {
+		printk("%s %s\n", "standard_configure_and_recover", "running");
+		ret = sample_standard_configure_and_recover();
+		if (ret) {
+			printk("%s %s (%d)\n", "standard_configure_and_recover", "failed", ret);
+			return 0;
+		}
+	}
 	sample_reset_buffers();
 
 	printk("%s %s\n", "standard_write_read", "running");
 	ret = sample_standard_write_read();
 	if (ret) {
-		printk("%s %s\n", "standard_write_read", "failed");
+		printk("%s %s (%d)\n", "standard_write_read", "failed", ret);
 		return 0;
 	}
 
 	ret = sample_validate_write_read();
 	if (ret) {
-		printk("%s %s\n", "standard_write_read", "corrupted");
+		printk("%s %s (%d)\n", "standard_write_read", "corrupted", ret);
 		return 0;
+	}
+
+	if (recover_supported) {
+		printk("%s %s\n", "rtio_configure_recover", "running");
+		ret = sample_rtio_configure_and_recover();
+		if (ret) {
+			printk("%s %s (%d)\n", "rtio_configure_recover", "failed", ret);
+			return 0;
+		}
 	}
 
 	sample_reset_buffers();
@@ -385,13 +545,28 @@ int main(void)
 	printk("%s %s\n", "rtio_write_read", "running");
 	ret = sample_rtio_write_read();
 	if (ret) {
-		printk("%s %s\n", "rtio_write_read", "failed");
+		printk("%s %s (%d)\n", "rtio_write_read", "failed", ret);
 		return 0;
 	}
 
 	ret = sample_validate_write_read();
 	if (ret) {
-		printk("%s %s\n", "rtio_write_read", "corrupted");
+		printk("%s %s (%d)\n", "rtio_write_read", "corrupted", ret);
+		return 0;
+	}
+
+	sample_reset_buffers();
+
+	printk("%s %s\n", "rtio_configure_write_read", "running");
+	ret = sample_rtio_configure_write_read();
+	if (ret) {
+		printk("%s %s (%d)\n", "rtio_configure_write_read", "failed", ret);
+		return 0;
+	}
+
+	ret = sample_validate_write_read();
+	if (ret) {
+		printk("%s %s (%d)\n", "rtio_write_read", "corrupted", ret);
 		return 0;
 	}
 
@@ -400,13 +575,13 @@ int main(void)
 	printk("%s %s\n", "rtio_write_read_async", "running");
 	ret = sample_rtio_write_read_async();
 	if (ret) {
-		printk("%s %s\n", "rtio_write_read_async", "failed");
+		printk("%s %s (%d)\n", "rtio_write_read_async", "failed", ret);
 		return 0;
 	}
 
 	ret = sample_validate_write_read();
 	if (ret) {
-		printk("%s %s\n", "rtio_write_read_async", "corrupted");
+		printk("%s %s (%d)\n", "rtio_write_read_async", "corrupted", ret);
 		return 0;
 	}
 

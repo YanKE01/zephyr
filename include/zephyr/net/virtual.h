@@ -79,10 +79,10 @@ struct virtual_interface_link_types {
 #endif
 
 struct virtual_interface_config {
-	sa_family_t family;
+	net_sa_family_t family;
 	union {
-		struct in_addr peer4addr;
-		struct in6_addr peer6addr;
+		struct net_in_addr peer4addr;
+		struct net_in6_addr peer6addr;
 		int mtu;
 		struct virtual_interface_link_types link_types;
 		struct {
@@ -308,8 +308,14 @@ static inline void net_virtual_enable(struct net_if *iface)
 static inline enum virtual_interface_caps
 net_virtual_get_iface_capabilities(struct net_if *iface)
 {
-	const struct virtual_interface_api *virt =
-		(struct virtual_interface_api *)net_if_get_device(iface)->api;
+	const struct device *dev = net_if_get_device(iface);
+	const struct virtual_interface_api *virt;
+
+	NET_ASSERT(dev != NULL);
+
+	virt = (const struct virtual_interface_api *)dev->api;
+
+	NET_ASSERT(virt != NULL);
 
 	if (!virt->get_capabilities) {
 		return (enum virtual_interface_caps)0;

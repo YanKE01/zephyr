@@ -3,7 +3,9 @@
   SPDX-License-Identifier: Apache-2.0
 #}
 
-<form class="filter-form" aria-label="Filter boards & shields by name, architecture, and vendor">
+<form
+  class="filter-form"
+  aria-label="Filter boards & shields by name, architecture, vendor, SoC, RAM, and flash">
 
   <div class="form-group" style="flex-basis: 60%">
     <label for="name">Name</label>
@@ -36,7 +38,7 @@
     <label for="arch">Architecture</label>
     <div class="select-container">
       <select id="arch">
-        <option value="" disabled selected>Select an architecture</option>
+        <option value="" selected>Any architecture</option>
         {% for arch_name, arch in archs | items | sort(attribute='1.full_name') -%}
         <option value="{{ arch_name }}">{{ arch.full_name }}</option>
         {% endfor %}
@@ -48,7 +50,7 @@
     <label for="vendor">Vendor</label>
     <div class="select-container">
       <select id="vendor">
-        <option value="" disabled selected>Select a vendor</option>
+        <option value="" selected>Any vendor</option>
         {# Only show those vendors that have actual boards or shields in the catalog.
            Note: as sorting per vendor name is not feasible in Jinja, the option list is sorted in the JavaScript code later #}
         {% set board_vendors = boards | items | map(attribute='1.vendor') | unique | list %}
@@ -57,6 +59,26 @@
         <option value="{{ vendor }}">{{ vendors[vendor] }}</option>
         {% endfor %}
       </select>
+    </div>
+  </div>
+
+  <div class="form-group memory-slider-form-group">
+    <label>On-target RAM</label>
+    <div class="memory-slider-wrapper">
+      <div class="memory-slider-value-label" id="ram-range-label">Any</div>
+      <div class="memory-nouislider">
+        <div id="ram-slider-root"{% if not hw_features_present %} disabled{% endif %}></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-group memory-slider-form-group">
+    <label>On-target Flash</label>
+    <div class="memory-slider-wrapper">
+      <div class="memory-slider-value-label" id="flash-range-label">Any</div>
+      <div class="memory-nouislider">
+        <div id="flash-slider-root"{% if not hw_features_present %} disabled{% endif %}></div>
+      </div>
     </div>
   </div>
 
@@ -76,16 +98,30 @@
   </div>
 
   <div class="form-group" style="flex-basis: 100%">
-    <label for="tag-input">Supported Hardware Capabilities</label>
-    <div class="tag-container" id="tag-container">
-      <input list="tag-list" class="tag-input" id="tag-input"
+    <label for="hwcaps-input">Supported Hardware Capabilities</label>
+    <div class="tag-container" id="hwcaps-tags">
+      <input list="tag-list" class="tag-input" id="hwcaps-input"
              placeholder="{% if hw_features_present -%}
-               Type a tag...
+               Type a hardware capability, e.g. &quot;display&quot;, &quot;sensor&quot;, &hellip;
              {%- else -%}
                List of supported hardware capabilities is not available
              {%- endif %}"
              {% if not hw_features_present %}disabled{% endif %}>
       <datalist id="tag-list"></datalist>
+    </div>
+  </div>
+
+  <div class="form-group" style="flex-basis: 100%">
+    <label for="compatibles-input">Supported devices (compatible strings, supports wildcards)</label>
+    <div class="tag-container" id="compatibles-tags">
+      <input list="compatibles-list" class="tag-input" id="compatibles-input"
+        placeholder="{% if hw_features_present -%}
+          Type a compatible, e.g. &quot;ti,hdc2080&quot; or wildcard like &quot;bosch,bmp*&quot;
+        {%- else -%}
+          List of supported devices is not available
+        {%- endif %}"
+        {% if not hw_features_present %}disabled{% endif %}>
+      <datalist id="compatibles-list"></datalist>
     </div>
   </div>
 

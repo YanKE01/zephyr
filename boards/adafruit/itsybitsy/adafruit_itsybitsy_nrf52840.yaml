@@ -9,12 +9,12 @@ toolchain:
   - gnuarmemb
 supported:
   - adc
-  - ble
+  - bluetooth
   - counter
   - gpio
   - i2c
   - pwm
   - spi
-  - usb_device
+  - usbd
   - watchdog
 vendor: adafruit

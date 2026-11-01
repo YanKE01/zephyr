@@ -23,7 +23,7 @@
 		zephyr,uart-mcumgr = &uart0;
 		zephyr,uart-pipe = &uart0;
 		zephyr,flash-controller = &flash;
-		zephyr,bt_hci = &bt_hci_apollo;
+		zephyr,bt-hci = &bt_hci_apollo;
 		zephyr,code-partition = &slot0_partition;
 	};
 
@@ -32,16 +32,17 @@
 		led0 = &blue_led;
 		led1 = &green_led;
 		lora0 = &lora;
-		bootloader-led0 = &blue_led;
 		mcuboot-led0 = &blue_led;
 	};
 
 	leds {
 		compatible = "gpio-leds";
+
 		blue_led: led_2 {
 			gpios = <&gpio32_63 13 GPIO_ACTIVE_HIGH>;
 			label = "Blue LED";
 		};
+
 		green_led: led_1 {
 			gpios = <&gpio32_63 12 GPIO_ACTIVE_HIGH>;
 			label = "Green LED";
@@ -50,34 +51,38 @@
 };
 
 &flash0 {
-	erase-block-size = <8192>;
-	write-block-size = <4>;
-
 	partitions {
-		compatible = "fixed-partitions";
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
 		internal_boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "internal_bootloader";
 			reg = <0x00000000 0xc000>;
 		};
 
 		boot_partition: partition@c000 {
+			compatible = "zephyr,mapped-partition";
 			label = "mcuboot";
 			reg = <0x0000c000 0xc000>;
 		};
+
 		slot0_partition: partition@18000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-0";
 			reg = <0x00018000 0x72000>;
 		};
+
 		slot1_partition: partition@8a000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-1";
 			reg = <0x0008a000 0x72000>;
 		};
 
 		/* Set 16KB of storage at the end of the 1024KB of flash */
 		storage_partition: partition@fc000 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
 			reg = <0x000fc000 0x4000>;
 		};
@@ -150,32 +155,46 @@
 	};
 };
 
-&counter0 {
-	status = "okay";
+&timer0 {
+	counter0: counter {
+		status = "okay";
+	};
 };
 
-&counter1 {
-	status = "okay";
+&timer1 {
+	counter1: counter {
+		status = "okay";
+	};
 };
 
-&counter2 {
-	status = "okay";
+&timer2 {
+	counter2: counter {
+		status = "okay";
+	};
 };
 
-&counter4 {
-	status = "okay";
+&timer4 {
+	counter4: counter {
+		status = "okay";
+	};
 };
 
-&counter5 {
-	status = "okay";
+&timer5 {
+	counter5: counter {
+		status = "okay";
+	};
 };
 
-&counter6 {
-	status = "okay";
+&timer6 {
+	counter6: counter {
+		status = "okay";
+	};
 };
 
-&counter7 {
-	status = "okay";
+&timer7 {
+	counter7: counter {
+		status = "okay";
+	};
 };
 
 &gpio0_31 {

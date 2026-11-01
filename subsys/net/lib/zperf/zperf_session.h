@@ -42,6 +42,7 @@ struct session {
 	uint32_t next_id;
 	uint32_t outorder;
 	uint32_t error;
+	uint64_t missing_id_bitmap;
 	uint64_t length;
 	int64_t start_time;
 	uint32_t last_time;
@@ -63,9 +64,9 @@ struct session {
 typedef void (*session_cb_t)(struct session *ses, enum session_proto proto,
 			     void *user_data);
 
-struct session *get_session(const struct sockaddr *addr,
+struct session *get_session(const struct net_sockaddr *addr,
 			    enum session_proto proto);
-struct session *get_free_session(const struct sockaddr *addr,
+struct session *get_free_session(const struct net_sockaddr *addr,
 				 enum session_proto proto);
 void zperf_session_init(void);
 void zperf_reset_session_stats(struct session *session);

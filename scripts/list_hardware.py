@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright (c) 2023 Nordic Semiconductor ASA
+# Copyright (c) 2023-2026 Nordic Semiconductor ASA
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
@@ -9,8 +9,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
-import pykwalify.core
+import jsonschema
 import yaml
+from jsonschema.exceptions import best_match
 
 try:
     from yaml import CSafeLoader as SafeLoader
@@ -18,17 +19,21 @@ except ImportError:
     from yaml import SafeLoader
 
 
-SOC_SCHEMA_PATH = str(Path(__file__).parent / 'schemas' / 'soc-schema.yml')
+SOC_SCHEMA_PATH = str(Path(__file__).parent / 'schemas' / 'soc-schema.yaml')
 with open(SOC_SCHEMA_PATH) as f:
     soc_schema = yaml.load(f.read(), Loader=SafeLoader)
 
-SOC_VALIDATOR = pykwalify.core.Core(schema_data=soc_schema, source_data={})
-
-ARCH_SCHEMA_PATH = str(Path(__file__).parent / 'schemas' / 'arch-schema.yml')
+ARCH_SCHEMA_PATH = str(Path(__file__).parent / 'schemas' / 'arch-schema.yaml')
 with open(ARCH_SCHEMA_PATH) as f:
     arch_schema = yaml.load(f.read(), Loader=SafeLoader)
 
-ARCH_VALIDATOR = pykwalify.core.Core(schema_data=arch_schema, source_data={})
+validator_class = jsonschema.validators.validator_for(soc_schema)
+validator_class.check_schema(soc_schema)
+soc_validator = validator_class(soc_schema)
+
+validator_class = jsonschema.validators.validator_for(arch_schema)
+validator_class.check_schema(arch_schema)
+arch_validator = validator_class(arch_schema)
 
 SOC_YML = 'soc.yml'
 ARCHS_YML_PATH = PurePath('arch/archs.yml')
@@ -44,12 +49,12 @@ class Systems:
         if soc_yaml is None:
             return
 
-        try:
-            data = yaml.load(soc_yaml, Loader=SafeLoader)
-            SOC_VALIDATOR.source = data
-            SOC_VALIDATOR.validate()
-        except (yaml.YAMLError, pykwalify.errors.SchemaError) as e:
-            sys.exit(f'ERROR: Malformed yaml {soc_yaml.as_posix()}', e)
+        data = yaml.load(soc_yaml, Loader=SafeLoader)
+        errors = list(soc_validator.iter_errors(data))
+        if errors:
+            sys.exit('ERROR: Malformed soc YAML file: \n'
+                        f'{soc_yaml}\n'
+                        f'{best_match(errors).message} in {best_match(errors).json_path}')
 
         for f in data.get('family', []):
             family = Family(f['name'], [folder], [], [])
@@ -82,10 +87,6 @@ class Systems:
             self._socs.extend(socs)
 
         for soc in data.get('socs', []):
-            mutual_exclusive = {'name', 'extend'}
-            if len(mutual_exclusive - soc.keys()) < 1:
-                sys.exit(f'ERROR: Malformed content in SoC file: {soc_yaml}\n'
-                         f'{mutual_exclusive} are mutual exclusive at this level.')
             if soc.get('name') is not None:
                 self._socs.append(Soc(soc['name'], [c['name'] for c in soc.get('cpuclusters', [])],
                                   [folder], '', ''))
@@ -94,8 +95,9 @@ class Systems:
                                            [c['name'] for c in soc.get('cpuclusters', [])],
                                            [folder], '', ''))
             else:
+                # This should not happen if schema validation passed
                 sys.exit(f'ERROR: Malformed "socs" section in SoC file: {soc_yaml}\n'
-                         f'Cannot find one of required keys {mutual_exclusive}.')
+                         f'SoC entry must have either "name" or "extend" property.')
 
         # Ensure that any runner configuration matches socs and cpuclusters declared in the same
         # soc.yml file
@@ -217,11 +219,11 @@ def find_v2_archs(args):
             with Path(archs_yml).open('r', encoding='utf-8') as f:
                 archs = yaml.load(f.read(), Loader=SafeLoader)
 
-            try:
-                ARCH_VALIDATOR.source = archs
-                ARCH_VALIDATOR.validate()
-            except pykwalify.errors.SchemaError as e:
-                sys.exit(f'ERROR: Malformed "build" section in file: {archs_yml.as_posix()}\n{e}')
+            errors = list(arch_validator.iter_errors(archs))
+            if errors:
+                sys.exit('ERROR: Malformed arch YAML file: '
+                         f'{archs_yml.as_posix()}\n'
+                         f'{best_match(errors).message} in {best_match(errors).json_path}')
 
             if args.arch is not None:
                 archs = {'archs': list(filter(
@@ -286,7 +288,7 @@ def dump_v2_archs(args):
                 NAME='NAME;' + arch['name'],
                 DIR='DIR;' + str(arch['path'].as_posix()),
                 HWM='HWM;' + arch['hwm'],
-                # Below is non exising for arch but is defined here to support
+                # Below is non existing for arch but is defined here to support
                 # common formatting string.
                 SERIES='',
                 FAMILY='',
@@ -299,7 +301,7 @@ def dump_v2_archs(args):
                 name=arch.get('name'),
                 dir=arch.get('path'),
                 hwm=arch.get('hwm'),
-                # Below is non exising for arch but is defined here to support
+                # Below is non existing for arch but is defined here to support
                 # common formatting string.
                 series='',
                 family='',
@@ -311,19 +313,44 @@ def dump_v2_archs(args):
 
 
 def dump_v2_system(args, type, system):
+    if args.soc is not None and system.name != args.soc:
+        return
+
+    if args.soc_family is not None and (type != "soc" or system.family is None or \
+       system.family != args.soc_family):
+        return
+
+    if args.soc_series is not None and (type != "soc" or system.series is None or \
+       system.series != args.soc_series):
+        return
+
+    if type == "soc" and system.family is not None:
+        family = system.family
+    else:
+        family = ""
+
+    if type == "soc" and system.series is not None:
+        series = system.series
+    else:
+        series = ""
+
     if args.cmakeformat is not None:
         info = args.cmakeformat.format(
            TYPE='TYPE;' + type,
            NAME='NAME;' + system.name,
            DIR='DIR;' + ';'.join([Path(x).as_posix() for x in system.folder]),
-           HWM='HWM;' + 'v2'
+           HWM='HWM;' + 'v2',
+           FAMILY='FAMILY;' + family,
+           SERIES='SERIES;' + series
         )
     else:
         info = args.format.format(
            type=type,
            name=system.name,
            dir=system.folder,
-           hwm='v2'
+           hwm='v2',
+           family=family,
+           series=series
         )
 
     print(info)

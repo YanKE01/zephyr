@@ -26,11 +26,10 @@
 		compatible = "gpio-leds";
 
 		green_led_2: led_42 {
-			gpios = <&gpioa 5 GPIO_ACTIVE_LOW>;
+			gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
 			label = "User LD2";
 		};
 	};
-
 
 	pwmleds {
 		compatible = "pwm-leds";
@@ -53,6 +52,7 @@
 	aliases {
 		led0 = &green_led_2;
 		pwm-led0 = &green_pwm_led;
+		rtc = &rtc;
 		sw0 = &user_button;
 		watchdog0 = &iwdg;
 		die-temp0 = &die_temp;
@@ -129,13 +129,19 @@
 	};
 };
 
-&adc1 {
-	clocks = <&rcc STM32_CLOCK_BUS_AHB2 0x00000400>,
-		 <&rcc STM32_SRC_HCLK ADCDAC_SEL(0)>;
-	pinctrl-0 = <&adc1_inp0_pa0>; /* Arduino A0 */
-	pinctrl-names = "default";
+&adc12_common {
 	st,adc-clock-source = "ASYNC";
 	st,adc-prescaler = <8>;
+	status = "okay";
+};
+
+&adc1 {
+	pinctrl-0 = <&adc1_inp0_pa0>; /* Arduino A0 */
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&adc2 {
 	status = "okay";
 };
 
@@ -151,6 +157,10 @@
 	status = "okay";
 };
 
+&vddcore {
+	status = "okay";
+};
+
 &rng {
 	status = "okay";
 };
@@ -160,7 +170,7 @@
 };
 
 &rtc {
-	clocks = <&rcc STM32_CLOCK_BUS_APB3 0x00200000>,
+	clocks = <&rcc STM32_CLOCK(APB3, 21)>,
 		 <&rcc STM32_SRC_LSE RTC_SEL(1)>;
 	status = "okay";
 };

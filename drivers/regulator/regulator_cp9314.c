@@ -12,7 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/regulator.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(CP9314, CONFIG_REGULATOR_LOG_LEVEL);
@@ -577,7 +577,7 @@ static int regulator_cp9314_init(const struct device *dev)
 			return ret;
 		}
 	} else {
-		data->allow_hw_i2c_lock = 0;
+		data->allow_hw_i2c_lock = false;
 	}
 
 	ret = cp9314_do_soft_reset(dev);

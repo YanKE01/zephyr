@@ -7,6 +7,10 @@
 
 #include "test_uart.h"
 
+#if defined(CONFIG_PM)
+#include <zephyr/pm/pm.h>
+#endif
+
 #if defined(CONFIG_DCACHE) && defined(CONFIG_DT_DEFINED_NOCACHE)
 #define __NOCACHE	__attribute__ ((__section__(CONFIG_DT_DEFINED_NOCACHE_NAME)))
 #define NOCACHE_MEM 1
@@ -172,8 +176,6 @@ static void *single_read_setup(void)
 
 	uart_async_test_init(idx++);
 
-	memset(&tdata, 0, sizeof(tdata));
-	tdata.supply_second_buffer = true;
 	uart_callback_set(uart_dev,
 			  test_single_read_callback,
 			  (void *) &tdata);
@@ -181,18 +183,31 @@ static void *single_read_setup(void)
 	return NULL;
 }
 
-static void tdata_check_recv_buffers(const uint8_t *tx_buf, uint32_t sent_bytes)
+static void tdata_check_recv_buffers(const uint8_t *tx_buf, uint32_t sent_bytes,
+				     enum uart_config_data_bits data_bits)
 {
 	uint32_t recv_bytes_total;
+	uint8_t mask[] = {
+		[UART_CFG_DATA_BITS_5] = BIT_MASK(5),
+		[UART_CFG_DATA_BITS_6] = BIT_MASK(6),
+		[UART_CFG_DATA_BITS_7] = BIT_MASK(7),
+		[UART_CFG_DATA_BITS_8] = BIT_MASK(8),
+	};
 
 	recv_bytes_total = tdata.recv_bytes_first_buffer + tdata.recv_bytes_second_buffer;
 	zassert_equal(recv_bytes_total, sent_bytes, "Incorrect number of bytes received");
 
-	zassert_equal(memcmp(tx_buf, tdata.rx_first_buffer, tdata.recv_bytes_first_buffer), 0,
-		      "Invalid data received in first buffer");
-	zassert_equal(memcmp(tx_buf + tdata.recv_bytes_first_buffer, tdata.rx_second_buffer,
-			     tdata.recv_bytes_second_buffer),
-		      0, "Invalid data received in second buffer");
+	for (int i = 0; i < tdata.recv_bytes_first_buffer; i++) {
+		zassert_equal(tx_buf[i] & mask[data_bits],
+			      tdata.rx_first_buffer[i] & mask[data_bits],
+			      "Invalid data received in the first buffer");
+	}
+
+	for (int i = 0; i < tdata.recv_bytes_second_buffer; i++) {
+		zassert_equal(tx_buf[i + tdata.recv_bytes_first_buffer] & mask[data_bits],
+			      tdata.rx_second_buffer[i] & mask[data_bits],
+			      "Invalid data received in the second buffer");
+	}
 
 	/* check that the remaining bytes in the buffers are zero */
 	for (int i = tdata.recv_bytes_first_buffer; i < sizeof(tdata.rx_first_buffer); i++) {
@@ -206,11 +221,24 @@ static void tdata_check_recv_buffers(const uint8_t *tx_buf, uint32_t sent_bytes)
 	}
 }
 
-ZTEST_USER(uart_async_single_read, test_single_read)
+static void single_read(enum uart_config_data_bits data_bits)
 {
-	/* Check also if sending from read only memory (e.g. flash) works. */
+	struct uart_config uart_cfg;
 	static const uint8_t tx_buf[] = "0123456789";
 	uint32_t sent_bytes = 0;
+	int rv;
+
+	memset(&tdata, 0, sizeof(tdata));
+	tdata.supply_second_buffer = true;
+
+	zassert_ok(uart_config_get(uart_dev, &uart_cfg));
+	uart_cfg.data_bits = data_bits;
+	rv = uart_configure(uart_dev, &uart_cfg);
+	if (rv == -ENOTSUP) {
+		/* If frame size is not supported, just continue. */
+		return;
+	}
+	zassert_ok(rv);
 
 	zassert_not_equal(memcmp(tx_buf, tdata.rx_first_buffer, 5), 0,
 			  "Initial buffer check failed");
@@ -219,7 +247,12 @@ ZTEST_USER(uart_async_single_read, test_single_read)
 	zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), -EAGAIN,
 		      "RX_RDY not expected at this point");
 
-	uart_tx(uart_dev, tx_buf, 5, 100 * USEC_PER_MSEC);
+	rv = uart_tx(uart_dev, tx_buf, 5, 100 * USEC_PER_MSEC);
+	if (rv == -ENOTSUP) {
+		uart_rx_disable(uart_dev);
+		ztest_test_skip();
+	}
+	zassert_ok(rv, "uart_tx failed");
 	sent_bytes += 5;
 
 	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
@@ -227,7 +260,7 @@ ZTEST_USER(uart_async_single_read, test_single_read)
 	zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), -EAGAIN,
 		      "Extra RX_RDY received");
 
-	tdata_check_recv_buffers(tx_buf, sent_bytes);
+	tdata_check_recv_buffers(tx_buf, sent_bytes, data_bits);
 
 	uart_tx(uart_dev, tx_buf + sent_bytes, 5, 100 * USEC_PER_MSEC);
 	sent_bytes += 5;
@@ -244,9 +277,24 @@ ZTEST_USER(uart_async_single_read, test_single_read)
 	zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), -EAGAIN,
 		      "Extra RX_RDY received");
 
-	tdata_check_recv_buffers(tx_buf, sent_bytes);
+	tdata_check_recv_buffers(tx_buf, sent_bytes, data_bits);
 
 	zassert_equal(tdata.tx_aborted_count, 0, "TX aborted triggered");
+}
+
+ZTEST_USER(uart_async_single_read, test_single_read)
+{
+	/* This basic test is used also to check non-standard frame sizes.*/
+	static const uint8_t data_bits[] = {
+		UART_CFG_DATA_BITS_5,
+		UART_CFG_DATA_BITS_6,
+		UART_CFG_DATA_BITS_7,
+		UART_CFG_DATA_BITS_8,
+	};
+
+	ARRAY_FOR_EACH(data_bits, i) {
+		single_read(data_bits[i]);
+	}
 }
 
 static void *multiple_rx_enable_setup(void)
@@ -305,6 +353,10 @@ ZTEST_USER(uart_async_multi_rx, test_multiple_rx_enable)
 
 	/* Send enough data to completely fill RX buffer, so that RX ends. */
 	ret = uart_tx(uart_dev, tx_buf, sizeof(tx_buf), 100 * USEC_PER_MSEC);
+	if (ret == -ENOTSUP) {
+		uart_rx_disable(uart_dev);
+		ztest_test_skip();
+	}
 	zassert_equal(ret, 0, "uart_tx failed");
 	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
 	zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), 0, "RX_RDY timeout");
@@ -316,7 +368,7 @@ ZTEST_USER(uart_async_multi_rx, test_multiple_rx_enable)
 		      "RX_DISABLED timeout");
 	zassert_equal(tx_aborted_count, 0, "Unexpected TX abort");
 
-	tdata_check_recv_buffers(tx_buf, sizeof(tx_buf));
+	tdata_check_recv_buffers(tx_buf, sizeof(tx_buf), UART_CFG_DATA_BITS_8);
 
 	k_sem_reset(&rx_rdy);
 	k_sem_reset(&rx_buf_released);
@@ -345,7 +397,7 @@ ZTEST_USER(uart_async_multi_rx, test_multiple_rx_enable)
 		      "RX_DISABLED timeout");
 	zassert_equal(tx_aborted_count, 0, "Unexpected TX abort");
 
-	tdata_check_recv_buffers(tx_buf, sizeof(tx_buf));
+	tdata_check_recv_buffers(tx_buf, sizeof(tx_buf), UART_CFG_DATA_BITS_8);
 }
 
 #if NOCACHE_MEM
@@ -432,7 +484,7 @@ ZTEST_USER(uart_async_chain_read, test_chained_read)
 			      "TX_DONE timeout");
 		k_msleep(rx_timeout_ms + 10);
 		zassert_equal(rx_data_idx, sizeof(tx_buf),
-				"Unexpected amount of data received %d exp:%d",
+				"Unexpected amount of data received %d exp:%zu",
 				rx_data_idx, sizeof(tx_buf));
 		zassert_equal(memcmp(tx_buf, chained_cpy_buf, sizeof(tx_buf)), 0,
 			      "Buffers not equal exp %s, real %s", tx_buf, chained_cpy_buf);
@@ -586,6 +638,7 @@ static void *read_abort_setup(void)
 
 	uart_async_test_init(idx++);
 
+	test_read_abort_rx_cnt = 0;
 	test_read_abort_rx_buf_req_once = false;
 	failed_in_isr = false;
 	uart_callback_set(uart_dev, test_read_abort_callback, NULL);
@@ -593,11 +646,20 @@ static void *read_abort_setup(void)
 	return NULL;
 }
 
+/* Calculate how many microseconds it will take to transfer the given data at the given baudrate. */
+static uint32_t calc_uart_xfer_time(uint32_t baudrate, uint32_t tx_len)
+{
+	return (tx_len * 10000000U) / baudrate;
+}
+
 ZTEST_USER(uart_async_read_abort, test_read_abort)
 {
 	struct uart_config cfg;
 	int err;
 	uint32_t t_us;
+	uint32_t tx_timeout_us;
+	uint32_t rx_timeout_us = 50 * USEC_PER_MSEC;
+	uint32_t tx_len;
 #if NOCACHE_MEM
 	static __aligned(sizeof(void *)) uint8_t rx_buf[100] __used __NOCACHE;
 	static __aligned(sizeof(void *)) uint8_t tx_buf[100] __used __NOCACHE;
@@ -605,6 +667,7 @@ ZTEST_USER(uart_async_read_abort, test_read_abort)
 	 __aligned(sizeof(void *)) uint8_t rx_buf[100];
 	 __aligned(sizeof(void *)) uint8_t tx_buf[100];
 #endif /* NOCACHE_MEM */
+	uint32_t baudrate;
 
 	memset(rx_buf, 0, sizeof(rx_buf));
 	memset(tx_buf, 1, sizeof(tx_buf));
@@ -612,36 +675,55 @@ ZTEST_USER(uart_async_read_abort, test_read_abort)
 	err = uart_config_get(uart_dev, &cfg);
 	zassert_equal(err, 0);
 
-	/* Lets aim to abort after transmitting ~20 bytes (200 bauds) */
-	t_us = (20 * 10 * 1000000) / cfg.baudrate;
+	/* Lets reduce the baudrate as we want to abort the transfer before it is
+	 * finished and k_timer precision depends on the system timer frequency
+	 * which might be low.
+	 */
+	baudrate = cfg.baudrate;
 
-	err = uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), 50 * USEC_PER_MSEC);
+
+	/* Skip baudrate capping for WIDE_DATA, as lower speeds can increase
+	 * RX interrupt load and delay TX completion handling on some platforms.
+	 */
+	if (!IS_ENABLED(CONFIG_UART_WIDE_DATA)) {
+		cfg.baudrate = MIN(cfg.baudrate, 19200);
+	}
+	zassert_ok(uart_configure(uart_dev, &cfg));
+
+	/* Lets aim to abort after transmitting ~20 bytes (200 bauds) */
+	t_us = calc_uart_xfer_time(cfg.baudrate, 20);
+
+	err = uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), rx_timeout_us);
 	zassert_equal(err, 0);
 	k_sem_give(&rx_buf_coherency);
 
-	err = uart_tx(uart_dev, tx_buf, 5, 100 * USEC_PER_MSEC);
-	zassert_equal(err, 0);
-	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
-	zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), 0, "RX_RDY timeout");
-	zassert_equal(memcmp(tx_buf, rx_buf, 5), 0, "Buffers not equal");
+	tx_len = 5;
+	tx_timeout_us = calc_uart_xfer_time(cfg.baudrate, tx_len) + 1000;
+	err = uart_tx(uart_dev, tx_buf, tx_len, SYS_FOREVER_US);
+	zassert_ok(err);
+	zassert_ok(k_sem_take(&tx_done, K_USEC(tx_timeout_us)), "TX_DONE timeout");
+	zassert_ok(k_sem_take(&rx_rdy, K_USEC(tx_timeout_us + rx_timeout_us)), "RX_RDY timeout");
+	zassert_equal(memcmp(tx_buf, rx_buf, tx_len), 0, "Buffers not equal");
 
-	err = uart_tx(uart_dev, tx_buf, 95, 100 * USEC_PER_MSEC);
-	zassert_equal(err, 0);
+	tx_len = 95;
+	tx_timeout_us = calc_uart_xfer_time(cfg.baudrate, tx_len) + 1000;
+	err = uart_tx(uart_dev, tx_buf, tx_len, SYS_FOREVER_US);
+	zassert_ok(err);
 
 	k_timer_start(&read_abort_timer, K_USEC(t_us), K_NO_WAIT);
 
 	/* RX will be aborted from k_timer timeout */
 
-	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
-	zassert_equal(k_sem_take(&rx_disabled, K_MSEC(100)), 0,
-		      "RX_DISABLED timeout");
+	zassert_ok(k_sem_take(&tx_done, K_USEC(tx_timeout_us)), "TX_DONE timeout");
+	zassert_ok(k_sem_take(&rx_disabled, K_USEC(t_us + rx_timeout_us)), "RX_DISABLED timeout");
 	zassert_false(failed_in_isr, "Unexpected order of uart events");
 	zassert_not_equal(memcmp(tx_buf, test_read_abort_read_buf, 100), 0, "Buffers equal");
 
 	/* Read out possible other RX bytes
 	 * that may affect following test on RX
 	 */
-	uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), 50 * USEC_PER_MSEC);
+	err = uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), rx_timeout_us);
+	zassert_ok(err);
 	while (k_sem_take(&rx_rdy, K_MSEC(1000)) != -EAGAIN) {
 		;
 	}
@@ -650,6 +732,8 @@ ZTEST_USER(uart_async_read_abort, test_read_abort)
 	zassert_not_equal(k_sem_take(&rx_buf_coherency, K_NO_WAIT), 0,
 			"All provided buffers are released");
 
+	cfg.baudrate = baudrate;
+	zassert_ok(uart_configure(uart_dev, &cfg));
 }
 
 static ZTEST_BMEM volatile size_t sent;
@@ -883,7 +967,13 @@ ZTEST_USER(uart_async_chain_write, test_chained_write)
 
 	uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), 50 * USEC_PER_MSEC);
 
-	uart_tx(uart_dev, chained_write_tx_bufs[0], 10, 100 * USEC_PER_MSEC);
+	int ret = uart_tx(uart_dev, chained_write_tx_bufs[0], 10, 100 * USEC_PER_MSEC);
+
+	if (ret == -ENOTSUP) {
+		uart_rx_disable(uart_dev);
+		ztest_test_skip();
+	}
+	zassert_ok(ret, "uart_tx failed");
 	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
 	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
 	zassert_equal(chained_write_next_buf, false, "Sent no message");
@@ -1036,6 +1126,9 @@ static void test_var_buf_length_callback(const struct device *dev, struct uart_e
 					 void *user_data)
 {
 	switch (evt->type) {
+	case UART_TX_DONE:
+		k_sem_give(&tx_done);
+		break;
 	case UART_RX_RDY:
 		memcpy((void *)&var_length_rx_buf[var_length_buf_rx_idx],
 		       &evt->data.rx.buf[evt->data.rx.offset], evt->data.rx.len);
@@ -1068,6 +1161,7 @@ static void *var_buf_length_setup(void)
 static void test_uart_async_var_buf(size_t buf_len, size_t tx_len)
 {
 	int ret;
+	uint8_t *rx_buf;
 
 #if NOCACHE_MEM
 static __aligned(sizeof(void *)) uint8_t tx_buffer[VAR_LENGTH_TX_BUF_SIZE] __used __NOCACHE;
@@ -1085,35 +1179,44 @@ static ZTEST_BMEM uint8_t tx_buffer[VAR_LENGTH_TX_BUF_SIZE];
 	memset((void *)var_length_rx_buf_pool, 0, VAR_LENGTH_RX_BUF_SIZE);
 
 	var_length_rx_buf_size = buf_len;
-
-	ret = uart_rx_enable(uart_dev,
-			     (uint8_t *)&var_length_rx_buf_pool[var_length_buf_rx_pool_idx],
-			     buf_len, 2 * USEC_PER_MSEC);
-	zassert_true(ret == 0, "[buff=%d][tx=%d]Failed to enable RX: %d\n", buf_len, tx_len, ret);
+	rx_buf = (uint8_t *)&var_length_rx_buf_pool[var_length_buf_rx_pool_idx];
 	var_length_buf_rx_pool_idx += buf_len;
 
+	ret = uart_rx_enable(uart_dev, rx_buf, buf_len, 2 * USEC_PER_MSEC);
+	zassert_true(ret == 0, "[buff=%zu][tx=%zu]Failed to enable RX: %d\n", buf_len, tx_len, ret);
+
 	ret = uart_tx(uart_dev, tx_buffer, tx_len, 100 * USEC_PER_MSEC);
-	zassert_true(ret == 0, "[buff=%d][tx=%d]Failed to TX: %d\n", buf_len, tx_len, ret);
-	k_msleep(10);
+	zassert_true(ret == 0, "[buff=%zu][tx=%zu]Failed to TX: %d\n", buf_len, tx_len, ret);
+	zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
+
+	/* Some drivers report TX_DONE while the last bytes are still being shifted out,
+	 * so wait for the loopback to deliver them before disabling RX.
+	 */
+	for (uint32_t i = 0U; (var_length_buf_rx_idx < tx_len) && (i < 100U); i++) {
+		k_msleep(1);
+	}
 
 	uart_rx_disable(uart_dev);
 	zassert_equal(k_sem_take(&rx_disabled, K_MSEC(500)), 0,
-		      "[buff=%d][tx=%d]RX_DISABLED timeout\n", buf_len, tx_len);
+		      "[buff=%zu][tx=%zu]RX_DISABLED timeout\n", buf_len, tx_len);
 
 	zassert_equal(var_length_buf_rx_idx, tx_len,
-		      "[buff=%d][tx=%d]Wrong number of bytes received, got: %d, expected: %d\n",
+		      "[buff=%zu][tx=%zu]Wrong number of bytes received, got: %zu, expected: %zu\n",
 		      buf_len, tx_len, var_length_buf_rx_idx, tx_len);
 	zassert_equal(memcmp((void *)var_length_rx_buf, tx_buffer, tx_len), 0,
-		      "[buff=%d][tx=%d]Buffers not equal\n", buf_len, tx_len);
+		      "[buff=%zu][tx=%zu]Buffers not equal\n", buf_len, tx_len);
 }
 
 ZTEST_USER(uart_async_var_buf_length, test_var_buf_length)
 {
 	struct uart_config uart_cfg;
+	uint32_t baudrate;
 
 	zassert_equal(uart_config_get(uart_dev, &uart_cfg), 0);
-	if (uart_cfg.baudrate > CONFIG_VAR_LENGTH_BUFFER_TEST_BUADRATE_LIMIT) {
-		ztest_test_skip();
+	baudrate = uart_cfg.baudrate;
+	if (uart_cfg.baudrate > CONFIG_VAR_LENGTH_BUFFER_TEST_BAUDRATE_LIMIT) {
+		uart_cfg.baudrate = CONFIG_VAR_LENGTH_BUFFER_TEST_BAUDRATE_LIMIT;
+		zassert_ok(uart_configure(uart_dev, &uart_cfg));
 	}
 
 	for (size_t buf_len = 1; buf_len < CONFIG_VAR_LENGTH_BUFFER_MAX_SIZE; ++buf_len) {
@@ -1121,6 +1224,9 @@ ZTEST_USER(uart_async_var_buf_length, test_var_buf_length)
 			test_uart_async_var_buf(buf_len, tx_len);
 		}
 	}
+
+	uart_cfg.baudrate = baudrate;
+	zassert_ok(uart_configure(uart_dev, &uart_cfg));
 }
 
 ZTEST_SUITE(uart_async_single_read, NULL, single_read_setup,
@@ -1152,6 +1258,86 @@ ZTEST_SUITE(uart_async_write_abort, NULL, write_abort_setup,
 
 ZTEST_SUITE(uart_async_timeout, NULL, forever_timeout_setup,
 		NULL, NULL, NULL);
+
+#if defined(CONFIG_PM)
+static atomic_t pm_state_entered;
+
+static void pm_state_entry(enum pm_state state)
+{
+	ARG_UNUSED(state);
+
+	atomic_inc(&pm_state_entered);
+}
+
+static struct pm_notifier pm_light_sleep_notifier = {
+	.state_entry = pm_state_entry,
+};
+
+static void *pm_light_sleep_setup(void)
+{
+	static bool notifier_registered;
+	static int idx;
+
+	if (!notifier_registered) {
+		pm_notifier_register(&pm_light_sleep_notifier);
+		notifier_registered = true;
+	}
+
+	uart_async_test_init(idx++);
+
+	memset(&tdata, 0, sizeof(tdata));
+	uart_callback_set(uart_dev, test_single_read_callback, (void *)&tdata);
+
+	return NULL;
+}
+
+/*
+ * Test async UART loopback across light sleep (UHCI/DMA path).
+ *
+ * First idle is after configure. Second is after a completed async TX/RX, when
+ * PM locks have been taken and released — a different driver state.
+ */
+ZTEST(uart_async_pm, test_uart_pm_light_sleep)
+{
+	/* RAM buffer: some SoCs cannot DMA from flash/DROM. */
+	uint8_t tx_buf[] = "test";
+	const uint32_t rx_buf_size = sizeof(tx_buf);
+	int ret;
+
+	BUILD_ASSERT(sizeof(tx_buf) <= sizeof(tdata.rx_first_buffer), "Invalid buf size");
+
+	for (int tx_cycle = 0; tx_cycle < 2; tx_cycle++) {
+		memset(&tdata, 0, sizeof(tdata));
+		k_sem_reset(&tx_done);
+		k_sem_reset(&rx_rdy);
+		k_sem_reset(&rx_buf_released);
+		k_sem_reset(&rx_disabled);
+
+		atomic_clear(&pm_state_entered);
+		k_sleep(K_MSEC(100));
+		zassert_true(atomic_get(&pm_state_entered) > 0,
+			     "System stayed active during the idle window");
+
+		ret = uart_rx_enable(uart_dev, tdata.rx_first_buffer, rx_buf_size,
+				     50 * USEC_PER_MSEC);
+		zassert_equal(ret, 0, "uart_rx_enable failed");
+
+		ret = uart_tx(uart_dev, tx_buf, sizeof(tx_buf), 100 * USEC_PER_MSEC);
+		zassert_equal(ret, 0, "uart_tx failed");
+		zassert_equal(k_sem_take(&tx_done, K_MSEC(100)), 0, "TX_DONE timeout");
+		zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), 0, "RX_RDY timeout");
+		zassert_equal(k_sem_take(&rx_rdy, K_MSEC(100)), -EAGAIN, "Extra RX_RDY received");
+		zassert_equal(k_sem_take(&rx_buf_released, K_MSEC(100)), 0,
+			      "RX_BUF_RELEASED timeout");
+		zassert_equal(k_sem_take(&rx_disabled, K_MSEC(100)), 0, "RX_DISABLED timeout");
+		zassert_equal(tdata.tx_aborted_count, 0, "Unexpected TX abort");
+
+		tdata_check_recv_buffers(tx_buf, sizeof(tx_buf), UART_CFG_DATA_BITS_8);
+	}
+}
+
+ZTEST_SUITE(uart_async_pm, NULL, pm_light_sleep_setup, NULL, NULL, NULL);
+#endif /* CONFIG_PM */
 
 void test_main(void)
 {

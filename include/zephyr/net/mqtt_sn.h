@@ -25,6 +25,7 @@
 #include <stddef.h>
 
 #include <zephyr/net_buf.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/types.h>
 
 #include <sys/types.h>
@@ -193,16 +194,15 @@ struct mqtt_sn_transport {
 	 * @return ENOERR on connection+transmission success, Negative values
 	 *		signal errors.
 	 */
-	int (*sendto)(struct mqtt_sn_client *client, void *buf, size_t sz, const void *dest_addr,
-		      size_t addrlen);
+	int (*sendto)(struct mqtt_sn_transport *transport, void *buf, size_t sz,
+		      const void *dest_addr, size_t addrlen);
 
 	/**
 	 * @brief Will be called by the library when it wants to receive a message.
 	 *
-	 * Implementations should follow recvfrom conventions with the exception
-	 * of a NULL src_addr being a broadcast message.
+	 * Implementations should follow recvfrom conventions.
 	 */
-	ssize_t (*recvfrom)(struct mqtt_sn_client *client, void *rx_buf, size_t rx_len,
+	ssize_t (*recvfrom)(struct mqtt_sn_transport *transport, void *rx_buf, size_t rx_len,
 			    void *src_addr, size_t *addrlen);
 
 	/**
@@ -215,7 +215,7 @@ struct mqtt_sn_transport {
 	 * @return Positive number if data is available, or zero if there is none.
 	 * Negative values signal errors.
 	 */
-	int (*poll)(struct mqtt_sn_client *client);
+	int (*poll)(struct mqtt_sn_transport *transport);
 };
 
 #ifdef CONFIG_MQTT_SN_TRANSPORT_UDP
@@ -229,9 +229,16 @@ struct mqtt_sn_transport_udp {
 	/** Socket FD */
 	int sock;
 
-	/** Address of broadcasts */
-	struct sockaddr bcaddr;
-	socklen_t bcaddrlen;
+	/** Broadcast address storage */
+	union {
+		/** Address of broadcasts */
+		struct net_sockaddr_storage bcaddr_storage;
+/** @cond INTERNAL_HIDDEN */
+		/* Use the bcaddr_storage instead of this one. */
+		struct net_sockaddr bcaddr;
+/** @endcond */
+	};
+	net_socklen_t bcaddrlen;
 };
 
 #define UDP_TRANSPORT(transport) CONTAINER_OF(transport, struct mqtt_sn_transport_udp, tp)
@@ -243,9 +250,43 @@ struct mqtt_sn_transport_udp {
  * @param[in] gwaddr Pre-initialized gateway address
  * @param[in] addrlen Size of the gwaddr structure.
  */
-int mqtt_sn_transport_udp_init(struct mqtt_sn_transport_udp *udp, struct sockaddr *gwaddr,
-			       socklen_t addrlen);
+int mqtt_sn_transport_udp_init(struct mqtt_sn_transport_udp *udp, struct net_sockaddr *gwaddr,
+			       net_socklen_t addrlen);
 #endif
+
+/**
+ * Structure for storing will update state.
+ */
+struct mqtt_sn_will_update {
+	/** An update message needs to be send */
+	bool in_progress;
+
+	/** Number of retries for failed update attempts */
+	uint8_t retries;
+
+	/** Timestamp of the last update attempt */
+	int64_t last_attempt;
+};
+
+/**
+ * Structure for storing pending CONNECT state.
+ */
+struct mqtt_sn_connect_retry {
+	/** State of the pending CONNECT (enum mqtt_sn_connect_state). */
+	atomic_t state;
+
+	/** Number of retries for failed CONNECT attempts */
+	uint8_t retries;
+
+	/** Timestamp of the last CONNECT attempt */
+	int64_t last_attempt;
+
+	/** Will flag from the pending mqtt_sn_connect() call, resent on retry */
+	bool will;
+
+	/** Clean session flag from the pending mqtt_sn_connect() call, resent on retry */
+	bool clean_session;
+};
 
 /**
  * Structure describing an MQTT-SN client.
@@ -295,7 +336,7 @@ struct mqtt_sn_client {
 	sys_slist_t topic;
 
 	/** List of found gateways */
-	sys_slist_t gateway;
+	sys_slist_t gateways;
 
 	/** Current state of the MQTT-SN client */
 	int state;
@@ -313,7 +354,16 @@ struct mqtt_sn_client {
 	int64_t ts_gwinfo;
 
 	/** Radius of the next GWINFO transmission */
-	int64_t radius_gwinfo;
+	uint8_t radius_gwinfo;
+
+	/** State for a pending CONNECT retry */
+	struct mqtt_sn_connect_retry connect;
+
+	/** State for will topic updates */
+	struct mqtt_sn_will_update will_topic_update;
+
+	/** State for will message updates */
+	struct mqtt_sn_will_update will_message_update;
 
 	/** Delayable work structure for processing MQTT-SN events */
 	struct k_work_delayable process_work;
@@ -347,7 +397,7 @@ int mqtt_sn_client_init(struct mqtt_sn_client *client, const struct mqtt_sn_data
 void mqtt_sn_client_deinit(struct mqtt_sn_client *client);
 
 /**
- * @brief Manually add a Gateway, bypasing the normal search process.
+ * @brief Manually add a Gateway, bypassing the normal search process.
  *
  * This function manually creates a gateway that is stored internal to the library.
  *
@@ -372,11 +422,15 @@ int mqtt_sn_search(struct mqtt_sn_client *client, uint8_t radius);
 /**
  * @brief Connect the client.
  *
+ * A failed send is retried. The outcome is only visible via
+ * @ref MQTT_SN_EVT_CONNECTED or @ref MQTT_SN_EVT_DISCONNECTED.
+ *
  * @param client            The MQTT-SN client to connect.
  * @param will              Flag indicating if a Will message should be sent.
  * @param clean_session     Flag indicating if a clean session should be started.
  *
- * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ * @return 0 on success, -EINVAL on invalid arguments, or -EALREADY if a
+ * CONNECT is already in progress.
  */
 int mqtt_sn_connect(struct mqtt_sn_client *client, bool will, bool clean_session);
 
@@ -463,6 +517,69 @@ int mqtt_sn_input(struct mqtt_sn_client *client);
  */
 int mqtt_sn_get_topic_name(struct mqtt_sn_client *client, uint16_t id,
 			   struct mqtt_sn_data *topic_name);
+
+/**
+ * @brief Predefine topic.
+ *
+ * Can be called before mqtt_sn_connect, because predefined topics are never cleared. If you call it
+ * afterwards, it has to be called before calling mqtt_sn_input for the first time after the
+ * connect, to prevent race conditions where incoming publications use predefined topics which were
+ * not defined, yet.
+ *
+ * @param[in] client The MQTT-SN client to define the topic on.
+ * @param[in] topic_id Topic identifier.
+ * @param[in] topic_name The name of the topic.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_predefine_topic(struct mqtt_sn_client *client, uint16_t topic_id,
+			    struct mqtt_sn_data *topic_name);
+
+/**
+ * @brief Define a short topic.
+ *
+ * Can be called before mqtt_sn_connect, because short topics are never cleared.
+ *
+ * @param[in] client The MQTT-SN client to define the topic on.
+ * @param[in] topic_name The name of the topic. Must be exactly 2 bytes long.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_define_short_topic(struct mqtt_sn_client *client, struct mqtt_sn_data *topic_name);
+
+/**
+ * @brief Send a will topic update to the server.
+ *
+ * Call this to send the will topic stored in client->will_topic to the server.
+ * Should be used if you changed the value after connecting. The variables
+ * client->will_retain and client->will_qos will also be sent as part of the
+ * update.
+ *
+ * @warning Since there is no message ID in the will topic update message,
+ *          this can't be done without race conditions. Contribute to newer
+ *          versions of the specification if you want this to be changed.
+ *
+ * @param[in] client The MQTT-SN client to use for sending the update.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_update_will_topic(struct mqtt_sn_client *client);
+
+/**
+ * @brief Send a will message update to the server.
+ *
+ * Call this to send the will message stored in client->will_msg to the server.
+ * Should be used if you changed the value after connecting.
+ *
+ * @warning Since there is no message ID in the will message update message,
+ *          this can't be done without race conditions. Contribute to newer
+ *          versions of the specification if you want this to be changed.
+ *
+ * @param[in] client The MQTT-SN client to use for sending the update.
+ *
+ * @return 0 or a negative error code (errno.h) indicating reason of failure.
+ */
+int mqtt_sn_update_will_message(struct mqtt_sn_client *client);
 
 #ifdef __cplusplus
 }

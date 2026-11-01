@@ -6,9 +6,9 @@ toolchain:
   - zephyr
   - gnuarmemb
 supported:
-  - ble
+  - bluetooth
   - gpio
-  - usb_device
+  - usbd
   - watchdog
   - counter
 vendor: ct

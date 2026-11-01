@@ -36,7 +36,7 @@ if(ZEPHYR_MODULES)
   set(ZEPHYR_MODULES_ARG "--modules" ${ZEPHYR_MODULES})
 endif()
 
-zephyr_get(EXTRA_ZEPHYR_MODULES VAR EXTRA_ZEPHYR_MODULES ZEPHYR_EXTRA_MODULES)
+zephyr_get(EXTRA_ZEPHYR_MODULES MERGE VAR EXTRA_ZEPHYR_MODULES ZEPHYR_EXTRA_MODULES)
 if(EXTRA_ZEPHYR_MODULES)
   set(EXTRA_ZEPHYR_MODULES_ARG "--extra-modules" ${EXTRA_ZEPHYR_MODULES})
 endif()
@@ -167,6 +167,10 @@ ${MODULE_NAME_UPPER} is a restricted name for Zephyr modules as it is used for \
     endif()
   endforeach()
 else()
+
+  file(WRITE ${KCONFIG_BINARY_DIR}/kconfig_module_dirs.env "")
+
+  file(WRITE ${KCONFIG_BINARY_DIR}/kconfig_module_dirs.cmake "")
 
   file(WRITE ${kconfig_modules_file}
     "# No west and no Zephyr modules\n"

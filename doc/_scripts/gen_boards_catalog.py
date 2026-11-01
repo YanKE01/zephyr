@@ -3,9 +3,7 @@
 
 import logging
 import os
-import pickle
 import re
-import subprocess
 import sys
 from collections import namedtuple
 from pathlib import Path
@@ -15,21 +13,45 @@ import list_hardware
 import list_shields
 import yaml
 import zephyr_module
+from dts_binding_types import get_binding_type_from_path
 from gen_devicetree_rest import VndLookup
+from get_maintainer import Maintainers
 from runners.core import ZephyrBinaryRunner
 
 ZEPHYR_BASE = Path(__file__).parents[2]
 ZEPHYR_BINDINGS = ZEPHYR_BASE / "dts/bindings"
-EDT_PICKLE_PATHS = [
-    "zephyr/edt.pickle",
-    "hello_world/zephyr/edt.pickle",  # for board targets using sysbuild
-]
-RUNNERS_YAML_PATHS = [
-    "zephyr/runners.yaml",
-    "hello_world/zephyr/runners.yaml",  # for board targets using sysbuild
-]
+
+# Import the CI catalog generator so this script shares the same
+# twister/EDT gathering logic rather than duplicating it.
+sys.path.insert(0, str(ZEPHYR_BASE / "scripts" / "ci"))
+import gen_catalogs  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Initialize the Maintainers object for looking up board maintenance status
+MAINTAINERS = Maintainers(filename=ZEPHYR_BASE / "MAINTAINERS.yml")
+
+
+def is_board_maintained(board_doc_path: Path) -> bool:
+    """Determine if a board is actively maintained based on whether it is covered by an area with
+    status 'maintained' in the MAINTAINERS.yml file.
+
+    Args:
+        board_doc_path: A board doc path relative to ZEPHYR_BASE.
+
+    Returns:
+        True if the board is covered by an area with status 'maintained', False otherwise.
+    """
+
+    # path2areas needs os.getcwd() to be set to ZEPHYR_BASE
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(ZEPHYR_BASE)
+        areas = MAINTAINERS.path2areas(board_doc_path)
+    finally:
+        os.chdir(original_cwd)
+
+    return any(area.status == "maintained" for area in areas)
 
 
 class DeviceTreeUtils:
@@ -77,6 +99,60 @@ class DeviceTreeUtils:
         )
 
 
+def get_board_memory_size(edt, chosen_name):
+    """Get the total size of a memory region from a chosen Devicetree node.
+
+    Args:
+        edt: The EDT object for a board target.
+        chosen_name: Chosen node name (for example "zephyr,sram" or "zephyr,flash").
+
+    Returns:
+        Total size in bytes, or None if the chosen node is not present.
+    """
+    memory_node = edt.chosen_node(chosen_name)
+    if memory_node is None:
+        return None
+    memory_sizes = [reg.size for reg in memory_node.regs if reg.size is not None]
+    return sum(memory_sizes) if memory_sizes else None
+
+
+def gather_board_build_info(twister_out_dir):
+    """Gather EDT objects and runners info for each board from twister output directory.
+
+    Delegates to ``gen_catalogs.gather_board_edts()`` and
+    ``gen_catalogs.gather_board_runners()`` so the implementation lives in
+    one place (``scripts/ci/gen_catalogs.py``).
+
+    Args:
+        twister_out_dir: Path object pointing to twister output directory
+
+    Returns:
+        A tuple of two dictionaries:
+           - A dictionary mapping board names to a dictionary of board targets and their EDT
+             objects.
+             The structure is: {board_name: {board_target: edt_object}}
+           - A dictionary mapping board names to a dictionary of board targets and their runners
+             info.
+             The structure is: {board_name: {board_target: runners_info}}
+    """
+    board_devicetrees = gen_catalogs.gather_board_edts(twister_out_dir)
+    board_runners = gen_catalogs.gather_board_runners(twister_out_dir)
+    return board_devicetrees, board_runners
+
+
+def run_twister_cmake_only(outdir, vendor_filter, extra_flags):
+    """Run twister in cmake-only mode to generate build info files.
+
+    Delegates to ``gen_catalogs.run_twister_cmake_only()`` so the
+    implementation lives in one place (``scripts/ci/gen_catalogs.py``).
+
+    Args:
+        outdir: Directory where twister should output its files
+        vendor_filter: Limit build info to boards from listed vendors
+    """
+    gen_catalogs.run_twister_cmake_only(Path(outdir), vendor_filter, extra_flags)
+
+
 def guess_file_from_patterns(directory, patterns, name, extensions):
     for pattern in patterns:
         for ext in extensions:
@@ -87,12 +163,21 @@ def guess_file_from_patterns(directory, patterns, name, extensions):
 
 
 def guess_image(board_or_shield):
-    img_exts = ["jpg", "jpeg", "webp", "png"]
-    patterns = [
+    img_exts = ("webp", "png", "jpg", "jpeg")
+
+    name_parts = board_or_shield.name.split('_')
+    prefix_matches = []
+    for i in range(len(name_parts) - 1, 0, -1):
+        partial_name = '_'.join(name_parts[:i])
+        prefix_matches.append(f"**/{partial_name}.{{ext}}")
+
+    patterns = (
         "**/{name}.{ext}",
+        *prefix_matches,
         "**/*{name}*.{ext}",
         "**/*.{ext}",
-    ]
+    )
+
     img_file = guess_file_from_patterns(
         board_or_shield.dir, patterns, board_or_shield.name, img_exts
     )
@@ -101,128 +186,21 @@ def guess_image(board_or_shield):
 
 
 def guess_doc_page(board_or_shield):
-    patterns = [
+    patterns = (
         "doc/index.{ext}",
         "**/{name}.{ext}",
         "**/*{name}*.{ext}",
         "**/*.{ext}",
-    ]
+    )
     doc_file = guess_file_from_patterns(
         board_or_shield.dir, patterns, board_or_shield.name, ["rst"]
     )
     return doc_file
 
 
-def gather_board_build_info(twister_out_dir):
-    """Gather EDT objects and runners info for each board from twister output directory.
-
-    Args:
-        twister_out_dir: Path object pointing to twister output directory
-
-    Returns:
-        A tuple of two dictionaries:
-           - A dictionary mapping board names to a dictionary of board targets and their EDT.
-             objects.
-             The structure is: {board_name: {board_target: edt_object}}
-           - A dictionary mapping board names to a dictionary of board targets and their runners
-             info.
-             The structure is: {board_name: {board_target: runners_info}}
-    """
-    board_devicetrees = {}
-    board_runners = {}
-    if not twister_out_dir.exists():
-        return board_devicetrees, board_runners
-
-    # Find all build_info.yml files in twister-out
-    build_info_files = list(twister_out_dir.glob("*/**/build_info.yml"))
-
-    for build_info_file in build_info_files:
-        edt_pickle_file = None
-        for pickle_path in EDT_PICKLE_PATHS:
-            maybe_file = build_info_file.parent / pickle_path
-            if maybe_file.exists():
-                edt_pickle_file = maybe_file
-                break
-
-        if not edt_pickle_file:
-            continue
-
-        runners_yaml_file = None
-        for runners_yaml_path in RUNNERS_YAML_PATHS:
-            maybe_file = build_info_file.parent / runners_yaml_path
-            if maybe_file.exists():
-                runners_yaml_file = maybe_file
-                break
-
-        try:
-            with open(build_info_file) as f:
-                build_info = yaml.safe_load(f)
-                board_info = build_info.get('cmake', {}).get('board', {})
-                board_name = board_info.get('name')
-                qualifier = board_info.get('qualifiers', '')
-                revision = board_info.get('revision', '')
-
-                board_target = board_name
-                if revision != '':
-                    board_target = f"{board_target}@{revision}"
-                if qualifier:
-                    board_target = f"{board_target}/{qualifier}"
-
-                with open(edt_pickle_file, 'rb') as f:
-                    edt = pickle.load(f)
-                    board_devicetrees.setdefault(board_name, {})[board_target] = edt
-
-                if runners_yaml_file:
-                    with open(runners_yaml_file) as f:
-                        runners_yaml = yaml.safe_load(f)
-                        board_runners.setdefault(board_name, {})[board_target] = runners_yaml
-
-        except Exception as e:
-            logger.error(f"Error processing build info file {build_info_file}: {e}")
-
-    return board_devicetrees, board_runners
-
-
-def run_twister_cmake_only(outdir, vendor_filter):
-    """Run twister in cmake-only mode to generate build info files.
-
-    Args:
-        outdir: Directory where twister should output its files
-        vendor_filter: Limit build info to boards from listed vendors
-    """
-    twister_cmd = [
-        sys.executable,
-        f"{ZEPHYR_BASE}/scripts/twister",
-        "-T",
-        "samples/hello_world/",
-        "-M",
-        *[arg for path in EDT_PICKLE_PATHS for arg in ('--keep-artifacts', path)],
-        *[arg for path in RUNNERS_YAML_PATHS for arg in ('--keep-artifacts', path)],
-        "--cmake-only",
-        "--outdir",
-        str(outdir),
-    ]
-
-    if vendor_filter:
-        for vendor in vendor_filter:
-            twister_cmd += ["--vendor", vendor]
-    else:
-        twister_cmd += ["--all"]
-
-    minimal_env = {
-        'PATH': os.environ.get('PATH', ''),
-        'ZEPHYR_BASE': str(ZEPHYR_BASE),
-        'HOME': os.environ.get('HOME', ''),
-        'PYTHONPATH': os.environ.get('PYTHONPATH', ''),
-    }
-
-    try:
-        subprocess.run(twister_cmd, check=True, cwd=ZEPHYR_BASE, env=minimal_env)
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"Failed to run Twister, list of hw features might be incomplete.\n{e}")
-
-
-def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
+def get_catalog(
+    generate_hw_features=False, hw_features_vendor_filter=None, extra_twister_flags=None
+):
     """Get the board catalog.
 
     Args:
@@ -270,7 +248,7 @@ def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
     if generate_hw_features:
         logger.info("Running twister in cmake-only mode to get Devicetree files for all boards")
         with tempfile.TemporaryDirectory() as tmp_dir:
-            run_twister_cmake_only(tmp_dir, hw_features_vendor_filter)
+            run_twister_cmake_only(tmp_dir, hw_features_vendor_filter, extra_twister_flags)
             board_devicetrees, board_runners = gather_board_build_info(Path(tmp_dir))
     else:
         logger.info("Skipping generation of supported hardware features.")
@@ -282,28 +260,40 @@ def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
         doc_page = guess_doc_page(board)
 
         supported_features = {}
+        compatibles = {}
+        target_memory = []
 
         # Use pre-gathered build info and DTS files
         if board.name in board_devicetrees:
             for board_target, edt in board_devicetrees[board.name].items():
                 features = {}
+                target_compatibles = set()
+                ram_size = get_board_memory_size(edt, "zephyr,sram")
+                flash_size = get_board_memory_size(edt, "zephyr,flash")
+                if ram_size is not None or flash_size is not None:
+                    target_memory.append(
+                        {
+                            "target": board_target,
+                            "ram": ram_size,
+                            "flash": flash_size,
+                        }
+                    )
                 for node in edt.nodes:
                     if node.binding_path is None:
                         continue
 
                     binding_path = Path(node.binding_path)
                     is_custom_binding = False
-                    if binding_path.is_relative_to(ZEPHYR_BINDINGS):
-                        binding_type = binding_path.relative_to(ZEPHYR_BINDINGS).parts[0]
-                    else:
-                        binding_type = "misc"
+                    binding_type = get_binding_type_from_path(binding_path)
+                    if binding_type == "misc" and not binding_path.is_relative_to(ZEPHYR_BINDINGS):
                         is_custom_binding = True
 
                     if node.matching_compat is None:
                         continue
 
-                    # skip "zephyr,xxx" compatibles
-                    if node.matching_compat.startswith("zephyr,"):
+                    # skip "zephyr,xxx" compatibles (unless board is native_sim, since in this
+                    # case the "zephyr,"-prefixed peripherals are legitimate)
+                    if node.matching_compat.startswith("zephyr,") and board.name != "native_sim":
                         continue
 
                     description = DeviceTreeUtils.get_cached_description(node)
@@ -319,6 +309,7 @@ def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
                             locations.add("soc")
 
                     existing_feature = features.get(binding_type, {}).get(node.matching_compat)
+                    target_compatibles.add(node.matching_compat)
 
                     node_info = {
                         "filename": str(filename),
@@ -345,8 +336,13 @@ def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
 
                     features.setdefault(binding_type, {})[node.matching_compat] = feature_data
 
-                # Store features for this specific target
-                supported_features[board_target] = features
+                # Per-target EDT metadata and feature bindings
+                supported_features[board_target] = {
+                    "ram_size": ram_size,
+                    "flash_size": flash_size,
+                    "features": features,
+                }
+                compatibles[board_target] = list(target_compatibles)
 
         board_runner_info = {}
         if board.name in board_runners:
@@ -383,7 +379,11 @@ def get_catalog(generate_hw_features=False, hw_features_vendor_filter=None):
             "socs": list(socs),
             "revision_default": board.revision_default,
             "supported_features": supported_features,
+            "compatibles": compatibles,
             "image": guess_image(board),
+            "maintained": is_board_maintained(doc_page_path) if doc_page_path else False,
+            # Per-target zephyr,sram / zephyr,flash sizes in bytes.
+            "target_memory": target_memory,
             # runners
             "supported_runners": board_runner_info.get("runners", []),
             "flash_runner": board_runner_info.get("flash-runner", ""),

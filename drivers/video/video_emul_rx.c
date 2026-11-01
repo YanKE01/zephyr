@@ -8,14 +8,15 @@
 
 #include <string.h>
 
-#include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/sys/util.h>
-#include <zephyr/drivers/video.h>
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/video.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/video/video.h>
 
-#include "video_device.h"
+#include "video_common.h"
 
 LOG_MODULE_REGISTER(video_emul_rx, CONFIG_VIDEO_LOG_LEVEL);
 
@@ -67,7 +68,11 @@ static int emul_rx_set_fmt(const struct device *const dev, struct video_format *
 	}
 
 	/* Cache the format selected locally to use it for getting the size of the buffer  */
-	fmt->pitch = fmt->width * video_bits_per_pixel(fmt->pixelformat) / BITS_PER_BYTE;
+	ret = video_estimate_fmt_size(fmt);
+	if (ret < 0) {
+		return ret;
+	}
+
 	data->fmt = *fmt;
 
 	return 0;
@@ -137,7 +142,7 @@ static int emul_rx_enqueue(const struct device *dev, struct video_buffer *vbuf)
 		return -ENOMEM;
 	}
 
-	/* The buffer has not been filled yet: flag as emtpy */
+	/* The buffer has not been filled yet: flag as empty */
 	vbuf->bytesused = 0;
 
 	/* Submit the buffer for processing in the worker, where everything happens */
@@ -218,8 +223,10 @@ int emul_rx_init(const struct device *dev)
 		return ret;
 	}
 
-	data->fmt.pitch =
-		data->fmt.width * video_bits_per_pixel(data->fmt.pixelformat) / BITS_PER_BYTE;
+	ret = video_estimate_fmt_size(&data->fmt);
+	if (ret < 0) {
+		return ret;
+	}
 
 	k_fifo_init(&data->fifo_in);
 	k_fifo_init(&data->fifo_out);

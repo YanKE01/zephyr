@@ -9,24 +9,27 @@ zephyr_library_compile_definitions_ifdef(
   CONFIG_NEWLIB_LIBC __LINUX_ERRNO_EXTENSIONS__
   )
 zephyr_library_include_directories_ifdef(
-  CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE test_certs
+  CONFIG_WIFI_CERTIFICATE_LIB test_certs
   )
 
 zephyr_library_sources_ifdef(CONFIG_NET_L2_WIFI_MGMT wifi_mgmt.c)
+zephyr_library_sources_ifdef(CONFIG_WIFI_CERTIFICATE_LIB wifi_certs.c)
 zephyr_library_sources_ifdef(CONFIG_NET_L2_WIFI_SHELL wifi_shell.c)
 zephyr_library_sources_ifdef(CONFIG_WIFI_NM wifi_nm.c)
 zephyr_library_sources_ifdef(CONFIG_NET_L2_WIFI_UTILS wifi_utils.c)
 
 # Linker section placement for wifi_nm_instance iterable structure
 zephyr_linker_sources_ifdef(CONFIG_WIFI_NM DATA_SECTIONS wifi_nm.ld)
-if (CONFIG_WIFI_NM)
+if(CONFIG_WIFI_NM)
 zephyr_iterable_section(NAME wifi_nm_instance GROUP DATA_REGION ${XIP_ALIGN_WITH_INPUT})
 endif()
 
-if(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE AND CONFIG_NET_L2_WIFI_SHELL)
+if(CONFIG_WIFI_CERTIFICATE_LIB AND NOT CONFIG_WIFI_SHELL_RUNTIME_CERTIFICATES)
   # Wi-Fi Enterprise test certificates handling
   set(gen_inc_dir ${ZEPHYR_BINARY_DIR}/misc/generated)
   set(gen_dir ${gen_inc_dir}/wifi_enterprise_test_certs)
+  zephyr_get(WIFI_TEST_CERTS_DIR SYSBUILD GLOBAL)
+  message(DEBUG "WIFI_TEST_CERTS_DIR is set to ${WIFI_TEST_CERTS_DIR}")
   if(NOT DEFINED WIFI_TEST_CERTS_DIR)
     set(WIFI_TEST_CERTS_DIR ${ZEPHYR_BASE}/samples/net/wifi/test_certs/rsa3k)
   endif()
@@ -62,4 +65,4 @@ if(CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE AND CONFIG_NET_L2_WIFI_SHELL)
   # Add explicit dependency on app target for ZEPHYR_CURRENT_LIBRARY, so these
   # headers are generated at the correct point in the build
   add_dependencies(${ZEPHYR_CURRENT_LIBRARY} app)
-endif() #CONFIG_WIFI_NM_WPA_SUPPLICANT_CRYPTO_ENTERPRISE AND CONFIG_NET_L2_WIFI_SHELL
+endif() # CONFIG_WIFI_CERTIFICATE_LIB AND NOT CONFIG_WIFI_SHELL_RUNTIME_CERTIFICATES

@@ -57,6 +57,7 @@ static void test_central_main(void)
 	k_sleep(K_SECONDS(1));
 
 	PASS("Central tests passed\n");
+
 	bs_trace_silent_exit(0);
 
 	return;
@@ -99,6 +100,7 @@ static void test_central_multiple_main(void)
 	k_sleep(K_SECONDS(1));
 
 	PASS("Central tests passed\n");
+
 	bs_trace_silent_exit(0);
 
 	return;
@@ -153,9 +155,13 @@ static void test_peripheral_multilink_main(void)
 		goto exit;
 	}
 
-	k_sleep(K_SECONDS(3));
-
 	PASS("Peripheral tests passed\n");
+
+	/* Wait a little so all centrals complete. Ideally we would just have a backchannel
+	 * and wait for all peripherals to report passed.
+	 */
+	k_sleep(K_SECONDS(30));
+
 	bs_trace_silent_exit(0);
 
 	return;
@@ -167,14 +173,18 @@ exit:
 
 static void test_multiple_init(void)
 {
-	bst_ticker_set_next_tick_absolute(1500e6);
+	bst_ticker_set_next_tick_absolute(2400e6);
 	bst_result = In_progress;
 }
 
 static void test_multiple_tick(bs_time_t HW_device_time)
 {
-	bst_result = Failed;
-	bs_trace_error_line("Test multiple finished.\n");
+	if (bst_result != Passed) {
+		FAIL("Test timeout (not passed after %lu seconds)",
+		     (unsigned long)(HW_device_time / USEC_PER_SEC));
+	}
+
+	bs_trace_silent_exit(0);
 }
 
 static const struct bst_test_instance test_def[] = {

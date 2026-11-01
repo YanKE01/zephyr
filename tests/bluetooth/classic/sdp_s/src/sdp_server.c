@@ -255,8 +255,6 @@ static int cmd_register_sdp_all(const struct shell *sh, size_t argc, char *argv[
 {
 	int err;
 
-	sh = sh;
-
 	for (size_t i = 0; i < ARRAY_SIZE(spp_rec); i++) {
 		if (!sdp_rec_reg[i]) {
 			err = bt_sdp_register_service(&spp_rec[i]);
@@ -270,11 +268,34 @@ static int cmd_register_sdp_all(const struct shell *sh, size_t argc, char *argv[
 	return 0;
 }
 
+static int cmd_unregister_sdp(const struct shell *sh, size_t argc, char *argv[])
+{
+	int err = 0;
+	unsigned long index;
+
+	index = shell_strtoul(argv[1], 16, &err);
+	if (err || index >= MAX_SDP_RECORD_COUNT) {
+		shell_error(sh, "Invalid index %s", argv[1]);
+		return -EINVAL;
+	}
+
+	if (!sdp_rec_reg[index]) {
+		shell_error(sh, "The SDP record %lu is not registered", index);
+		return -ENOEXEC;
+	}
+
+	err = bt_sdp_unregister_service(&spp_rec[index]);
+	if (err != 0) {
+		shell_error(sh, "Unregister SDP record failed (err %d)", err);
+	} else {
+		sdp_rec_reg[index] = false;
+	}
+	return err;
+}
+
 static int cmd_register_sdp_large(const struct shell *sh, size_t argc, char *argv[])
 {
 	int err;
-
-	sh = sh;
 
 	err = bt_sdp_register_service(&spp_rec_large);
 	if (err) {
@@ -287,17 +308,12 @@ static int cmd_register_sdp_large_valid(const struct shell *sh, size_t argc, cha
 {
 	int err;
 
-	sh = sh;
-
 	err = bt_sdp_register_service(&spp_rec_large_valid);
 	if (err) {
 		shell_error(sh, "Register SDP large record failed (err %d)", err);
 	}
 	return 0;
 }
-
-uint8_t serial_port_svclass_uuid128[16] = {0x00, 0x00, 0x11, 0x01, 0x00, 0x00, 0x10, 0x00,
-					   0x80, 0x00, 0x00, 0x80, 0x5F, 0x9B, 0x34, 0xFB};
 
 static struct bt_sdp_attribute spp_attrs_uuid128[] = {
 	BT_SDP_NEW_SERVICE,
@@ -307,7 +323,7 @@ static struct bt_sdp_attribute spp_attrs_uuid128[] = {
 		BT_SDP_DATA_ELEM_LIST(
 		{
 			BT_SDP_TYPE_SIZE(BT_SDP_UUID128),
-			serial_port_svclass_uuid128
+			BT_SDP_ARRAY_UUID_128(0x00001101, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB),
 		},
 		)
 	),
@@ -348,7 +364,8 @@ static struct bt_sdp_attribute spp_attrs_uuid128[] = {
 			BT_SDP_DATA_ELEM_LIST(
 			{
 				BT_SDP_TYPE_SIZE(BT_SDP_UUID128),
-				serial_port_svclass_uuid128
+				BT_SDP_ARRAY_UUID_128(0x00001101, 0x0000, 0x1000, 0x8000,
+						      0x00805F9B34FB),
 			},
 			{
 				BT_SDP_TYPE_SIZE(BT_SDP_UINT16),
@@ -367,8 +384,6 @@ static int cmd_register_sdp_uuid128(const struct shell *sh, size_t argc, char *a
 {
 	int err;
 
-	sh = sh;
-
 	err = bt_sdp_register_service(&spp_rec_uuid128);
 	if (err) {
 		shell_error(sh, "Register SDP uuid128 failed (err %d)", err);
@@ -382,6 +397,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sdp_server_cmds,
 	SHELL_CMD_ARG(register_sdp_large, NULL, "", cmd_register_sdp_large, 1, 0),
 	SHELL_CMD_ARG(register_sdp_large_valid, NULL, "", cmd_register_sdp_large_valid, 1, 0),
 	SHELL_CMD_ARG(register_sdp_uuid128, NULL, "", cmd_register_sdp_uuid128, 1, 0),
+	SHELL_CMD_ARG(unregister_sdp, NULL, "<SDP Record Index>", cmd_unregister_sdp, 2, 0),
 	SHELL_SUBCMD_SET_END
 );
 

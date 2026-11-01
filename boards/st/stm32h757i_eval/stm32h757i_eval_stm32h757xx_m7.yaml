@@ -6,10 +6,11 @@ toolchain:
   - zephyr
   - gnuarmemb
   - xtools
-ram: 2048
+ram: 512
 flash: 1024
 supported:
   - gpio
+  - ptp_clock
   - spi
   - netif:eth
   - qspi

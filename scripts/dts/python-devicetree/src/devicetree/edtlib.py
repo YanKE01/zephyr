@@ -1,5 +1,6 @@
 # Copyright (c) 2019 Nordic Semiconductor ASA
 # Copyright (c) 2019 Linaro Limited
+# Copyright 2025 NXP
 # SPDX-License-Identifier: BSD-3-Clause
 
 # Tip: You can view just the documentation with 'pydoc3 devicetree.edtlib'
@@ -76,7 +77,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NoReturn, Optional, Union
+from typing import TYPE_CHECKING, Any, NoReturn, Optional, TypeGuard, Union
 
 import yaml
 
@@ -100,6 +101,16 @@ def _compute_hash(path: str) -> str:
     hasher.update(path.encode())
     return base64.b64encode(hasher.digest(), altchars=b'__').decode().rstrip('=')
 
+
+@dataclass
+class _LocalProps:
+    # The properties a binding declares on its own, before any
+    # 'include:' is merged in, and the same for its 'child-binding:'.
+
+    props: dict
+    child: Optional["_LocalProps"]
+
+
 #
 # Public classes
 #
@@ -113,6 +124,9 @@ class Binding:
 
     path:
       The absolute path to the file defining the binding.
+
+    included_binding_paths:
+      Paths to included binding YAML files.
 
     title:
       The free-form title of the binding (optional).
@@ -136,6 +150,17 @@ class Binding:
       This may be None. For example, it's None when the Binding is inferred
       from node properties. It can also be None for Binding objects created
       using 'child-binding:' with no compatible.
+
+    examples:
+      Provides a minimal example node illustrating the binding (optional).
+      Like this:
+
+      examples:
+        - |
+          / {
+              model = "This is a sample node";
+              ...
+          };
 
     prop2specs:
       A dict mapping property names to PropertySpec objects
@@ -173,6 +198,11 @@ class Binding:
       for example, ["i2c"] or ["i3c", "i2c"]. Or an empty list if there is
       no 'bus:' in this binding.
 
+    classes:
+      A list of the device class names declared by the binding's 'class:'
+      key, or an empty list if there is no 'class:'. 'class:' values from
+      included bindings are unioned into this list.
+
     on_bus:
       If nodes with this binding's 'compatible' appear on a bus, a string
       describing the bus type (like "i2c"). None otherwise.
@@ -186,7 +216,8 @@ class Binding:
 
     def __init__(self, path: Optional[str], fname2path: dict[str, str],
                  raw: Any = None, require_compatible: bool = True,
-                 require_description: bool = True, require_title: bool = False):
+                 require_description: bool = True, require_title: bool = False,
+                 local_props: Optional[_LocalProps] = None):
         """
         Binding constructor.
 
@@ -220,15 +251,28 @@ class Binding:
           "title:" line. If False, a missing "title:" is not an error.
           Either way, "title:" must be a string if it is present in
           the binding.
+
+        local_props:
+          Optional properties declared before any "include:" was merged
+          in. Must be given when 'raw' has already been merged, as is
+          the case for child bindings. May be left out, in which case
+          it is taken from 'raw'.
         """
         self.path: Optional[str] = path
         self._fname2path: dict[str, str] = fname2path
+        self._included_binding_paths: set[str] = set()
 
         if raw is None:
             if path is None:
                 _err("you must provide either a 'path' or a 'raw' argument")
             with open(path, encoding="utf-8") as f:
                 raw = yaml.load(f, Loader=_BindingLoader)
+
+        # Save the properties declared locally, for this binding and any
+        # nested child bindings, before included files are merged in.
+        if local_props is None:
+            local_props = _local_props(raw)
+        self._local_props: _LocalProps = local_props
 
         # Merge any included files into self.raw. This also pulls in
         # inherited child binding definitions, so it has to be done
@@ -246,7 +290,8 @@ class Binding:
                 path, fname2path,
                 raw=raw["child-binding"],
                 require_compatible=False,
-                require_description=False)
+                require_description=False,
+                local_props=local_props.child or _LocalProps({}, None))
         else:
             self.child_binding = None
 
@@ -291,6 +336,11 @@ class Binding:
         return self.raw.get('bus')
 
     @property
+    def examples(self) -> Optional[list[str]]:
+        "See the class docstring"
+        return self.raw.get('examples')
+
+    @property
     def buses(self) -> list[str]:
         "See the class docstring"
         if self.raw.get('bus') is not None:
@@ -299,9 +349,22 @@ class Binding:
             return []
 
     @property
+    def classes(self) -> list[str]:
+        "See the class docstring"
+        if self.raw.get('class') is not None:
+            return self._classes
+        else:
+            return []
+
+    @property
     def on_bus(self) -> Optional[str]:
         "See the class docstring"
         return self.raw.get('on-bus')
+
+    @property
+    def included_binding_paths(self) -> list[str]:
+        "See the class docstring"
+        return sorted(self._included_binding_paths)
 
     def _merge_includes(self, raw: dict, binding_path: Optional[str]) -> dict:
         # Constructor helper. Merges included files in
@@ -341,7 +404,7 @@ class Binding:
 
                     if elem:
                         # We've popped out all the valid keys.
-                        _err(f"'include:' in {binding_path} should not have "
+                        _err(f"'include:' in '{binding_path}' should not have "
                              f"these unexpected contents: {elem}")
 
                     _check_include_dict(name, allowlist, blocklist,
@@ -353,13 +416,13 @@ class Binding:
                                        child_filter, binding_path)
                     _merge_props(merged, contents, None, binding_path, False)
                 else:
-                    _err(f"all elements in 'include:' in {binding_path} "
+                    _err(f"all elements in 'include:' in '{binding_path}' "
                          "should be either strings or maps with a 'name' key "
                          "and optional 'property-allowlist' or "
                          f"'property-blocklist' keys, but got: {elem}")
         else:
             # Invalid item.
-            _err(f"'include:' in {binding_path} "
+            _err(f"'include:' in '{binding_path}' "
                  f"should be a string or list, but has type {type(include)}")
 
         # Next, merge the merged included files into 'raw'. Error out if
@@ -380,6 +443,8 @@ class Binding:
 
         if not path:
             _err(f"'{fname}' not found")
+
+        self._included_binding_paths.add(path)
 
         with open(path, encoding="utf-8") as f:
             contents = yaml.load(f, Loader=_BindingLoader)
@@ -420,7 +485,8 @@ class Binding:
         # Allowed top-level keys. The 'include' key should have been
         # removed by _load_raw() already.
         ok_top = {"title", "description", "compatible", "bus",
-                  "on-bus", "properties", "child-binding"}
+                  "on-bus", "class", "properties", "child-binding",
+                  "examples"}
 
         # Descriptive errors for legacy bindings.
         legacy_errors = {
@@ -438,7 +504,7 @@ class Binding:
 
             if key not in ok_top and not key.endswith("-cells"):
                 _err(f"unknown key '{key}' in {self.path}, "
-                     "expected one of {', '.join(ok_top)}, or *-cells")
+                     f"expected one of {', '.join(ok_top)}, or *-cells")
 
         if "bus" in raw:
             bus = raw["bus"]
@@ -459,6 +525,27 @@ class Binding:
             _err(f"malformed 'on-bus:' value in {self.path}, "
                  "expected string")
 
+        if "class" in raw:
+            cls = raw["class"]
+            if isinstance(cls, str):
+                classes = [cls]
+            elif (isinstance(cls, list)
+                  and all(isinstance(elem, str) for elem in cls)):
+                classes = cls
+            else:
+                _err(f"malformed 'class:' value in {self.path}, "
+                     "expected string or list of strings")
+            for elem in classes:
+                if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", elem):
+                    _err(f"malformed device class name '{elem}' in "
+                         f"{self.path}, expected lowercase letters, "
+                         "digits, '-' and '_', starting with a letter "
+                         "or digit")
+            if len(set(classes)) != len(classes):
+                _err(f"duplicate device class names in 'class:' in "
+                     f"{self.path}")
+            self._classes = classes
+
         self._check_properties()
 
         for key, val in raw.items():
@@ -478,7 +565,8 @@ class Binding:
 
         ok_prop_keys = {"description", "type", "required",
                         "enum", "const", "default", "deprecated",
-                        "specifier-space"}
+                        "specifier-space", "min", "max", "min-len", "max-len",
+                        "dependency-mode"}
 
         for prop_name, options in raw["properties"].items():
             for key in options:
@@ -487,7 +575,8 @@ class Binding:
                          f"'properties: {prop_name}: ...' in {self.path}, "
                          f"expected one of {', '.join(ok_prop_keys)}")
 
-            _check_prop_by_type(prop_name, options, self.path)
+            _check_prop_by_type(prop_name, options, self.path,
+                                self._local_props.props.get(prop_name) or {})
 
             for true_false_opt in ["required", "deprecated"]:
                 if true_false_opt in options:
@@ -568,12 +657,35 @@ class PropertySpec:
 
     specifier_space:
       The specifier space for the property as given in the binding, or None.
+
+    min:
+      The minimum value the property may take as given in the binding, or None.
+      Only applicable to 'int' and 'array' type properties.
+
+    max:
+      The maximum value the property may take as given in the binding, or None.
+      Only applicable to 'int' and 'array' type properties.
+
+    min_len:
+      The minimum length of the array itself as given in the binding, or None.
+      Corresponds to the binding key 'min-len:'.
+      Only applicable to array type properties.
+
+    max_len:
+      The maximum length of the array itself as given in the binding, or None.
+      Corresponds to the binding key 'max-len:'.
+      Only applicable to array type properties.
+
+    dependency_mode:
+      Specifies how the dependency graph should handle this property.
+      Can be "ignore", "child-ignore", "reverse", "normal" or None.
     """
 
     def __init__(self, name: str, binding: Binding):
         self.binding: Binding = binding
         self.name: str = name
         self._raw: dict[str, Any] = self.binding.raw["properties"][name]
+        self._check_special_properties()
 
     def __repr__(self) -> str:
         return f"<PropertySpec {self.name} type '{self.type}'>"
@@ -649,9 +761,51 @@ class PropertySpec:
         return self._raw.get("deprecated", False)
 
     @property
+    def dependency_mode(self) -> Optional[str]:
+        "See the class docstring"
+        return self._raw.get("dependency-mode")
+
+    @property
     def specifier_space(self) -> Optional[str]:
         "See the class docstring"
         return self._raw.get("specifier-space")
+
+    @property
+    def min(self) -> Optional[int]:
+        "See the class docstring"
+        return self._raw.get("min")
+
+    @property
+    def max(self) -> Optional[int]:
+        "See the class docstring"
+        return self._raw.get("max")
+
+    @property
+    def min_len(self) -> Optional[int]:
+        "See the class docstring"
+        return self._raw.get("min-len")
+
+    @property
+    def max_len(self) -> Optional[int]:
+        "See the class docstring"
+        return self._raw.get("max-len")
+
+    def _check_special_properties(self):
+        # Add checks for properties which have special meaning
+        # according to the specification.
+        def invalid_default(prop, default, spec):
+            _err(f"invalid default value '{default}' specified for property '{prop}' "
+                 f"in binding {self.binding.path}; this property's default behavior is "
+                 f"defined in DT Specification §{spec} and a default in a binding is invalid")
+
+        if self.name == "status" and self.default is not None:
+            invalid_default("status", self.default, "2.3.4")
+
+        if self.name == "#address-cells" and self.default is not None:
+            invalid_default("#address-cells", self.default, "2.3.5")
+
+        if self.name == "#size-cells" and self.default is not None:
+            invalid_default("#size-cells", self.default, "2.3.5")
 
 PropertyValType = Union[int, str,
                         list[int], list[str],
@@ -855,7 +1009,7 @@ class ControllerAndData:
       *-names property
 
     basename:
-      Basename for the controller when supporting named cells
+      Basename for the controller when supporting named cells. AKA, the specifier space.
     """
     node: 'Node'
     controller: 'Node'
@@ -898,6 +1052,55 @@ class PinCtrl:
         "See the class docstring"
         return str_as_token(self.name) if self.name is not None else None
 
+@dataclass
+class MapEntry:
+    """
+    Represents a single entry parsed from a ``*-map`` property. For example,
+    the value '<0 0 &gpio0 14 0>' from 'gpio-map = <0 0 &gpio0 14 0>, <1 0 &gpio0 0 0>;'
+    becomes one ``MapEntry`` instance.
+
+    These attributes are available on ``MapEntry`` objects:
+
+    node:
+      The Node instance whose property contains the map entry.
+
+    child_addresses:
+      A list of integers describing the unit address portion that precedes the
+      child specifier.  ``interrupt-map`` entries, for example, begin with the
+      child unit address whose length is determined by ``#address-cells`` on the
+      nexus node or its parent.  When no address cells are defined this list is
+      empty.
+
+    child_specifiers:
+      A list of integers read from the child side of the map entry after any
+      address words.  These are the specifier cells that precede the parent
+      phandle.
+
+    parent:
+      The parent Node instance.
+
+    parent_addresses:
+      The unit address portion that follows the parent phandle.  Its length is
+      derived from the parent's ``#address-cells`` (with the same parent lookup
+      fallback as in the devicetree specification).  Empty when no address cells
+      are provided.
+
+    parent_specifiers:
+      A list of integers describing the parent side of the mapping after any
+      parent address cells.  These values correspond to the ``*-cells``
+      definition in the parent's binding.
+
+    basename:
+      The base name of the ``*-map`` property, which also describes the
+      specifier space for the mapping.
+    """
+    node: 'Node'
+    child_addresses: list[int]
+    child_specifiers: list[int]
+    parent: 'Node'
+    parent_addresses: list[int]
+    parent_specifiers: list[int]
+    basename: str
 
 class Node:
     """
@@ -972,8 +1175,7 @@ class Node:
 
     status:
       The node's status property value, as a string, or "okay" if the node
-      has no status property set. If the node's status property is "ok",
-      it is converted to "okay" for consistency.
+      has no status property set.
 
     read_only:
       True if the node has a 'read-only' property, and False otherwise
@@ -981,6 +1183,9 @@ class Node:
     matching_compat:
       The 'compatible' string for the binding that matched the node, or None if
       the node has no binding
+
+    binding:
+      The Binding object for the node, or None if the node has no binding
 
     binding_path:
       The path to the binding file for the node, or None if the node has no
@@ -1028,6 +1233,15 @@ class Node:
       returning the value of the first 'bus:' key found. If none of the node's
       parents has a 'bus:' key, this attribute is an empty list.
 
+    classes:
+      A list of the device class names declared by the node's binding
+      (including the binding's included files), or an empty list.
+
+    on_bus:
+      Resolved bus type for this node, or None if the node is not on a bus.
+      If the binding sets 'on-bus', that value is validated against the parent
+      bus controller's bus types and used only when it matches.
+
     bus_node:
       Like on_bus, but contains the Node for the bus controller, or None if the
       node is not on a bus.
@@ -1045,6 +1259,11 @@ class Node:
       A list of ControllerAndData objects for the GPIOs hogged by the node. The
       list is empty if the node does not hog any GPIOs. Only relevant for GPIO hog
       nodes.
+
+    maps:
+      A dictionary that contains a list of MapEntry instances associated with each string key.
+      The key is the basename-part of the node property name, the value is
+      the entries of the property value.
 
     is_pci_device:
       True if the node is a PCI device.
@@ -1075,6 +1294,7 @@ class Node:
         self.dep_ordinal: int = -1
         self.compats: list[str] = compats
         self.ranges: list[Range] = []
+        self.dma_ranges: list[Range] = []
         self.regs: list[Register] = []
         self.props: dict[str, Property] = {}
         self.interrupts: list[ControllerAndData] = []
@@ -1085,6 +1305,7 @@ class Node:
         self._init_binding()
         self._init_regs()
         self._init_ranges()
+        self._init_dma_ranges()
 
     @property
     def name(self) -> str:
@@ -1117,6 +1338,11 @@ class Node:
             _err(f"{self!r} has non-hex unit address")
 
         return _translate(addr, self._node)
+
+    @property
+    def binding(self) -> Optional[Binding]:
+        "See the class docstring."
+        return self._binding
 
     @property
     def title(self) -> Optional[str]:
@@ -1199,9 +1425,6 @@ class Node:
         else:
             as_string = status.to_string()
 
-        if as_string == "ok":
-            as_string = "okay"
-
         return as_string
 
     @property
@@ -1241,6 +1464,25 @@ class Node:
         "See the class docstring"
         bus_node = self.bus_node
         return bus_node.buses if bus_node else []
+
+    @property
+    def classes(self) -> list[str]:
+        "See the class docstring"
+        if self._binding:
+            return self._binding.classes
+        return []
+
+    @property
+    def on_bus(self) -> Optional[str]:
+        "See the class docstring"
+        if self._binding and self._binding.on_bus is not None:
+            bus_node = self.bus_node
+            if bus_node and self._binding.on_bus in bus_node.buses:
+                return self._binding.on_bus
+            else:
+                return None
+        else:
+            return None
 
     @property
     def flash_controller(self) -> 'Node':
@@ -1322,6 +1564,103 @@ class Node:
         return res
 
     @property
+    def maps(self) -> dict[str, list[MapEntry]]:
+        "See the class docstring"
+
+        res: dict[str, list[MapEntry]] = {}
+
+        def count_specifier_cells(node: dtlib_Node, specifier: str) -> int:
+            """Return the number of specifier cells for *specifier* in *node*."""
+
+            cells_prop = f"#{specifier}-cells"
+
+            if cells_prop not in node.props:
+                _err(f"{node!r} lacks required '{cells_prop}' property")
+
+            return node.props[cells_prop].to_num()
+
+        def count_address_cells(node: dtlib_Node) -> int:
+            """Return the number of interrupt address cells for *node*."""
+
+            if "#address-cells" in node.props:
+                return node.props["#address-cells"].to_num()
+
+            if node.parent and "#address-cells" in node.parent.props:
+                return node.parent.props["#address-cells"].to_num()
+
+            return 0
+
+        for prop in [v for k, v in self._node.props.items() if k.endswith("-map")]:
+            specifier_space = prop.name[:-4]  # Strip '-map'
+            entries: list[MapEntry] = []
+            raw = prop.value
+            while raw:
+                if len(raw) < 4:
+                    # Not enough room for phandle
+                    _err("bad value for " + repr(prop))
+
+                child_address_cells = 0
+                if specifier_space == "interrupt":
+                    child_address_cells = count_address_cells(prop.node)
+
+                child_specifier_cells = count_specifier_cells(prop.node, specifier_space)
+                child_total_cells = child_address_cells + child_specifier_cells
+
+                if len(raw) < 4 * child_total_cells:
+                    _err("bad value for " + repr(prop))
+
+                child_cells = to_nums(raw[: 4 * child_total_cells])
+                child_addresses = child_cells[:child_address_cells]
+                child_specifiers = child_cells[child_address_cells:]
+
+                raw = raw[4 * child_total_cells :]
+                phandle = to_num(raw[:4])
+                raw = raw[4:]
+
+                parent_node = prop.node.dt.phandle2node.get(phandle)
+                if parent_node is None:
+                    _err(f"parent node cannot be found from phandle:{phandle}")
+
+                parent: Node = self.edt._node2enode[parent_node]
+                if parent is None:
+                    _err("parent cannot be found from: " + repr(parent_node))
+
+                parent_address_cells = 0
+                if specifier_space == "interrupt":
+                    parent_address_cells = count_address_cells(parent_node)
+
+                parent_specifier_cells = count_specifier_cells(parent_node, specifier_space)
+                parent_total_cells = parent_address_cells + parent_specifier_cells
+
+                if len(raw) < 4 * parent_total_cells:
+                    _err("bad value for " + repr(prop))
+
+                parent_cells = to_nums(raw[: 4 * parent_total_cells])
+                parent_addresses = parent_cells[:parent_address_cells]
+                parent_specifiers = parent_cells[parent_address_cells:]
+
+                raw = raw[4 * parent_total_cells :]
+
+                entries.append(
+                    MapEntry(
+                        node=self,
+                        child_addresses=child_addresses,
+                        child_specifiers=child_specifiers,
+                        parent=parent,
+                        parent_addresses=parent_addresses,
+                        parent_specifiers=parent_specifiers,
+                        basename=specifier_space,
+                    )
+                )
+
+            if len(raw) != 0:
+                _err(f"unexpected prop.value remaining: {raw}")
+
+            res[specifier_space] = entries
+
+        return res
+
+    @property
     def has_child_binding(self) -> bool:
         """
         True if the node's binding contains a child-binding definition, False
@@ -1365,6 +1704,14 @@ class Node:
                 # works the same way in Zephyr as it does elsewhere.
                 binding = None
 
+                # Collect all available bindings for this compatible for warning purposes
+                available_bindings = [
+                    (binding_bus, candidate_binding.path)
+                    for (binding_compat, binding_bus), candidate_binding
+                    in self.edt._compat2binding.items()
+                    if binding_compat == compat
+                ]
+
                 for bus in on_buses:
                     if (compat, bus) in self.edt._compat2binding:
                         binding = self.edt._compat2binding[compat, bus]
@@ -1374,6 +1721,27 @@ class Node:
                     if (compat, None) in self.edt._compat2binding:
                         binding = self.edt._compat2binding[compat, None]
                     else:
+                        # No matching binding found - warn if bindings exist for other buses
+                        if (available_bindings and
+                            self.edt._warn_bus_mismatch):
+                            current_bus = on_buses[0] if on_buses else "none"
+
+                            # Format available bus information for the warning
+                            available_bus_info = []
+                            for bus, binding_path in available_bindings:  # type: ignore
+                                bus_name = bus if bus is not None else "any"
+                                # Get relative path for cleaner output
+                                rel_path = (os.path.relpath(binding_path)
+                                            if binding_path is not None else "unknown")
+                                bus_info = f"'{bus_name}' (from {rel_path})"
+                                available_bus_info.append(bus_info)
+
+                            _LOG.warning(
+                                f"Node '{self.path}' with compatible '{compat}' "
+                                f"is on bus '{current_bus}', but available bindings "
+                                f"expect: {', '.join(available_bus_info)}. "
+                                f"No binding will be applied to this node."
+                            )
                         continue
 
                 self._binding = binding
@@ -1534,6 +1902,40 @@ class Node:
                     f"{self.edt.dts_path} ({subval!r}) is not in 'enum' list in "
                     f"{self.binding_path} ({enum!r})")
 
+        prop_min = prop_spec.min
+        prop_max = prop_spec.max
+        if prop_min is not None or prop_max is not None:
+            for subval in val if isinstance(val, list) else [val]:
+                if not _is_plain_int(subval):
+                    _err(f"'min:'/'max:' on property '{name}' on {self.path} "
+                         f"requires an integer value, got {subval!r}")
+                if prop_min is not None and subval < prop_min:
+                    _err(f"value of property '{name}' on {self.path} in "
+                         f"{self.edt.dts_path} ({subval!r}) is less than the "
+                         f"'min' value in {self.binding_path} ({prop_min!r})")
+                if prop_max is not None and subval > prop_max:
+                    _err(f"value of property '{name}' on {self.path} in "
+                         f"{self.edt.dts_path} ({subval!r}) is greater than the "
+                         f"'max' value in {self.binding_path} ({prop_max!r})")
+
+        prop_min_len = prop_spec.min_len
+        prop_max_len = prop_spec.max_len
+        if prop_min_len is not None or prop_max_len is not None:
+            if isinstance(val, list | bytes):
+                val_len = len(val)
+                if prop_min_len is not None and val_len < prop_min_len:
+                    _err(f"value of property '{name}' on {self.path} in "
+                         f"{self.edt.dts_path} has length {val_len}, which is less than the "
+                         f"'min-len' value in {self.binding_path} ({prop_min_len!r})")
+                if prop_max_len is not None and val_len > prop_max_len:
+                    _err(f"value of property '{name}' on {self.path} in "
+                         f"{self.edt.dts_path} has length {val_len}, which is greater than the "
+                         f"'max-len' value in {self.binding_path} ({prop_max_len!r})")
+            else:
+                _err(f"property '{name}' on {self.path} in "
+                     f"{self.edt.dts_path} is not an array, but "
+                     "'min-len'/'max-len' constraints are set")
+
         const = prop_spec.const
         if const is not None and val != const:
             _err(f"value of property '{name}' on {self.path} in "
@@ -1567,6 +1969,19 @@ class Node:
 
         node = self._node
         prop = node.props.get(name)
+        prop_node = node
+
+        # DT spec: CPU properties can be placed on /cpus if identical for all
+        # CPU nodes. Check the CPU node first, then fall back to its parent.
+        if (
+            not prop
+            and node.parent
+            and node.parent.path == "/cpus"
+            and node.path.startswith("/cpus/cpu")
+        ):
+            prop = node.parent.props.get(name)
+            if prop is not None:
+                prop_node = node.parent
         binding_path = prop_spec.binding.path
         prop_type = prop_spec.type
         deprecated = prop_spec.deprecated
@@ -1577,7 +1992,8 @@ class Node:
         if prop and deprecated:
             msg = (
                 f"'{name}' is marked as deprecated in 'properties:' "
-                f"in {binding_path} for node {node.path}."
+                f"in '{binding_path}' for node {node.path} "
+                f"(set in {prop_node.path})."
             )
             if err_on_deprecated:
                 _err(msg)
@@ -1588,7 +2004,7 @@ class Node:
             if required and self.status == "okay":
                 _err(
                     f"'{name}' is marked as required in 'properties:' in "
-                    f"{binding_path}, but does not appear in {node!r}"
+                    f"'{binding_path}', but does not appear in {node!r}"
                 )
 
             if default is not None:
@@ -1605,15 +2021,15 @@ class Node:
         if prop_type == "boolean":
             if prop.type != Type.EMPTY:
                 _err(f"'{name}' in {node!r} is defined with 'type: boolean' "
-                     f"in {binding_path}, but is assigned a value ('{prop}') "
+                     f"in '{binding_path}', but is assigned a value ('{prop}') "
                      f"instead of being empty ('{name};')")
             return True
 
         if prop_type == "int":
-            return prop.to_num()
+            return prop.to_num(signed_aware=True)
 
         if prop_type == "array":
-            return prop.to_nums()
+            return prop.to_nums(signed_aware=True)
 
         if prop_type == "uint8-array":
             return prop.to_bytes()
@@ -1732,6 +2148,67 @@ class Node:
                     raw_range[(4*child_address_cells + 4*parent_address_cells):])
 
             self.ranges.append(Range(self, child_bus_cells, child_bus_addr,
+                                     parent_bus_cells, parent_bus_addr,
+                                     length_cells, length))
+
+    def _init_dma_ranges(self) -> None:
+        # Initializes self.dma_ranges
+        node = self._node
+
+        self.dma_ranges = []
+
+        if "dma-ranges" not in node.props:
+            return
+
+        raw_child_address_cells = node.props.get("#address-cells")
+        parent_address_cells = _address_cells(node)
+        if raw_child_address_cells is None:
+            child_address_cells = 2  # Default value per DT spec.
+        else:
+            child_address_cells = raw_child_address_cells.to_num()
+        raw_child_size_cells = node.props.get("#size-cells")
+        if raw_child_size_cells is None:
+            child_size_cells = 1  # Default value per DT spec.
+        else:
+            child_size_cells = raw_child_size_cells.to_num()
+
+        entry_cells = child_address_cells + parent_address_cells + child_size_cells
+
+        if entry_cells == 0:
+            if len(node.props["dma-ranges"].value) == 0:
+                return
+            else:
+                _err(f"'dma-ranges' should be empty in {self._node.path} since "
+                     f"<#address-cells> = {child_address_cells}, "
+                     f"<#address-cells for parent> = {parent_address_cells} and "
+                     f"<#size-cells> = {child_size_cells}")
+
+        for raw_range in _slice(node, "dma-ranges", 4*entry_cells,
+                                f"4*(<#address-cells> (= {child_address_cells}) + "
+                                "<#address-cells for parent> "
+                                f"(= {parent_address_cells}) + "
+                                f"<#size-cells> (= {child_size_cells}))"):
+
+            child_bus_cells = child_address_cells
+            if child_address_cells == 0:
+                child_bus_addr = None
+            else:
+                child_bus_addr = to_num(raw_range[:4*child_address_cells])
+            parent_bus_cells = parent_address_cells
+            if parent_address_cells == 0:
+                parent_bus_addr = None
+            else:
+                parent_bus_addr = to_num(
+                    raw_range[(4*child_address_cells):
+                              (4*child_address_cells + 4*parent_address_cells)])
+            length_cells = child_size_cells
+            if child_size_cells == 0:
+                length = None
+            else:
+                length = to_num(
+                    raw_range[(4*child_address_cells + 4*parent_address_cells):])
+
+            self.dma_ranges.append(Range(self, child_bus_cells, child_bus_addr,
                                      parent_bus_cells, parent_bus_addr,
                                      length_cells, length))
 
@@ -1859,15 +2336,19 @@ class Node:
         # unspecified.
 
         if not specifier_space:
-            if prop.name.endswith("gpios"):
-                # There's some slight special-casing for *-gpios properties in that
-                # e.g. foo-gpios still maps to #gpio-cells rather than
-                # #foo-gpio-cells
-                specifier_space = "gpio"
-            else:
-                # Strip -s. We've already checked that property names end in -s
-                # if there is no specifier space in _check_prop_by_type().
-                specifier_space = prop.name[:-1]
+            specifier_space_groups = {"gpio", "io-channel", "counter-capture"}
+            for group in specifier_space_groups:
+                if prop.name.endswith(group + 's'):
+                    # There's some slight special-casing for some properties in that
+                    # e.g. foo-gpios and bar-io-channels still map to #gpio-cells and
+                    # #io-channels rather than #foo-gpio-cells and bar-io-channels
+                    # respectively.
+                    specifier_space = group
+
+        if not specifier_space:
+            # Strip -s. We've already checked that property names end in -s
+            # if there is no specifier space in _check_prop_by_type().
+            specifier_space = prop.name[:-1]
 
         res: list[Optional[ControllerAndData]] = []
 
@@ -1999,7 +2480,8 @@ class EDT:
                  support_fixed_partitions_on_any_bus: bool = True,
                  infer_binding_for_paths: Optional[Iterable[str]] = None,
                  vendor_prefixes: Optional[dict[str, str]] = None,
-                 werror: bool = False):
+                 werror: bool = False,
+                 warn_bus_mismatch: bool = False):
         """EDT constructor.
 
         dts:
@@ -2043,6 +2525,10 @@ class EDT:
           If True, some edtlib specific warnings become errors. This currently
           errors out if 'dts' has any deprecated properties set, or an unknown
           vendor prefix is used.
+
+        warn_bus_mismatch (default: False):
+          If True, a warning is logged if a node's actual bus does not match
+            the bus specified in its binding.
         """
         # All instance attributes should be initialized here.
         # This makes it easy to keep track of them, which makes
@@ -2069,6 +2555,7 @@ class EDT:
         self._infer_binding_for_paths: set[str] = set(infer_binding_for_paths or [])
         self._vendor_prefixes: dict[str, str] = vendor_prefixes or {}
         self._werror: bool = bool(werror)
+        self._warn_bus_mismatch: bool = warn_bus_mismatch
 
         # Other internal state
         self._compat2binding: dict[tuple[str, Optional[str]], Binding] = {}
@@ -2172,6 +2659,26 @@ class EDT:
         except Exception as e:
             raise EDTError(e) from None
 
+    def _apply_dependency_mode(self, root_node: Node, dep_node: Node, prop: Property) -> None:
+        match prop.spec.dependency_mode:
+            case None | "normal":
+                self._graph.add_edge(root_node, dep_node)
+            case "reverse":
+                self._graph.add_edge(dep_node, root_node)
+            case "ignore":
+                pass
+            case "child-ignore":
+                def _is_child(child_node: Optional[Node]) -> bool:
+                    if child_node is None:
+                        return False
+                    if root_node is child_node:
+                        return True
+                    return _is_child(child_node.parent)
+                if TYPE_CHECKING:
+                    assert isinstance(prop.val, Node)
+                if not _is_child(dep_node):
+                    self._graph.add_edge(root_node, dep_node)
+
     def _process_properties_r(self, root_node: Node, props_node: Node) -> None:
         """
         Process props_node properties for dependencies, and add those as
@@ -2185,12 +2692,16 @@ class EDT:
         # 'phandles', or 'phandle-array' property values.
         for prop in props_node.props.values():
             if prop.type == 'phandle':
-                self._graph.add_edge(root_node, prop.val)
+                if TYPE_CHECKING:
+                    assert isinstance(prop.val, Node)
+                self._apply_dependency_mode(root_node, prop.val, prop)
             elif prop.type == 'phandles':
                 if TYPE_CHECKING:
                     assert isinstance(prop.val, list)
                 for phandle_node in prop.val:
-                    self._graph.add_edge(root_node, phandle_node)
+                    if TYPE_CHECKING:
+                        assert isinstance(phandle_node, Node)
+                    self._apply_dependency_mode(root_node, phandle_node, prop)
             elif prop.type == 'phandle-array':
                 if TYPE_CHECKING:
                     assert isinstance(prop.val, list)
@@ -2199,7 +2710,7 @@ class EDT:
                         continue
                     if TYPE_CHECKING:
                         assert isinstance(cd, ControllerAndData)
-                    self._graph.add_edge(root_node, cd.controller)
+                    self._apply_dependency_mode(root_node, cd.controller, prop)
 
         # A Node depends on whatever supports the interrupts it
         # generates.
@@ -2539,7 +3050,7 @@ def _binding_paths(bindings_dirs: list[str]) -> list[str]:
     # Returns a list with the paths to all bindings (.yaml files) in
     # 'bindings_dirs'
 
-    return [os.path.join(root, filename)
+    return [os.path.normpath(os.path.join(root, filename))
             for bindings_dir in bindings_dirs
             for root, _, filenames in os.walk(bindings_dir)
             for filename in filenames
@@ -2562,11 +3073,11 @@ def _check_include_dict(name: Optional[str],
     # child-binding filter 'child_filter' has valid structure.
 
     if name is None:
-        _err(f"'include:' element in {binding_path} "
+        _err(f"'include:' element in '{binding_path}' "
              "should have a 'name' key")
 
     if allowlist is not None and blocklist is not None:
-        _err(f"'include:' of file '{name}' in {binding_path} "
+        _err(f"'include:' of file '{name}' in '{binding_path}' "
              "should not specify both 'property-allowlist:' "
              "and 'property-blocklist:'")
 
@@ -2581,12 +3092,12 @@ def _check_include_dict(name: Optional[str],
 
         if child_copy:
             # We've popped out all the valid keys.
-            _err(f"'include:' of file '{name}' in {binding_path} "
+            _err(f"'include:' of file '{name}' in '{binding_path}' "
                  "should not have these unexpected contents in a "
                  f"'child-binding': {child_copy}")
 
         if child_allowlist is not None and child_blocklist is not None:
-            _err(f"'include:' of file '{name}' in {binding_path} "
+            _err(f"'include:' of file '{name}' in '{binding_path}' "
                  "should not specify both 'property-allowlist:' and "
                  "'property-blocklist:' in a 'child-binding:'")
 
@@ -2647,7 +3158,25 @@ def _check_prop_filter(name: str, value: Optional[list[str]],
         return
 
     if not isinstance(value, list):
-        _err(f"'{name}' value {value} in {binding_path} should be a list")
+        _err(f"'{name}' value {value} in '{binding_path}' should be a list")
+
+
+def _local_props(raw: Any) -> _LocalProps:
+    # Returns the properties 'raw' declares on its own, and the same for
+    # any nested 'child-binding:'. Each entry is copied, as
+    # _merge_props() merges into them in place.
+
+    if not isinstance(raw, dict):
+        return _LocalProps({}, None)
+
+    return _LocalProps(
+        {
+            name: dict(options)
+            for name, options in (raw.get("properties") or {}).items()
+            if isinstance(options, dict)
+        },
+        _local_props(raw["child-binding"]) if "child-binding" in raw else None,
+    )
 
 
 def _merge_props(to_dict: dict,
@@ -2659,6 +3188,11 @@ def _merge_props(to_dict: dict,
     #
     # If 'from_dict' and 'to_dict' contain a 'required:' key for the same
     # property, then the values are ORed together.
+    #
+    # 'class:' values at a binding root (top level or a child-binding
+    # level) are unioned instead of overwritten, so that a binding which
+    # includes several class base bindings is a member of all of their
+    # classes.
     #
     # If 'check_required' is True, then an error is raised if 'from_dict' has
     # 'required: true' while 'to_dict' has 'required: false'. This prevents
@@ -2680,8 +3214,10 @@ def _merge_props(to_dict: dict,
                          check_required)
         elif prop not in to_dict:
             to_dict[prop] = from_dict[prop]
+        elif prop == "class" and parent in (None, "child-binding"):
+            to_dict[prop] = _merge_class(to_dict[prop], from_dict[prop])
         elif _bad_overwrite(to_dict, from_dict, prop, check_required):
-            _err(f"{binding_path} (in '{parent}'): '{prop}' "
+            _err(f"'{binding_path}' (in '{parent}'): '{prop}' "
                  f"from included file overwritten ('{from_dict[prop]}' "
                  f"replaced with '{to_dict[prop]}')")
         elif prop == "required":
@@ -2690,10 +3226,22 @@ def _merge_props(to_dict: dict,
             if not (isinstance(from_dict["required"], bool) and
                     isinstance(to_dict["required"], bool)):
                 _err(f"malformed 'required:' setting for '{parent}' in "
-                     f"'properties' in {binding_path}, expected true/false")
+                     f"'properties' in '{binding_path}', expected true/false")
 
             # 'required: true' takes precedence
             to_dict["required"] = to_dict["required"] or from_dict["required"]
+
+
+def _merge_class(to_val: Union[str, list], from_val: Union[str, list]) -> list:
+    # _merge_props() helper. Returns the union of two top-level 'class:'
+    # values, each a string or a list of strings, preserving order and
+    # dropping duplicates. Values in 'to_val' come first.
+
+    res = list(to_val) if isinstance(to_val, list) else [to_val]
+    for elem in (from_val if isinstance(from_val, list) else [from_val]):
+        if elem not in res:
+            res.append(elem)
+    return res
 
 
 def _bad_overwrite(to_dict: dict, from_dict: dict, prop: str,
@@ -2705,7 +3253,7 @@ def _bad_overwrite(to_dict: dict, from_dict: dict, prop: str,
         return False
 
     # These are overridden deliberately
-    if prop in {"title", "description", "compatible"}:
+    if prop in {"title", "description", "compatible", "examples", "dependency-mode"}:
         return False
 
     if prop == "required":
@@ -2731,26 +3279,38 @@ def _binding_include(loader, node):
     _binding_inc_error("unrecognised node type in !include statement")
 
 
+def _is_plain_int(val: Any) -> TypeGuard[int]:
+    # bool is a subclass of int in Python; this rejects booleans so that
+    # YAML values like 'true' are not silently accepted as integers.
+    return isinstance(val, int) and not isinstance(val, bool)
+
+
 def _check_prop_by_type(prop_name: str,
                         options: dict,
-                        binding_path: Optional[str]) -> None:
+                        binding_path: Optional[str],
+                        local_options: dict) -> None:
     # Binding._check_properties() helper. Checks 'type:', 'default:',
-    # 'const:' and # 'specifier-space:' for the property named 'prop_name'
+    # 'const:', 'specifier-space:', 'min:' and 'max:' for the property
+    # named 'prop_name'
 
     prop_type = options.get("type")
     default = options.get("default")
     const = options.get("const")
+    min_val = options.get("min")
+    max_val = options.get("max")
+    min_len = options.get("min-len")
+    max_len = options.get("max-len")
 
     if prop_type is None:
         _err(f"missing 'type:' for '{prop_name}' in 'properties' in "
-             f"{binding_path}")
+             f"'{binding_path}'")
 
     ok_types = {"boolean", "int", "array", "uint8-array", "string",
                 "string-array", "phandle", "phandles", "phandle-array",
                 "path", "compound"}
 
     if prop_type not in ok_types:
-        _err(f"'{prop_name}' in 'properties:' in {binding_path} "
+        _err(f"'{prop_name}' in 'properties:' in '{binding_path}' "
              f"has unknown type '{prop_type}', expected one of " +
              ", ".join(ok_types))
 
@@ -2761,17 +3321,86 @@ def _check_prop_by_type(prop_name: str,
     if (prop_type == "phandle-array"
         and not prop_name.endswith("s")
         and "specifier-space" not in options):
-        _err(f"'{prop_name}' in 'properties:' in {binding_path} "
+        _err(f"'{prop_name}' in 'properties:' in '{binding_path}' "
              f"has type 'phandle-array' and its name does not end in 's', "
              f"but no 'specifier-space' was provided.")
 
     # If you change const_types, be sure to update the type annotation
     # for PropertySpec.const.
     const_types = {"int", "array", "uint8-array", "string", "string-array"}
-    if const and prop_type not in const_types:
-        _err(f"const in {binding_path} for property '{prop_name}' "
-             f"has type '{prop_type}', expected one of " +
-             ", ".join(const_types))
+    if const is not None:
+        if prop_type not in const_types:
+            _err(f"const in '{binding_path}' for property '{prop_name}' "
+                 f"has type '{prop_type}', expected one of " +
+                 ", ".join(const_types))
+
+        if prop_type in {"int", "array"}:
+            for subval in const if isinstance(const, list) else [const]:
+                if not _is_plain_int(subval):
+                    _err(f"'const: {const}' for '{prop_name}' in "
+                         f"'{binding_path}' is not an integer/array")
+
+    if min_val is not None or max_val is not None:
+        if prop_type not in {"int", "array"}:
+            _err(f"'min:'/'max:' in '{binding_path}' for '{prop_name}' "
+                 "requires 'type: int' or 'type: array', "
+                 f"but has type '{prop_type}'")
+
+        if "enum" in options:
+            _err(f"'min:'/'max:' cannot be combined with 'enum:' "
+                 f"for '{prop_name}' in '{binding_path}'")
+
+        if min_val is not None and not _is_plain_int(min_val):
+            _err(f"'min:' for '{prop_name}' in '{binding_path}' "
+                 "is not an integer")
+
+        if max_val is not None and not _is_plain_int(max_val):
+            _err(f"'max:' for '{prop_name}' in '{binding_path}' "
+                 "is not an integer")
+
+        if (min_val is not None and max_val is not None
+                and min_val > max_val):
+            _err(f"'min:' ({min_val}) > 'max:' ({max_val}) "
+                 f"for '{prop_name}' in '{binding_path}'")
+
+        if const is not None:
+            for subval in const if isinstance(const, list) else [const]:
+                if min_val is not None and subval < min_val:
+                    _err(f"'const: {const}' for '{prop_name}' in "
+                         f"'{binding_path}' is less than 'min: {min_val}'")
+                if max_val is not None and subval > max_val:
+                    _err(f"'const: {const}' for '{prop_name}' in "
+                         f"'{binding_path}' is greater than 'max: {max_val}'")
+
+    if min_len is not None or max_len is not None:
+        array_types = {"array", "uint8-array", "string-array", "phandles", "phandle-array"}
+        if prop_type not in array_types:
+            _err(f"'min-len:'/'max-len:' in '{binding_path}' for '{prop_name}' "
+                 f"requires an array type, but has type '{prop_type}'")
+
+        if min_len is not None and (not _is_plain_int(min_len) or min_len < 0):
+            _err(f"'min-len:' for '{prop_name}' in '{binding_path}' "
+                 "is not a non-negative integer")
+
+        if max_len is not None and (not _is_plain_int(max_len) or max_len < 0):
+            _err(f"'max-len:' for '{prop_name}' in '{binding_path}' "
+                 "is not a non-negative integer")
+
+        if (min_len is not None and max_len is not None
+                and min_len > max_len):
+            _err(f"'min-len:' ({min_len}) > 'max-len:' ({max_len}) "
+                 f"for '{prop_name}' in '{binding_path}'")
+
+        if const is not None and isinstance(const, list | bytes):
+            const_len = len(const)
+            if min_len is not None and const_len < min_len:
+                _err(f"'const: {const!r}' for '{prop_name}' in "
+                     f"'{binding_path}' has length {const_len}, which is "
+                     f"less than 'min-len: {min_len}'")
+            if max_len is not None and const_len > max_len:
+                _err(f"'const: {const!r}' for '{prop_name}' in "
+                     f"'{binding_path}' has length {const_len}, which is "
+                     f"greater than 'max-len: {max_len}'")
 
     # Check default
 
@@ -2782,14 +3411,20 @@ def _check_prop_by_type(prop_name: str,
                      "phandle-array", "path"}:
         _err("'default:' can't be combined with "
              f"'type: {prop_type}' for '{prop_name}' in "
-             f"'properties:' in {binding_path}")
+             f"'properties:' in '{binding_path}'")
+
+    # Overriding an inherited 'default:' with 'required: true' is well
+    # defined, so only report a binding that declares both itself.
+    if local_options.get("required") and "default" in local_options:
+        _LOG.warning(f"Property '{prop_name}' is required in '{binding_path}', "
+                     "it should not have a default value")
 
     def ok_default() -> bool:
         # Returns True if 'default' is an okay default for the property's type.
         # If you change this, be sure to update the type annotation for
         # PropertySpec.default.
 
-        if (prop_type == "int" and isinstance(default, int)
+        if (prop_type == "int" and _is_plain_int(default)
             or prop_type == "string" and isinstance(default, str)):
             return True
 
@@ -2799,11 +3434,11 @@ def _check_prop_by_type(prop_name: str,
             return False
 
         if (prop_type == "array"
-            and all(isinstance(val, int) for val in default)):
+            and all(_is_plain_int(val) for val in default)):
             return True
 
         if (prop_type == "uint8-array"
-            and all(isinstance(val, int)
+            and all(_is_plain_int(val)
                     and 0 <= val <= 255 for val in default)):
             return True
 
@@ -2812,8 +3447,28 @@ def _check_prop_by_type(prop_name: str,
 
     if not ok_default():
         _err(f"'default: {default}' is invalid for '{prop_name}' "
-             f"in 'properties:' in {binding_path}, "
+             f"in 'properties:' in '{binding_path}', "
              f"which has type {prop_type}")
+
+    if min_val is not None or max_val is not None:
+        for subval in default if isinstance(default, list) else [default]:
+            if min_val is not None and subval < min_val:
+                _err(f"'default: {default}' for '{prop_name}' in "
+                     f"'{binding_path}' is less than 'min: {min_val}'")
+            if max_val is not None and subval > max_val:
+                _err(f"'default: {default}' for '{prop_name}' in "
+                     f"'{binding_path}' is greater than 'max: {max_val}'")
+
+    if (min_len is not None or max_len is not None) and isinstance(default, list | bytes):
+        default_len = len(default)
+        if min_len is not None and default_len < min_len:
+            _err(f"'default: {default!r}' for '{prop_name}' in "
+                 f"'{binding_path}' has length {default_len}, which is "
+                 f"less than 'min-len: {min_len}'")
+        if max_len is not None and default_len > max_len:
+            _err(f"'default: {default!r}' for '{prop_name}' in "
+                 f"'{binding_path}' has length {default_len}, which is "
+                 f"greater than 'max-len: {max_len}'")
 
 
 def _translate(addr: int, node: dtlib_Node) -> int:
@@ -3312,8 +3967,7 @@ def _check_dt(dt: DT) -> None:
 
     # Check that 'status' has one of the values given in the devicetree spec.
 
-    # Accept "ok" for backwards compatibility
-    ok_status = {"ok", "okay", "disabled", "reserved", "fail", "fail-sss"}
+    ok_status = {"okay", "disabled", "reserved", "fail", "fail-sss"}
 
     for node in dt.node_iter():
         if "status" in node.props:
@@ -3331,7 +3985,7 @@ def _check_dt(dt: DT) -> None:
 
         ranges_prop = node.props.get("ranges")
         if ranges_prop and ranges_prop.type not in (Type.EMPTY, Type.NUMS):
-            _err(f"expected 'ranges = < ... >;' in {node.path} in "
+            _err(f"expected 'ranges = <...>;' in {node.path} in "
                  f"{node.dt.filename}, not '{ranges_prop}' "
                   "(see the devicetree specification)")
 
@@ -3360,6 +4014,48 @@ def str_as_token(val: str) -> str:
 class _BindingLoader(Loader):
     pass
 
+
+class HexInt(int):
+    """
+    An integer subclass that indicates the value was expressed in hexadecimal
+    notation in the original YAML binding file.
+
+    This allows downstream tools (e.g., documentation generators) to preserve
+    the original representation when displaying default values.
+
+    Example usage:
+        if isinstance(prop_spec.default, HexInt):
+            # Format as hex: f"0x{prop_spec.default:x}"
+        else:
+            # Format as decimal: str(prop_spec.default)
+    """
+
+    def __new__(cls, value: int) -> "HexInt":
+        return super().__new__(cls, value)
+
+
+def _binding_int_constructor(
+    loader: _BindingLoader, node: yaml.ScalarNode
+) -> int:
+    """
+    Custom YAML constructor for integers that preserves hexadecimal notation.
+
+    Returns a HexInt instance if the original YAML value was in hex format,
+    otherwise returns a regular int.
+    """
+    # Get the original string representation from the YAML
+    value_str = node.value.lower()
+    # Use the standard YAML int parsing
+    value = loader.construct_yaml_int(node)
+
+    # Check if the original was hexadecimal (0x prefix, possibly with sign)
+    if value_str.lstrip("+-").startswith("0x"):
+        return HexInt(value)
+    return value
+
+
+# Override the default integer constructor to track hex notation
+_BindingLoader.add_constructor("tag:yaml.org,2002:int", _binding_int_constructor)
 
 # Add legacy '!include foo.yaml' handling
 _BindingLoader.add_constructor("!include", _binding_include)

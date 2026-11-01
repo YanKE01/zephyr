@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Renesas Electronics Corporation
+ * Copyright (c) 2025-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -7,6 +7,7 @@
 
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/drivers/interrupt_controller/intc_rz_icu.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 #if defined(CONFIG_UART_RENESAS_RZ_SCI_B)
@@ -143,7 +144,9 @@ static int uart_rz_sci_apply_config(const struct device *dev)
 
 	sci_baud_setting_t baud_setting;
 	sci_uart_extended_cfg_t *fsp_config_extend = (sci_uart_extended_cfg_t *)fsp_cfg->p_extend;
-
+#if defined(CONFIG_SOC_SERIES_RZG3E)
+	baud_setting.clock_source = SCI_B_UART_SOURCE_CLOCK_PCLK;
+#endif
 	fsp_err_t fsp_err;
 #if defined(CONFIG_UART_RENESAS_RZ_SCI_B)
 	uint32_t baud_rate = uart_config->baudrate;
@@ -358,12 +361,6 @@ static void uart_rz_sci_irq_callback_set(const struct device *dev, uart_irq_call
 	data->callback_data = cb_data;
 }
 
-static int uart_rz_sci_irq_update(const struct device *dev)
-{
-	ARG_UNUSED(dev);
-	return 1;
-}
-
 static void uart_rz_sci_rxi_isr(const struct device *dev)
 {
 	struct uart_rz_sci_data *data = dev->data;
@@ -442,7 +439,6 @@ static DEVICE_API(uart, uart_rz_sci_driver_api) = {
 	.irq_rx_ready = uart_rz_sci_irq_rx_ready,
 	.irq_is_pending = uart_rz_sci_irq_is_pending,
 	.irq_callback_set = uart_rz_sci_irq_callback_set,
-	.irq_update = uart_rz_sci_irq_update,
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 };
 
@@ -470,6 +466,15 @@ static int uart_rz_init(const struct device *dev)
 
 #define SCI_NODE(idx) DT_INST_PARENT(idx)
 
+#ifdef CONFIG_DT_HAS_RENESAS_RZ_ICU_V2_ENABLED
+#define EVENT_SCI(channel, IRQ_NAME) CONCAT(ELC_EVENT_SCI, channel, _##IRQ_NAME)
+#define UART_RZ_CONNECT_IRQ_EVENT(n, irq_name, IRQ_NAME) \
+	icu_connect_irq_event(DT_IRQ_BY_NAME(SCI_NODE(n), irq_name, irq), \
+				(EVENT_SCI(DT_PROP(SCI_NODE(n), channel), IRQ_NAME)))
+#else
+#define UART_RZ_CONNECT_IRQ_EVENT(n, irq_name, IRQ_NAME)
+#endif /* CONFIG_DT_HAS_RENESAS_RZ_ICU_V2_ENABLED */
+
 #ifdef CONFIG_CPU_CORTEX_M
 #define GET_IRQ_FLAGS(index, irq_name) 0
 #else /* Cortex-A/R */
@@ -485,6 +490,10 @@ static int uart_rz_init(const struct device *dev)
 	} while (0)
 
 #define UART_RZ_CONFIG_FUNC(n)                                                                     \
+	UART_RZ_CONNECT_IRQ_EVENT(n, rxi, RXI);                                                    \
+	UART_RZ_CONNECT_IRQ_EVENT(n, txi, TXI);                                                    \
+	UART_RZ_CONNECT_IRQ_EVENT(n, tei, TEI);                                                    \
+	UART_RZ_CONNECT_IRQ_EVENT(n, eri, ERI);                                                    \
 	UART_RZ_IRQ_CONNECT(n, eri, uart_rz_sci_eri_isr);                                          \
 	UART_RZ_IRQ_CONNECT(n, rxi, uart_rz_sci_rxi_isr);                                          \
 	UART_RZ_IRQ_CONNECT(n, txi, uart_rz_sci_txi_isr);                                          \
@@ -507,8 +516,9 @@ static int uart_rz_init(const struct device *dev)
 				.assertion_time = 1,                                               \
 				.negation_time = 1,                                                \
 			},                                                                         \
+		.p_reg = (void *)DT_REG_ADDR(SCI_NODE(n)),                                         \
 		COND_CODE_1(CONFIG_UART_RENESAS_RZ_SCI_B,                                          \
-			(.half_data_setting = {.enable = 0}),                                   \
+			(.half_data_setting = {.enable = 0}),                                      \
 			(.clock_source = SCI_UART_CLOCK_SOURCE_SCI0ASYNCCLK)) };                \
 	static uart_cfg_t g_uart##n##_cfg = {                                                      \
 		.channel = DT_PROP(SCI_NODE(n), channel),                                          \
@@ -527,7 +537,7 @@ static int uart_rz_init(const struct device *dev)
 			 .p_callback = uart_rz_sci_event_handler,                                  \
 			 .p_context = (void *)DEVICE_DT_INST_GET(n),)) };                          \
 	PINCTRL_DT_DEFINE(SCI_NODE(n));                                                            \
-	static struct uart_rz_sci_config uart_rz_config_##n = {                                    \
+	static const struct uart_rz_sci_config uart_rz_config_##n = {                              \
 		.pin_config = PINCTRL_DT_DEV_CONFIG_GET(SCI_NODE(n)),                              \
 		COND_CODE_1(CONFIG_UART_RENESAS_RZ_SCI_B,                      \
 			(.fsp_api = &g_uart_on_sci_b),                         \
@@ -554,7 +564,7 @@ static int uart_rz_init(const struct device *dev)
 			(UART_RZ_CONFIG_FUNC(n);))                        \
 		return uart_rz_init(dev);                                                          \
 	}                                                                                          \
-	DEVICE_DT_INST_DEFINE(n, &uart_rz_init_##n, NULL, &uart_rz_sci_data_##n,                   \
+	DEVICE_DT_INST_DEFINE(n, uart_rz_init_##n, NULL, &uart_rz_sci_data_##n,                    \
 			      &uart_rz_config_##n, PRE_KERNEL_1, CONFIG_SERIAL_INIT_PRIORITY,      \
 			      &uart_rz_sci_driver_api);
 

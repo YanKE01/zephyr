@@ -70,12 +70,12 @@ struct nsos_mid_sockaddr_in6 {
 
 #define UNIX_PATH_MAX 108
 struct nsos_mid_sockaddr_un {
-	sa_family_t sun_family;              /* AF_UNIX */
+	uint16_t    sun_family;              /* AF_UNIX */
 	char        sun_path[UNIX_PATH_MAX]; /* pathname */
 };
 
 struct nsos_mid_sockaddr_ll {
-	sa_family_t sll_family;   /**< Always AF_PACKET                   */
+	uint16_t    sll_family;   /**< Always AF_PACKET                   */
 	uint16_t    sll_protocol; /**< Physical-layer protocol            */
 	int         sll_ifindex;  /**< Interface number                   */
 	uint16_t    sll_hatype;   /**< ARP hardware type                  */
@@ -112,6 +112,12 @@ struct nsos_mid_addrinfo {
 	struct nsos_mid_addrinfo *ai_next;
 };
 
+struct nsos_mid_ifaddr {
+	uint16_t family;    /* NSOS_MID_AF_INET or NSOS_MID_AF_INET6 */
+	uint8_t addr[16];   /* Address in network byte order */
+	uint8_t prefix_len; /* Netmask prefix length in bits */
+};
+
 struct nsos_mid_iovec {
 	void  *iov_base;
 	size_t iov_len;
@@ -144,15 +150,20 @@ int nsos_adapt_bind(int fd, const struct nsos_mid_sockaddr *addr, size_t addrlen
 int nsos_adapt_connect(int fd, const struct nsos_mid_sockaddr *addr, size_t addrlen);
 int nsos_adapt_listen(int fd, int backlog);
 int nsos_adapt_accept(int fd, struct nsos_mid_sockaddr *addr, size_t *addrlen);
-int nsos_adapt_sendto(int fd, const void *buf, size_t len, int flags,
+int nsos_adapt_sendto(int fd, const void *buf, size_t len, int flags_mid,
 		      const struct nsos_mid_sockaddr *addr, size_t addrlen);
-int nsos_adapt_sendmsg(int fd, const struct nsos_mid_msghdr *msg_mid, int flags);
-int nsos_adapt_recvfrom(int fd, void *buf, size_t len, int flags,
+int nsos_adapt_sendmsg(int fd, const struct nsos_mid_msghdr *msg_mid, int flags_mid);
+int nsos_adapt_recvfrom(int fd, void *buf, size_t len, int flags_mid,
 			struct nsos_mid_sockaddr *addr, size_t *addrlen);
 int nsos_adapt_getsockopt(int fd, int level, int optname,
 			  void *optval, size_t *optlen);
 int nsos_adapt_setsockopt(int fd, int level, int optname,
 			  const void *optval, size_t optlen);
+int nsos_adapt_host_ifindex(const char *name);
+int nsos_adapt_getpeername(int fd, struct nsos_mid_sockaddr *addr,
+			   size_t *addrlen);
+int nsos_adapt_getsockname(int fd, struct nsos_mid_sockaddr *addr,
+			   size_t *addrlen);
 
 void nsos_adapt_poll_add(struct nsos_mid_pollfd *pollfd);
 void nsos_adapt_poll_remove(struct nsos_mid_pollfd *pollfd);
@@ -170,5 +181,7 @@ int nsos_adapt_getaddrinfo(const char *node, const char *service,
 			   struct nsos_mid_addrinfo **res,
 			   int *system_errno);
 void nsos_adapt_freeaddrinfo(struct nsos_mid_addrinfo *res);
+
+int nsos_adapt_get_ifaddrs(int ifindex, struct nsos_mid_ifaddr *addrs, size_t *count);
 
 #endif /* __DRIVERS_NET_NSOS_H__ */

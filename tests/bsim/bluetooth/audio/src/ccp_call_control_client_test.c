@@ -1,17 +1,20 @@
 /*
- * Copyright (c) 2024 Nordic Semiconductor ASA
+ * Copyright (c) 2024-2026 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <stddef.h>
+#include <string.h>
 
 #include <zephyr/autoconf.h>
+#include <zephyr/bluetooth/assigned_numbers.h>
 #include <zephyr/bluetooth/audio/ccp.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/hci_types.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util_macro.h>
+#include <zephyr/toolchain.h>
 
 #include "bstests.h"
 #include "common.h"
@@ -22,12 +25,21 @@ LOG_MODULE_REGISTER(ccp_call_control_client, CONFIG_LOG_DEFAULT_LEVEL);
 extern enum bst_result_t bst_result;
 
 CREATE_FLAG(flag_discovery_complete);
+CREATE_FLAG(flag_bearer_name_read);
+CREATE_FLAG(flag_bearer_uci_read);
+CREATE_FLAG(flag_bearer_tech_read);
+CREATE_FLAG(flag_bearer_uri_schemes_read);
 
-static struct bt_ccp_call_control_client *inst;
+static struct bt_ccp_call_control_client *call_control_client;
+static struct bt_ccp_call_control_client_bearers client_bearers;
 
 static void ccp_call_control_client_discover_cb(struct bt_ccp_call_control_client *client, int err,
-						struct bt_ccp_call_control_client_bearers *bearers)
+						struct bt_ccp_call_control_client_bearers *bearers,
+						void *user_data)
 {
+	ARG_UNUSED(client);
+	ARG_UNUSED(user_data);
+
 	if (err != 0) {
 		FAIL("Failed to discover TBS: %d\n", err);
 		return;
@@ -41,8 +53,80 @@ static void ccp_call_control_client_discover_cb(struct bt_ccp_call_control_clien
 		return;
 	}
 
+	memcpy(&client_bearers, bearers, sizeof(client_bearers));
+
 	SET_FLAG(flag_discovery_complete);
 }
+
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME)
+static void ccp_call_control_client_read_bearer_provider_name_cb(
+	struct bt_ccp_call_control_client_bearer *bearer, int err, const char *name,
+	void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (err != 0) {
+		FAIL("Failed to read bearer %p provider name: %d\n", (void *)bearer, err);
+		return;
+	}
+
+	LOG_INF("Bearer %p provider name: %s", (void *)bearer, name);
+
+	SET_FLAG(flag_bearer_name_read);
+}
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME */
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_UCI)
+static void
+ccp_call_control_client_read_bearer_uci_cb(struct bt_ccp_call_control_client_bearer *bearer,
+					   int err, const char *uci, void *user_data)
+{
+	if (err != 0) {
+		FAIL("Failed to read bearer %p UCI: %d\n", (void *)bearer, err);
+		return;
+	}
+
+	LOG_INF("Bearer %p UCI: %s", (void *)bearer, uci);
+
+	SET_FLAG(flag_bearer_uci_read);
+}
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_UCI */
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY)
+static void
+ccp_call_control_client_read_bearer_tech_cb(struct bt_ccp_call_control_client_bearer *bearer,
+					    int err, enum bt_bearer_tech tech, void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (err != 0) {
+		FAIL("Failed to read bearer %p technology: %d\n", (void *)bearer, err);
+		return;
+	}
+
+	LOG_INF("Bearer %p technology: %d", (void *)bearer, tech);
+
+	SET_FLAG(flag_bearer_tech_read);
+}
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY */
+
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST)
+static void
+ccp_call_control_client_read_bearer_uri_schemes_cb(struct bt_ccp_call_control_client_bearer *bearer,
+						   int err, const char *uri_schemes,
+						   void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	if (err != 0) {
+		FAIL("Failed to read bearer %p URI schemes supported list: %d\n", (void *)bearer,
+		     err);
+		return;
+	}
+
+	LOG_INF("Bearer %p URI schemes: %s", (void *)bearer, uri_schemes);
+
+	SET_FLAG(flag_bearer_uri_schemes_read);
+}
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST */
 
 static void discover_tbs(void)
 {
@@ -50,19 +134,132 @@ static void discover_tbs(void)
 
 	UNSET_FLAG(flag_discovery_complete);
 
-	err = bt_ccp_call_control_client_discover(default_conn, &inst);
-	if (err) {
-		FAIL("Failed to discover TBS: %d", err);
+	err = bt_ccp_call_control_client_discover(default_conn, &call_control_client);
+	if (err != 0) {
+		FAIL("Failed to discover TBS: %d\n", err);
 		return;
 	}
 
 	WAIT_FOR_FLAG(flag_discovery_complete);
 }
 
+static void read_bearer_name(struct bt_ccp_call_control_client_bearer *bearer)
+{
+	int err;
+
+	UNSET_FLAG(flag_bearer_name_read);
+
+	err = bt_ccp_call_control_client_read_bearer_provider_name(bearer);
+	if (err != 0) {
+		FAIL("Failed to read name of bearer %p: %d\n", bearer, err);
+		return;
+	}
+
+	WAIT_FOR_FLAG(flag_bearer_name_read);
+}
+
+static void read_bearer_uci(struct bt_ccp_call_control_client_bearer *bearer)
+{
+	int err;
+
+	UNSET_FLAG(flag_bearer_uci_read);
+
+	err = bt_ccp_call_control_client_read_bearer_uci(bearer);
+	if (err != 0) {
+		FAIL("Failed to read UCI of bearer %p: %d\n", bearer, err);
+		return;
+	}
+
+	WAIT_FOR_FLAG(flag_bearer_uci_read);
+}
+
+static void read_bearer_tech(struct bt_ccp_call_control_client_bearer *bearer)
+{
+	int err;
+
+	UNSET_FLAG(flag_bearer_tech_read);
+
+	err = bt_ccp_call_control_client_read_bearer_tech(bearer);
+	if (err != 0) {
+		FAIL("Failed to read technology of bearer %p: %d\n", bearer, err);
+		return;
+	}
+
+	WAIT_FOR_FLAG(flag_bearer_tech_read);
+}
+
+static void read_bearer_uri_schemes(struct bt_ccp_call_control_client_bearer *bearer)
+{
+	int err;
+
+	UNSET_FLAG(flag_bearer_uri_schemes_read);
+
+	err = bt_ccp_call_control_client_read_bearer_uri_schemes(bearer);
+	if (err != 0) {
+		FAIL("Failed to read URI supported schemes of bearer %p: %d", bearer, err);
+		return;
+	}
+
+	WAIT_FOR_FLAG(flag_bearer_uri_schemes_read);
+}
+
+static void read_bearer_values(void)
+{
+#if defined(CONFIG_BT_TBS_CLIENT_GTBS)
+	if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME)) {
+		read_bearer_name(client_bearers.gtbs_bearer);
+	}
+
+	if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_UCI)) {
+		read_bearer_uci(client_bearers.gtbs_bearer);
+	}
+
+	if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY)) {
+		read_bearer_tech(client_bearers.gtbs_bearer);
+	}
+
+	if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST)) {
+		read_bearer_uri_schemes(client_bearers.gtbs_bearer);
+	}
+#endif /* CONFIG_BT_TBS_CLIENT_GTBS */
+
+#if defined(CONFIG_BT_TBS_CLIENT_TBS)
+	for (size_t i = 0U; i < client_bearers.tbs_count; i++) {
+		if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME)) {
+			read_bearer_name(client_bearers.tbs_bearers[i]);
+		}
+
+		if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_UCI)) {
+			read_bearer_uci(client_bearers.tbs_bearers[i]);
+		}
+
+		if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY)) {
+			read_bearer_tech(client_bearers.tbs_bearers[i]);
+		}
+
+		if (IS_ENABLED(CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST)) {
+			read_bearer_uri_schemes(client_bearers.tbs_bearers[i]);
+		}
+	}
+#endif /* CONFIG_BT_TBS_CLIENT_TBS */
+}
+
 static void init(void)
 {
 	static struct bt_ccp_call_control_client_cb ccp_call_control_client_cbs = {
 		.discover = ccp_call_control_client_discover_cb,
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME)
+		.bearer_provider_name = ccp_call_control_client_read_bearer_provider_name_cb,
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_PROVIDER_NAME */
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_UCI)
+		.bearer_uci = ccp_call_control_client_read_bearer_uci_cb,
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_UCI */
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY)
+		.bearer_tech = ccp_call_control_client_read_bearer_tech_cb,
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_TECHNOLOGY */
+#if defined(CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST)
+		.bearer_uri_schemes = ccp_call_control_client_read_bearer_uri_schemes_cb,
+#endif /* CONFIG_BT_TBS_CLIENT_BEARER_URI_SCHEMES_SUPPORTED_LIST */
 	};
 	int err;
 
@@ -94,6 +291,8 @@ static void test_main(void)
 
 	discover_tbs();
 	discover_tbs(); /* test that we can discover twice */
+
+	read_bearer_values();
 
 	err = bt_conn_disconnect(default_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
 	if (err != 0) {

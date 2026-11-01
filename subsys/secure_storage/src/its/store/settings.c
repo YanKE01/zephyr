@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <zephyr/secure_storage/its/store.h>
-#include <zephyr/secure_storage/its/store/settings_get.h>
+#include <zephyr/secure_storage/its/store/settings.h>
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
@@ -21,7 +21,7 @@ static int init_settings_subsys(void)
 	}
 	return ret;
 }
-SYS_INIT(init_settings_subsys, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+SYS_INIT(init_settings_subsys, APPLICATION, CONFIG_SECURE_STORAGE_INIT_PRIORITY);
 
 BUILD_ASSERT(CONFIG_SECURE_STORAGE_ITS_STORE_SETTINGS_NAME_MAX_LEN <= SETTINGS_MAX_NAME_LEN);
 
@@ -38,9 +38,15 @@ void secure_storage_its_store_settings_get_name(
 {
 	int ret;
 
+#ifdef CONFIG_SECURE_STORAGE_64_BIT_UID
 	ret = snprintf(name, SECURE_STORAGE_ITS_STORE_SETTINGS_NAME_BUF_SIZE,
 		       CONFIG_SECURE_STORAGE_ITS_STORE_SETTINGS_PREFIX "%x/%llx",
 		       uid.caller_id, (unsigned long long)uid.uid);
+#else
+	ret = snprintf(name, SECURE_STORAGE_ITS_STORE_SETTINGS_NAME_BUF_SIZE,
+		       CONFIG_SECURE_STORAGE_ITS_STORE_SETTINGS_PREFIX "%x/%lx",
+		       uid.caller_id, (unsigned long)uid.uid);
+#endif
 	__ASSERT_NO_MSG(ret > 0 && ret < SECURE_STORAGE_ITS_STORE_SETTINGS_NAME_BUF_SIZE);
 }
 

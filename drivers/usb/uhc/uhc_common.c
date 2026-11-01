@@ -11,13 +11,12 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(uhc, CONFIG_UHC_DRIVER_LOG_LEVEL);
 
-K_MEM_SLAB_DEFINE_STATIC(uhc_xfer_pool, sizeof(struct uhc_transfer),
-			 CONFIG_UHC_XFER_COUNT, sizeof(void *));
+K_MEM_SLAB_DEFINE_STATIC_TYPE(uhc_xfer_pool, struct uhc_transfer,
+			      CONFIG_UHC_XFER_COUNT);
 
-NET_BUF_POOL_VAR_DEFINE(uhc_ep_pool,
+USB_BUF_POOL_VAR_DEFINE(uhc_ep_pool,
 			CONFIG_UHC_BUF_COUNT, CONFIG_UHC_BUF_POOL_SIZE,
 			0, NULL);
-
 
 int uhc_submit_event(const struct device *dev,
 		     const enum uhc_event_type type,
@@ -53,6 +52,7 @@ void uhc_xfer_return(const struct device *dev,
 	xfer->err = err;
 
 	data->event_cb(dev, &drv_evt);
+	(void)uhc_xfer_unref(xfer);
 }
 
 struct uhc_transfer *uhc_xfer_get_next(const struct device *dev)
@@ -98,9 +98,11 @@ struct uhc_transfer *uhc_xfer_alloc(const struct device *dev,
 				    void *const cb_priv)
 {
 	uint8_t ep_idx = USB_EP_GET_IDX(ep) & 0xF;
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	struct uhc_transfer *xfer = NULL;
 	uint16_t mps;
+	uint16_t interval;
+	uint8_t type;
 
 	api->lock(dev);
 
@@ -109,6 +111,8 @@ struct uhc_transfer *uhc_xfer_alloc(const struct device *dev,
 	}
 
 	if (ep_idx == 0) {
+		interval = 0;
+		type = USB_EP_TYPE_CONTROL;
 		mps = udev->dev_desc.bMaxPacketSize0;
 	} else {
 		struct usb_ep_descriptor *ep_desc;
@@ -125,6 +129,8 @@ struct uhc_transfer *uhc_xfer_alloc(const struct device *dev,
 		}
 
 		mps = ep_desc->wMaxPacketSize;
+		interval = ep_desc->bInterval;
+		type = ep_desc->bmAttributes & USB_EP_TRANSFER_TYPE_MASK;
 	}
 
 	LOG_DBG("Allocate xfer, ep 0x%02x mps %u cb %p", ep, mps, cb);
@@ -135,8 +141,11 @@ struct uhc_transfer *uhc_xfer_alloc(const struct device *dev,
 	}
 
 	memset(xfer, 0, sizeof(struct uhc_transfer));
+	sys_ref_init(&xfer->ref);
 	xfer->ep = ep;
 	xfer->mps = mps;
+	xfer->interval = interval;
+	xfer->type = type;
 	xfer->udev = udev;
 	xfer->cb = cb;
 	xfer->priv = cb_priv;
@@ -173,32 +182,37 @@ struct uhc_transfer *uhc_xfer_alloc_with_buf(const struct device *dev,
 	return xfer;
 }
 
-int uhc_xfer_free(const struct device *dev, struct uhc_transfer *const xfer)
+static void uhc_xfer_release(struct sys_ref *const ref)
 {
-	const struct uhc_api *api = dev->api;
-	int ret = 0;
-
-	api->lock(dev);
-
-	if (xfer->queued) {
-		ret = -EBUSY;
-		LOG_ERR("Transfer is still queued");
-		goto xfer_free_error;
-	}
+	struct uhc_transfer *const xfer = CONTAINER_OF(ref, struct uhc_transfer, ref);
 
 	k_mem_slab_free(&uhc_xfer_pool, (void *)xfer);
+}
 
-xfer_free_error:
-	api->unlock(dev);
+void uhc_xfer_ref(struct uhc_transfer *const xfer)
+{
+	sys_ref_get(&xfer->ref);
+}
 
-	return ret;
+bool uhc_xfer_unref(struct uhc_transfer *const xfer)
+{
+	return sys_ref_put(&xfer->ref, uhc_xfer_release);
+}
+
+int uhc_xfer_free(const struct device *dev, struct uhc_transfer *const xfer)
+{
+	ARG_UNUSED(dev);
+
+	uhc_xfer_unref(xfer);
+
+	return 0;
 }
 
 int uhc_xfer_buf_add(const struct device *dev,
 		     struct uhc_transfer *const xfer,
 		     struct net_buf *buf)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	int ret = 0;
 
 	api->lock(dev);
@@ -215,7 +229,7 @@ int uhc_xfer_buf_add(const struct device *dev,
 
 int uhc_ep_enqueue(const struct device *dev, struct uhc_transfer *const xfer)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	int ret;
 
 	api->lock(dev);
@@ -226,9 +240,11 @@ int uhc_ep_enqueue(const struct device *dev, struct uhc_transfer *const xfer)
 	}
 
 	xfer->queued = 1;
+	uhc_xfer_ref(xfer);
 	ret = api->ep_enqueue(dev, xfer);
 	if (ret) {
 		xfer->queued = 0;
+		uhc_xfer_unref(xfer);
 	}
 
 
@@ -240,7 +256,7 @@ ep_enqueue_error:
 
 int uhc_ep_dequeue(const struct device *dev, struct uhc_transfer *const xfer)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	int ret;
 
 	api->lock(dev);
@@ -261,7 +277,7 @@ ep_dequeue_error:
 
 int uhc_enable(const struct device *dev)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	struct uhc_data *data = dev->data;
 	int ret;
 
@@ -290,7 +306,7 @@ uhc_enable_error:
 
 int uhc_disable(const struct device *dev)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	struct uhc_data *data = dev->data;
 	int ret;
 
@@ -313,7 +329,7 @@ uhc_disable_error:
 int uhc_init(const struct device *dev,
 	     uhc_event_cb_t event_cb, const void *const event_ctx)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	struct uhc_data *data = dev->data;
 	int ret;
 
@@ -346,7 +362,7 @@ uhc_init_error:
 
 int uhc_shutdown(const struct device *dev)
 {
-	const struct uhc_api *api = dev->api;
+	const struct uhc_driver_api *api = DEVICE_API_GET(uhc, dev);
 	struct uhc_data *data = dev->data;
 	int ret;
 

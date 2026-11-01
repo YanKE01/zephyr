@@ -17,86 +17,37 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_core.h>
 #include <zephyr/net_buf.h>
+#include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
-#include <zephyr/sys_clock.h>
+#include <zephyr/toolchain.h>
 
 #include "babblekit/flags.h"
 #include "babblekit/sync.h"
 #include "babblekit/testcase.h"
 #include "bstests.h"
+#include "common.h"
+#include "iso_tx.h"
 
 LOG_MODULE_REGISTER(bis_broadcaster, LOG_LEVEL_INF);
 
-#define LATENCY_MS      10U                 /* 10ms */
-#define SDU_INTERVAL_US 10U * USEC_PER_MSEC /* 10 ms */
+#define LATENCY_MS 10U /* 10ms */
 
 extern enum bst_result_t bst_result;
 static struct bt_iso_chan iso_chans[CONFIG_BT_ISO_MAX_CHAN];
 static struct bt_iso_chan *default_chan = &iso_chans[0];
-static uint16_t seq_num;
-NET_BUF_POOL_FIXED_DEFINE(tx_pool, CONFIG_BT_ISO_TX_BUF_COUNT,
-			  BT_ISO_SDU_BUF_SIZE(CONFIG_BT_ISO_TX_MTU),
-			  CONFIG_BT_CONN_TX_USER_DATA_SIZE, NULL);
+
+static struct bt_iso_chan_io_qos iso_tx = {
+	.sdu = 0U,
+	.phy = BT_GAP_LE_PHY_2M,
+	.rtn = 1,
+};
+
+static struct bt_iso_chan_qos iso_qos = {
+	.tx = &iso_tx,
+	.rx = NULL,
+};
 
 DEFINE_FLAG_STATIC(flag_iso_connected);
-
-static void send_data_cb(struct k_work *work);
-K_WORK_DELAYABLE_DEFINE(iso_send_work, send_data_cb);
-
-static void send_data(struct bt_iso_chan *chan)
-{
-	static uint8_t buf_data[CONFIG_BT_ISO_TX_MTU];
-	static size_t len_to_send = 1U;
-	static bool data_initialized;
-	struct net_buf *buf;
-	int ret;
-
-	if (!IS_FLAG_SET(flag_iso_connected)) {
-		/* TX has been aborted */
-		return;
-	}
-
-	if (!data_initialized) {
-		for (int i = 0; i < ARRAY_SIZE(buf_data); i++) {
-			buf_data[i] = (uint8_t)i;
-		}
-
-		data_initialized = true;
-	}
-
-	buf = net_buf_alloc(&tx_pool, K_NO_WAIT);
-	TEST_ASSERT(buf != NULL, "Failed to allocate buffer");
-
-	net_buf_reserve(buf, BT_ISO_CHAN_SEND_RESERVE);
-
-	net_buf_add_mem(buf, buf_data, len_to_send);
-
-	ret = bt_iso_chan_send(default_chan, buf, seq_num++);
-	if (ret < 0) {
-		LOG_DBG("Failed to send ISO data: %d", ret);
-		net_buf_unref(buf);
-
-		/* Reschedule for next interval */
-		k_work_reschedule(&iso_send_work, K_USEC(SDU_INTERVAL_US));
-
-		return;
-	}
-
-	len_to_send++;
-	if (len_to_send > ARRAY_SIZE(buf_data)) {
-		len_to_send = 1;
-	}
-}
-
-static void send_data_cb(struct k_work *work)
-{
-	const uint16_t tx_pool_cnt = tx_pool.uninit_count;
-
-	/* Send/enqueue as many as we can */
-	for (uint16_t i = 0U; i < tx_pool_cnt; i++) {
-		send_data(default_chan);
-	}
-}
 
 static void iso_connected_cb(struct bt_iso_chan *chan)
 {
@@ -143,15 +94,22 @@ static void iso_connected_cb(struct bt_iso_chan *chan)
 		    "Invalid BN 0x%02x", info.broadcaster.bn);
 	TEST_ASSERT(IN_RANGE(info.broadcaster.irc, BT_ISO_IRC_MIN, BT_ISO_IRC_MAX),
 		    "Invalid IRC 0x%02x", info.broadcaster.irc);
-
-	if (chan == default_chan) {
-		seq_num = 0U;
-
-		SET_FLAG(flag_iso_connected);
-	}
+	TEST_ASSERT(info.broadcaster.big_handle != 0xFF /* invalid BIG handle */,
+		    "Invalid BIG handle 0x%02x", info.broadcaster.big_handle);
+	TEST_ASSERT(
+		IN_RANGE(info.broadcaster.bis_number, BT_ISO_BIS_INDEX_MIN, BT_ISO_BIS_INDEX_MAX),
+		"Invalid BIS number 0x%02x", info.broadcaster.bis_number);
 
 	err = bt_iso_setup_data_path(chan, BT_HCI_DATAPATH_DIR_HOST_TO_CTLR, &hci_path);
 	TEST_ASSERT(err == 0, "Failed to set ISO data path: %d", err);
+
+	if (chan == default_chan) {
+		/* Register for TX to start sending */
+		err = iso_tx_register(chan);
+		TEST_ASSERT(err == 0, "Failed to register chan for TX: %d", err);
+
+		SET_FLAG(flag_iso_connected);
+	}
 }
 
 static void iso_disconnected_cb(struct bt_iso_chan *chan, uint8_t reason)
@@ -159,20 +117,13 @@ static void iso_disconnected_cb(struct bt_iso_chan *chan, uint8_t reason)
 	LOG_INF("ISO Channel %p disconnected (reason 0x%02x)", chan, reason);
 
 	if (chan == default_chan) {
-		k_work_cancel_delayable(&iso_send_work);
+		int err;
+
+		err = iso_tx_unregister(chan);
+		TEST_ASSERT(err == 0, "Failed to unregister chan for TX: %d", err);
 
 		UNSET_FLAG(flag_iso_connected);
 	}
-}
-
-static void sdu_sent_cb(struct bt_iso_chan *chan)
-{
-	if (!IS_FLAG_SET(flag_iso_connected)) {
-		/* TX has been aborted */
-		return;
-	}
-
-	send_data(chan);
 }
 
 static void init(void)
@@ -180,21 +131,25 @@ static void init(void)
 	static struct bt_iso_chan_ops iso_ops = {
 		.disconnected = iso_disconnected_cb,
 		.connected = iso_connected_cb,
-		.sent = sdu_sent_cb,
+		.sent = iso_tx_sent_cb,
+		.send_failed = iso_tx_send_failed_cb,
 	};
-	static struct bt_iso_chan_io_qos iso_tx = {
-		.sdu = CONFIG_BT_ISO_TX_MTU,
-		.phy = BT_GAP_LE_PHY_2M,
-		.rtn = 1,
-	};
-	static struct bt_iso_chan_qos iso_qos = {
-		.tx = &iso_tx,
-		.rx = NULL,
-	};
+	struct bt_le_local_features local_features;
 	int err;
 
 	err = bt_enable(NULL);
 	TEST_ASSERT(err == 0, "Bluetooth enable failed: %d", err);
+
+	err = bt_le_get_local_features(&local_features);
+	TEST_ASSERT(err == 0, "Getting local features failed: %d", err);
+
+	TEST_ASSERT(local_features.iso_mtu >= BT_HCI_ISO_SDU_HDR_SIZE + 1,
+		    "Invalid ISO MTU: %u < %d", local_features.iso_mtu,
+		    BT_HCI_ISO_SDU_HDR_SIZE + 1);
+
+	/* Default the SDU size to the maximum HCI ISO buffer size - SDU header */
+	iso_qos.tx->sdu =
+		MIN(local_features.iso_mtu - BT_HCI_ISO_SDU_HDR_SIZE, ARRAY_SIZE(mock_iso_data));
 
 	for (size_t i = 0U; i < ARRAY_SIZE(iso_chans); i++) {
 		iso_chans[i].ops = &iso_ops;
@@ -202,6 +157,8 @@ static void init(void)
 	}
 
 	bk_sync_init();
+
+	iso_tx_init();
 }
 
 static void create_ext_adv(struct bt_le_ext_adv **adv)
@@ -230,11 +187,6 @@ static void start_ext_adv(struct bt_le_ext_adv *adv)
 	/* Start extended advertising */
 	err = bt_le_ext_adv_start(adv, BT_LE_EXT_ADV_START_DEFAULT);
 	TEST_ASSERT(err == 0, "Failed to start extended advertising: %d", err);
-
-	/* FIXME: Temporary workaround to get around an assert in the controller
-	 * Open issue: https://github.com/zephyrproject-rtos/zephyr/issues/72852
-	 */
-	k_sleep(K_MSEC(100));
 
 	/* Enable Periodic Advertising */
 	err = bt_le_per_adv_start(adv);
@@ -265,18 +217,6 @@ static void create_big(struct bt_le_ext_adv *adv, size_t cnt, struct bt_iso_big 
 	TEST_ASSERT(err == 0, "Failed to create BIG: %d", err);
 
 	WAIT_FOR_FLAG(flag_iso_connected);
-}
-
-static void start_tx(void)
-{
-	const uint16_t tx_pool_cnt = tx_pool.uninit_count;
-
-	LOG_INF("Starting TX");
-
-	/* Send/enqueue as many as we can */
-	for (uint16_t i = 0U; i < tx_pool_cnt; i++) {
-		send_data(default_chan);
-	}
 }
 
 static void terminate_big(struct bt_iso_big *big)
@@ -315,7 +255,6 @@ static void test_main(void)
 	create_ext_adv(&adv);
 	create_big(adv, 1U, &big);
 	start_ext_adv(adv);
-	start_tx();
 
 	/* Wait for receiver to tell us to terminate */
 	bk_sync_wait();
@@ -348,7 +287,6 @@ static void test_main_disable(void)
 	create_ext_adv(&adv);
 	create_big(adv, ARRAY_SIZE(iso_chans), &big);
 	start_ext_adv(adv);
-	start_tx();
 
 	/* Wait for receiver to tell us to terminate */
 	bk_sync_wait();
@@ -357,6 +295,47 @@ static void test_main_disable(void)
 	big = NULL;
 
 	TEST_PASS("Disable test passed");
+}
+
+static void test_main_fragment(void)
+{
+	struct bt_le_ext_adv *adv;
+	struct bt_iso_big *big;
+	uint32_t new_sdu_size;
+
+	init();
+
+	/* Multiple the SDU by 3 so that we always fragment over HCI with a BT_ISO_START,
+	 * BT_ISO_CONT and BT_ISO_END
+	 */
+	new_sdu_size = iso_qos.tx->sdu * 3U;
+
+	if (new_sdu_size > BT_ISO_MAX_SDU) {
+		TEST_FAIL("Not possible to use SDU size of 0x%08X (default SDU is 0x%04X)",
+			  new_sdu_size, iso_qos.tx->sdu);
+		return;
+	}
+
+	if (new_sdu_size > ARRAY_SIZE(mock_iso_data)) {
+		TEST_FAIL("New SDU size (%u) needs to be smaller than the mock_iso_data size %zu",
+			  new_sdu_size, ARRAY_SIZE(mock_iso_data));
+		return;
+	}
+
+	iso_qos.tx->sdu = (uint16_t)new_sdu_size;
+
+	/* Create advertising set and BIG and start it and starting TXing */
+	create_ext_adv(&adv);
+	create_big(adv, 1U, &big);
+	start_ext_adv(adv);
+
+	/* Wait for receiver to tell us to terminate */
+	bk_sync_wait();
+
+	terminate_big(big);
+	big = NULL;
+
+	TEST_PASS("Test passed");
 }
 
 static const struct bst_test_instance test_def[] = {
@@ -369,6 +348,11 @@ static const struct bst_test_instance test_def[] = {
 		.test_id = "broadcaster_disable",
 		.test_descr = "BIS broadcaster that tests bt_disable for ISO",
 		.test_main_f = test_main_disable,
+	},
+	{
+		.test_id = "broadcaster_fragment",
+		.test_descr = "BIS broadcaster that tests fragmentation over HCI for ISO",
+		.test_main_f = test_main_fragment,
 	},
 	BSTEST_END_MARKER,
 };

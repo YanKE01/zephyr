@@ -97,7 +97,7 @@ Building
 ========
 
 #. Build :zephyr:code-sample:`hello_world` application as you would normally do
-   (see :`Zephyr Getting Started Guide`_):.
+   (see :ref:`Zephyr Getting Started Guide <getting_started>`):.
 
    .. zephyr-app-commands::
       :board: it8xxx2_evb
@@ -116,7 +116,7 @@ Use the winflash tool to program a zephyr application
 to the it8xxx2 board flash.
 
 #. Open winflash tool and make sure the order you open the switch is right.
-   Fisrt, turn on the Download board switch.
+   First, turn on the Download board switch.
    Second, turn on the it8xxx2_evb board switch.
    Then, configure your winflash tool like below.
 
@@ -127,7 +127,7 @@ to the it8xxx2 board flash.
 
 #. Using winflash tool flash zephyr.bin into your ITE board.
    First, click ``Load`` button and select your zephyr.bin file.
-   Second, click ``run`` to flash the iamge into board.
+   Second, click ``run`` to flash the image into board.
 
     .. figure:: WinFlashTool_P3.jpg
           :align: center
@@ -188,4 +188,3 @@ References
 .. target-notes::
 
 .. _ITE's website: https://www.ite.com.tw/en/product/cate2/IT81202
-.. _Zephyr Getting Started Guide: https://docs.zephyrproject.org/latest/getting_started/index.html

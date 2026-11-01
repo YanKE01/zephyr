@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * @file
+ * @brief Internal generic linked-list macro generators shared by slist/dlist/sflist.
+ */
+
 #ifndef ZEPHYR_INCLUDE_SYS_LIST_GEN_H_
 #define ZEPHYR_INCLUDE_SYS_LIST_GEN_H_
 
@@ -261,10 +266,10 @@
 	}
 
 #define Z_GENLIST_LEN(__lname, __nname)                                                            \
-	static inline size_t sys_##__lname##_len(const sys_##__lname##_t * list)                   \
+	static inline size_t sys_##__lname##_len(const sys_##__lname##_t *list)                    \
 	{                                                                                          \
 		size_t len = 0;                                                                    \
-		static sys_##__nname##_t * node;                                                   \
+		sys_##__nname##_t *node;                                                           \
 		Z_GENLIST_FOR_EACH_NODE(__lname, list, node) {                                     \
 			len++;                                                                     \
 		}                                                                                  \

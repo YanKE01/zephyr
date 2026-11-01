@@ -7,7 +7,6 @@ menuconfig WIFI_AIROC
 	depends on DT_HAS_INFINEON_AIROC_WIFI_ENABLED
 	default y
 	select THREAD_CUSTOM_DATA
-	select WIFI_OFFLOAD
 	select NET_L2_ETHERNET
 	select NET_L2_WIFI_MGMT
 	select GPIO
@@ -52,12 +51,24 @@ config AIROC_WLAN_MFG_FIRMWARE
 	  Enable WLAN Manufacturing Firmware.
 
 config WHD_WIFI_COUNTRY
-	string "Wifi couuntry option"
+	string "Wifi country option"
 	default "WHD_COUNTRY_UNITED_STATES" if CYW55572 || CYW55500
 	default "WHD_COUNTRY_AUSTRALIA"
 	help
 	  Sets the country, this will operate in for wifi initialization
 	  parameters. See the wifi-host-driver's whd_country_code_t for legal options.
+
+config WHD_DISABLE_SDIO_PULLUP_DURING_SPI_SLEEP
+	bool "Disable SDIO pullups during SPI sleep"
+	help
+	  Clears SDIO pullups when the SPI bus is configured for sleep.
+	  By default, this option is set to n, so SDIO pullups will be enabled.
+
+config IFX_WIFI_SOFTAP_SUPPORT
+	bool
+	default n
+	help
+	  Enable WiFi SoftAP support in the driver
 
 config AIROC_WIFI_CUSTOM
 	bool "Custom CYW43xx device/module"
@@ -114,7 +125,7 @@ config CYW43439
 
 config CYW55500
 	bool "CYW55500"
-	select AIROC_WIFI6
+	select AIROC_WIFI6 if WIFI
 	help
 	  Enable Infineon AIROC CYW55500 Wi-Fi connectivity,
 	  More information about CYW55500 device you can find on
@@ -238,6 +249,22 @@ config CYW955513SDM2WLIPA_SM
 	bool "CYW955513SDM2WLIPA_SM"
 	help
 	  Infineon CYW955513SDM2WLIPA (SM) module
+
+config CYW55513IUBG_SM
+	bool "CYW55513IUBG_SM"
+	help
+	  Infineon CYW55513IUBG (SM) module
+
+config CYW55513_MURATA_2FY_SM
+	bool "CYW55513 MURATA-2FY (SM)"
+	help
+	  Infineon CYW55513 in Murata LBEE5HY2FY (Type 2FY) module (SM)
+
+config CYW55513_MOD_PSE84_SOM
+	bool "CYW55513_MOD_PSE84_SOM"
+	help
+	  Infineon CYW55513_MOD_PSE84_SOM (SM) module
+
 endchoice
 
 choice CYW55572_MODULE

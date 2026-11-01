@@ -4,6 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * @file
+ * @brief Header file for the MQTT log backend.
+ * @ingroup log_backend_mqtt
+ */
+
 #ifndef ZEPHYR_INCLUDE_LOGGING_LOG_BACKEND_MQTT_H_
 #define ZEPHYR_INCLUDE_LOGGING_LOG_BACKEND_MQTT_H_
 
@@ -14,9 +20,9 @@ extern "C" {
 #endif
 
 /**
- * @brief MQTT log backend API
- * @defgroup log_backend_mqtt MQTT log backend API
+ * @defgroup log_backend_mqtt MQTT log backend
  * @ingroup log_backend
+ * @brief Logging backend that publishes messages to an MQTT broker.
  * @{
  */
 

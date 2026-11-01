@@ -1,11 +1,11 @@
 #
-# Copyright (c) 2018, NXP
+# Copyright 2018, 2025 NXP
 #
 # SPDX-License-Identifier: Apache-2.0
 #
 
 identifier: mimxrt1060_evk/mimxrt1062/hyperflash
-name: NXP MIMXRT1060-EVK-HYPERFLASH
+name: NXP MIMXRT1060-EVK (HyperFlash)
 type: mcu
 arch: arm
 toolchain:
@@ -25,10 +25,12 @@ supported:
   - gpio
   - i2c
   - netif:eth
+  - ptp_clock
   - pwm
   - sdhc
   - spi
   - usb_device
   - usbd
   - watchdog
+  - rtc
 vendor: nxp

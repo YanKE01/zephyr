@@ -6,7 +6,6 @@ import os
 import re
 import tempfile
 from copy import deepcopy
-from typing import Optional
 
 import pytest
 
@@ -107,9 +106,9 @@ def temporary_chdir(dirname):
         os.chdir(here)
 
 @contextlib.contextmanager
-def dtlib_raises(err: Optional[str] = None,
-                 err_endswith: Optional[str] = None,
-                 err_matches: Optional[str] = None):
+def dtlib_raises(err: str | None = None,
+                 err_endswith: str | None = None,
+                 err_matches: str | None = None):
     '''A context manager for running a block of code that should raise
     DTError. Exactly one of the arguments 'err', 'err_endswith',
     and 'err_matches' must be given. The semantics are:
@@ -598,7 +597,7 @@ def test_unit_addr():
 / {
 	no-unit-addr {
 	};
-	unit-addr@ABC {
+	unit-addr@abc {
 	};
 	unit-addr-non-numeric@foo-bar {
 	};
@@ -606,7 +605,7 @@ def test_unit_addr():
 """)
 
     verify_unit_addr("/no-unit-addr", "")
-    verify_unit_addr("/unit-addr@ABC", "ABC")
+    verify_unit_addr("/unit-addr@ABC", "abc")
     verify_unit_addr("/unit-addr-non-numeric@foo-bar", "foo-bar")
 
 def test_node_path_references():
@@ -665,6 +664,74 @@ def test_node_path_references():
 };
 """,
 "/sub: component 'missing' in path '/sub/missing' does not exist")
+
+    verify_parse("""
+/dts-v1/;
+
+/ {
+	sub {
+		x = &{/sub/unambiguous_path};
+		unambiguous_path@10 {};
+	};
+};
+""",
+"""
+/dts-v1/;
+
+/ {
+	sub {
+		x = &{/sub/unambiguous_path};
+		unambiguous_path@10 {
+		};
+	};
+};
+""")
+
+    verify_error("""
+/dts-v1/;
+
+/ {
+	sub {
+		x = &{/sub/ambiguous_path};
+		ambiguous_path@10 {
+		};
+		ambiguous_path@20 {
+		};
+	};
+};
+""",
+"/sub: component 'ambiguous_path' in path '/sub/ambiguous_path' does not exist")
+
+    verify_parse("""
+/dts-v1/;
+
+/ {
+	sub {
+		a = &{/sub/case_insesitive1@ABC};
+		b = &{/sub/case_insesitive1@abc};
+		c = &{/sub/case_insesitive2@ABC};
+		d = &{/sub/case_insesitive2@abc};
+		case_insesitive1@abc {};
+		case_insesitive2@ABC {};
+	};
+};
+""",
+"""
+/dts-v1/;
+
+/ {
+	sub {
+		a = &{/sub/case_insesitive1@ABC};
+		b = &{/sub/case_insesitive1@abc};
+		c = &{/sub/case_insesitive2@ABC};
+		d = &{/sub/case_insesitive2@abc};
+		case_insesitive1@abc {
+		};
+		case_insesitive2@abc {
+		};
+	};
+};
+""")
 
 def test_phandles():
     '''Various tests related to phandles.'''
@@ -1669,6 +1736,10 @@ def test_prop_type_casting():
 	zero = < >;
 	two_u = < 1 2 >;
 	two_s = < 0xFFFFFFFF 0xFFFFFFFE >;
+	neg_lit = < (-1) >;
+	neg_expr = < (4 - 6) >;
+	hex_max = < 0xFFFFFFFF >;
+	mixed = < (-100) 0xFFFFFFFF 0 >;
 	three_u = < 1 2 3 >;
 	three_u_split = < 1 >, < 2 >, < 3 >;
 	empty_string = "";
@@ -1708,6 +1779,16 @@ def test_prop_type_casting():
     verify_to_num("u", True, 1)
     verify_to_num("s", False, 0xFFFFFFFF)
     verify_to_num("s", True, -1)
+
+    # signed_aware=True: negative literal -> signed, hex/positive -> unsigned
+    assert dt.root.props["neg_lit"].to_num(signed_aware=True) == -1, \
+        "neg_lit: negative literal should decode to -1 with signed_aware"
+    assert dt.root.props["neg_expr"].to_num(signed_aware=True) == -2, \
+        "neg_expr: negative expression result should decode to -2 with signed_aware"
+    assert dt.root.props["hex_max"].to_num(signed_aware=True) == 0xFFFFFFFF, \
+        "hex_max: 0xFFFFFFFF should stay unsigned with signed_aware"
+    assert dt.root.props["u"].to_num(signed_aware=True) == 1, \
+        "u: positive literal should stay unsigned with signed_aware"
 
     verify_to_num_error_matches(
         "two_u",
@@ -1750,6 +1831,16 @@ def test_prop_type_casting():
     verify_to_nums("two_s", True, [-1, -2])
     verify_to_nums("three_u", False, [1, 2, 3])
     verify_to_nums("three_u_split", False, [1, 2, 3])
+
+    # signed_aware=True: only cells written as negative literals are signed
+    assert dt.root.props["neg_lit"].to_nums(signed_aware=True) == [-1], \
+        "neg_lit: negative literal should decode to [-1] with signed_aware"
+    assert dt.root.props["neg_expr"].to_nums(signed_aware=True) == [-2], \
+        "neg_expr: negative expression result should decode to [-2] with signed_aware"
+    assert dt.root.props["hex_max"].to_nums(signed_aware=True) == [0xFFFFFFFF], \
+        "hex_max: 0xFFFFFFFF should stay unsigned with signed_aware"
+    assert dt.root.props["mixed"].to_nums(signed_aware=True) == [-100, 0xFFFFFFFF, 0], \
+        "mixed: only negative-literal cells should be signed with signed_aware"
 
     verify_to_nums_error_matches(
         "empty",
@@ -1934,6 +2025,36 @@ def test_prop_type_casting():
     verify_raw_to_num_error(dtlib.to_nums, 0, 0, "'0' has type 'int', expected 'bytes'")
     verify_raw_to_num_error(dtlib.to_nums, b"", 0, "'length' must be greater than zero, was 0")
     verify_raw_to_num_error(dtlib.to_nums, b"foooo", 2, "b'foooo' is 5 bytes long, expected a length that's a multiple of 2")
+
+def test_signed_cell_offsets_cleared_on_override():
+    '''
+    Overriding a property must clear _signed_cell_offsets so stale signed
+    offsets from the previous assignment do not corrupt the new value.
+    '''
+
+    dt = parse(r"""
+/dts-v1/;
+
+/ {
+	a = < (-1) >;
+	a = < 0xFFFFFFFF >;
+
+	b = < (-1) (-2) >;
+	b = < 1 2 >;
+};
+""")
+
+    # After override with an unsigned literal, to_num(signed_aware=True)
+    # must treat the cell as unsigned (0xFFFFFFFF), not signed (-1).
+    val_a = dt.root.props['a'].to_num(signed_aware=True)
+    assert val_a == 0xFFFFFFFF, \
+        f"stale _signed_cell_offsets: expected 0xFFFFFFFF, got {val_a}"
+
+    # After override with unsigned literals, to_nums(signed_aware=True)
+    # must return the unsigned values.
+    vals_b = dt.root.props['b'].to_nums(signed_aware=True)
+    assert vals_b == [1, 2], \
+        f"stale _signed_cell_offsets: expected [1, 2], got {vals_b}"
 
 def test_duplicate_labels():
     '''
@@ -2166,9 +2287,9 @@ def test_reprs():
 
     assert re.fullmatch(r"DT\(filename='.*', include_path=.'foo', 'bar'.\)",
                         repr(dt))
-    assert re.fullmatch("<Property 'x' at '/' in '.*'>",
+    assert re.fullmatch("<Property 'x' on / in .*:5>",
                         repr(dt.root.props["x"]))
-    assert re.fullmatch("<Node /sub in '.*'>",
+    assert re.fullmatch("<Node /sub in .*:6>",
                         repr(dt.root.nodes["sub"]))
 
     dt = parse(dts, include_path=iter(("foo", "bar")))
@@ -2183,7 +2304,7 @@ def test_names():
 /dts-v1/;
 
 / {
-	// A leading \ is accepted but ignored in node/propert names
+	// A leading \ is accepted but ignored in node/property names
 	\aA0,._+*#?- = &_, &{/aA0,._+@-};
 
 	// Names that overlap with operators and integer literals

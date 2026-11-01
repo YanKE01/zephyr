@@ -12,11 +12,13 @@ flash: 1024
 ram: 256
 supported:
   - adc
+  - dac
   - dma
   - flash
   - gpio
   - i2c
   - netif:eth
+  - ptp_clock
   - pwm
   - rtc
   - spi

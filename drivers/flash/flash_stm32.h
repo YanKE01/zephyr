@@ -41,12 +41,12 @@ struct flash_stm32_priv {
 #endif
 
 #if defined(CONFIG_SOC_SERIES_STM32H5X)
-/* FLASH register names differ for this serie */
+/* FLASH register names differ for this series */
 #define FLASH_NSSR_BSY FLASH_SR_BSY
 #define OPTR OPTCR
 #endif /* CONFIG_SOC_SERIES_STM32H5X */
 
-/* Register mapping for the stm32H7RS serie (single bank)*/
+/* Register mapping for the stm32H7RS series (single bank)*/
 #if defined(CONFIG_SOC_SERIES_STM32H7RSX)
 #define FLASH_NB_32BITWORD_IN_FLASHWORD 4 /* 128 bits */
 #define CR1 CR
@@ -61,6 +61,11 @@ struct flash_stm32_priv {
 #if defined(FLASH_NSSR_NSBSY) || defined(FLASH_NSSR_BSY) /* For mcu w. TZ in non-secure mode */
 #define FLASH_SECURITY_NS
 #define FLASH_STM32_SR		NSSR
+#if defined(CONFIG_SOC_SERIES_STM32H5X)
+#define FLASH_STM32_CCR		NSCCR
+#else /* CONFIG_SOC_SERIES_STM32H5X */
+#define FLASH_STM32_CCR		FLASH_STM32_SR
+#endif /* CONFIG_SOC_SERIES_STM32H5X */
 #elif defined(FLASH_SECSR_SECBSY)	/* For mcu w. TZ  in secured mode */
 #error Flash is not supported in secure mode
 #define FLASH_SECURITY_SEC
@@ -69,6 +74,11 @@ struct flash_stm32_priv {
 					 *  secured or non-secured mode
 					 */
 #define FLASH_STM32_SR		SR
+#if defined(CONFIG_SOC_SERIES_STM32C5X)
+#define FLASH_STM32_CCR		CCR
+#else /* CONFIG_SOC_SERIES_STM32C5X */
+#define FLASH_STM32_CCR		FLASH_STM32_SR
+#endif /* CONFIG_SOC_SERIES_STM32C5X */
 #endif
 
 #define FLASH_STM32_PRIV(dev) ((struct flash_stm32_priv *)((dev)->data))
@@ -157,6 +167,8 @@ struct flash_stm32_priv {
 #else
 #define FLASH_STM32_SR_BUSY	(FLASH_SR_BSY1)
 #endif /* defined(FLASH_FLAG_BSY2) */
+#elif defined(CONFIG_STM32_HAL2)
+#define FLASH_STM32_SR_BUSY	LL_FLASH_FLAG_BSY
 #else
 #define FLASH_STM32_SR_BUSY	(FLASH_FLAG_BSY)
 #endif
@@ -254,6 +266,9 @@ struct flash_stm32_priv {
 
 #endif /* !defined(CONFIG_SOC_SERIES_STM32G0X) */
 
+#if defined(CONFIG_SOC_SERIES_STM32C5X)
+#define FLASH_STM32_SR_ERRORS	LL_FLASH_FLAG_ERRORS_ALL
+#else /* CONFIG_SOC_SERIES_STM32C5X */
 #define FLASH_STM32_SR_ERRORS  (FLASH_STM32_SR_OPERR |			\
 				FLASH_STM32_SR_PGERR |			\
 				FLASH_STM32_SR_PROGERR |		\
@@ -265,6 +280,7 @@ struct flash_stm32_priv {
 				FLASH_STM32_SR_FASTERR |		\
 				FLASH_STM32_SR_RDERR |			\
 				FLASH_STM32_SR_PGPERR)
+#endif /* CONFIG_SOC_SERIES_STM32C5X */
 
 #define FLASH_STM32_RDP0 0xAA
 #define FLASH_STM32_RDP2 0xCC
@@ -341,6 +357,28 @@ int flash_stm32_wait_flash_idle(const struct device *dev);
 
 uint32_t flash_stm32_option_bytes_read(const struct device *dev);
 
+#if defined(CONFIG_OTP_STM32_NVM_PROGRAMMING_SUPPORT)
+/** @cond INTERNAL_HIDDEN */
+/*
+ * Program half-words into an OTP area located in embedded NVM.
+ *
+ * Called by the STM32 NVM OTP driver (drivers/otp/otp_nvm_stm32.c). The default
+ * implementation in flash_stm32.c returns -ENOSYS; series that support it
+ * provide a strong definition in their flash driver (e.g. flash_stm32l5x.c for
+ * STM32H5). The programming is serialized against regular flash operations
+ * using the flash driver's own lock.
+ *
+ * @param dev      flash controller device (parent of the OTP node)
+ * @param otp_base memory-mapped base address of the OTP area
+ * @param offset   byte offset within the OTP area (half-word aligned)
+ * @param data     source buffer
+ * @param len      number of bytes to program (multiple of a half-word)
+ */
+int flash_stm32_otp_program(const struct device *dev, uint8_t *otp_base, off_t offset,
+			    const void *data, size_t len);
+/** @endcond **/
+#endif /* CONFIG_OTP_STM32_NVM_PROGRAMMING_SUPPORT */
+
 int flash_stm32_option_bytes_write(const struct device *dev, uint32_t mask,
 				   uint32_t value);
 
@@ -368,7 +406,7 @@ int flash_stm32_get_wp_sectors(const struct device *dev,
 #if defined(CONFIG_FLASH_STM32_READOUT_PROTECTION)
 uint8_t flash_stm32_get_rdp_level(const struct device *dev);
 
-void flash_stm32_set_rdp_level(const struct device *dev, uint8_t level);
+int flash_stm32_set_rdp_level(const struct device *dev, uint8_t level);
 #endif
 
 #if defined(CONFIG_FLASH_STM32_BLOCK_REGISTERS)

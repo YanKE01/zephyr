@@ -75,6 +75,11 @@ struct smfi_it51xxx_regs {
 #define SCARH_ENABLE                    BIT(7)
 #define SCARH_ADDR_BIT19                BIT(3)
 
+#define IT51XXX_SMFI_BASE      0xf01000
+/* 0x63: Flash Control Register 3 */
+#define IT51XXX_SMFI_FLHCTRL3R (IT51XXX_SMFI_BASE + 0x63)
+#define IT51XXX_SMFI_FFSPITRI  BIT(0)
+
 /**
  *
  * (16xxh) General Purpose I/O Port (GPIO) registers
@@ -86,8 +91,14 @@ struct smfi_it51xxx_regs {
 struct gpio_it51xxx_regs {
 	/* 0x00: General Control */
 	volatile uint8_t GPIO_GCR;
-	/* 0x01-CF: Reserved_01_cf */
-	volatile uint8_t reserved_01_cf[207];
+	/* 0x01-C1: Reserved_01_c1 */
+	volatile uint8_t reserved_01_c1[193];
+	/* 0xC2: General Control 35 */
+	volatile uint8_t GPIO_GCR35;
+	/* 0xC3-CE: Reserved_c3_ce */
+	volatile uint8_t reserved_c3_ce[12];
+	/* 0xCF: USB GPIO Control Register */
+	volatile uint8_t GPIO_USBGPIOCR;
 	/* 0xD0: General Control 31 */
 	volatile uint8_t GPIO_GCR31;
 	/* 0xD1: General Control 32 */
@@ -189,9 +200,17 @@ struct gpio_it51xxx_regs {
 /* 0x00: General Control */
 #define IT51XXX_GPIO_LPCRSTEN             (BIT(2) | BIT(1))
 #define ITE_EC_GPIO_LPCRSTEN              IT51XXX_GPIO_LPCRSTEN
+/* 0xC2: General Control 35 */
+#define IT51XXX_GPIO_USBPDEN              BIT(5)
+
+/* 0xCF: USB GPIO Control Register */
+#define USB_ON_GPIO_PINS_ENABLE_MSK GENMASK(3, 0)
+
 /* 0xF0: General Control 1 */
 #define IT51XXX_GPIO_U2CTRL_SIN1_SOUT1_EN BIT(2)
 #define IT51XXX_GPIO_U1CTRL_SIN0_SOUT0_EN BIT(0)
+/* 0xF7: General Control 8 */
+#define IT51XXX_GPIO_PWRSW2EN1            BIT(4)
 /* 0xE6: General Control 21 */
 #define IT51XXX_GPIO_GPH1VS               BIT(1)
 #define IT51XXX_GPIO_GPH2VS               BIT(0)
@@ -327,6 +346,24 @@ struct gctrl_it51xxx_regs {
 /* Alias gctrl_ite_ec_regs to gctrl_it51xxx_regs for compatibility */
 #define gctrl_ite_ec_regs      gctrl_it51xxx_regs
 #define GCTRL_ITE_EC_REGS_BASE GCTRL_IT51XXX_REGS_BASE
+
+/**
+ *
+ * (22xxh) Battery-backed SRAM (BRAM) registers
+ *
+ */
+#ifndef __ASSEMBLER__
+/* Battery backed RAM indices. */
+#define BRAM_MAGIC_FIELD_OFFSET 0x7c
+
+enum bram_indices {
+	/* This field is used to indicate BRAM is valid or not. */
+	BRAM_IDX_VALID_FLAGS0 = BRAM_MAGIC_FIELD_OFFSET,
+	BRAM_IDX_VALID_FLAGS1,
+	BRAM_IDX_VALID_FLAGS2,
+	BRAM_IDX_VALID_FLAGS3
+};
+#endif /* !__ASSEMBLER__ */
 
 /**
  *

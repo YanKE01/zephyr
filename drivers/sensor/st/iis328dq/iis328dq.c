@@ -398,15 +398,14 @@ static int iis328dq_init(const struct device *dev)
  */
 
 #define IIS328DQ_SPI_OPERATION                                                                     \
-	(SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA)
+	(SPI_WORD_SET(8) | SPI_OP_MODE_CONTROLLER | SPI_MODE_CPOL | SPI_MODE_CPHA)
 
 #define IIS328DQ_CONFIG_SPI(inst)                                                                  \
 	{                                                                                          \
 		STMEMSC_CTX_SPI_INCR(&iis328dq_config_##inst.stmemsc_cfg),                         \
 			.stmemsc_cfg =                                                             \
 				{                                                                  \
-					.spi = SPI_DT_SPEC_INST_GET(inst, IIS328DQ_SPI_OPERATION,  \
-								    0),                            \
+					.spi = SPI_DT_SPEC_INST_GET(inst, IIS328DQ_SPI_OPERATION)  \
 				},                                                                 \
 			IIS328DQ_CONFIG_COMMON(inst)                                               \
 	}

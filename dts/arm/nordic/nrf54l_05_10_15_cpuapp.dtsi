@@ -5,12 +5,12 @@
  */
 
 cpu: &cpuapp {};
+
 systick: &cpuapp_systick {};
+
 nvic: &cpuapp_nvic {};
 
 /delete-node/ &cpuflpr;
-/delete-node/ &cpuflpr_rram;
-/delete-node/ &cpuflpr_sram;
 /delete-node/ &cpuflpr_clic;
 
 / {
@@ -33,6 +33,17 @@ nvic: &cpuapp_nvic {};
 	psa_rng: psa-rng {
 		compatible = "zephyr,psa-crypto-rng";
 		status = "disabled";
+	};
+
+	ipc {
+		ipc0: ipc0 {
+			status = "disabled";
+			compatible = "zephyr,ipc-icbmsg";
+			mboxes = <&cpuapp_vevif_rx 20>, <&cpuapp_vevif_tx 21>;
+			mbox-names = "rx", "tx";
+			tx-blocks = <15>;
+			rx-blocks = <15>;
+		};
 	};
 };
 
@@ -72,7 +83,7 @@ nvic: &cpuapp_nvic {};
 #else
 	interrupts = <228 NRF_DEFAULT_IRQ_PRIORITY>,
 #endif
-		<229 NRF_DEFAULT_IRQ_PRIORITY>; /* reserved for Zero Latency IRQs */
+		     <229 NRF_DEFAULT_IRQ_PRIORITY>; /* reserved for Zero Latency IRQs */
 };
 
 &gpiote20 {

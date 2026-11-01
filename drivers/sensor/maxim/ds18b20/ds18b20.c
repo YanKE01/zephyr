@@ -19,7 +19,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/sensor/w1_sensor.h>
-#include "zephyr/drivers/w1.h"
+#include <zephyr/drivers/w1.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/__assert.h>
@@ -89,7 +89,7 @@ static inline void ds18b20_temperature_from_raw(const struct device *dev,
 
 	if (cfg->chip == type_ds18s20) {
 		val->val1 = temp / 2;
-		val->val2 = (temp % 2) * 5000000;
+		val->val2 = (temp % 2) * 500000;
 	} else {
 		val->val1 = temp / 16;
 		val->val2 = (temp % 16) * 1000000 / 16;
@@ -322,7 +322,7 @@ static int ds18b20_init(const struct device *dev)
 	struct ds18b20_data *data = dev->data;
 
 	if (device_is_ready(cfg->bus) == 0) {
-		LOG_DBG("w1 bus is not ready");
+		LOG_ERR_DEVICE_NOT_READY(cfg->bus);
 		return -ENODEV;
 	}
 

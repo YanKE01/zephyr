@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2023,2025 Nordic Semiconductor ASA
- *
+ * SPDX-FileCopyrightText: Copyright Nordic Semiconductor ASA
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -9,16 +8,18 @@
 
 #include "usbh_device.h"
 #include "usbh_ch9.h"
+#include "usbh_class.h"
+#include "usbh_class_api.h"
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(usbh_dev, CONFIG_USBH_LOG_LEVEL);
 
-K_MEM_SLAB_DEFINE_STATIC(usb_device_slab, sizeof(struct usb_device),
-			 CONFIG_USBH_USB_DEVICE_MAX, sizeof(void *));
+K_MEM_SLAB_DEFINE_STATIC_TYPE(usb_device_slab, struct usb_device,
+			      CONFIG_USBH_USB_DEVICE_MAX);
 
 K_HEAP_DEFINE(usb_device_heap, CONFIG_USBH_USB_DEVICE_HEAP);
 
-struct usb_device *usbh_device_alloc(struct usbh_contex *const uhs_ctx)
+struct usb_device *usbh_device_alloc(struct usbh_context *const uhs_ctx)
 {
 	struct usb_device *udev;
 
@@ -37,18 +38,19 @@ struct usb_device *usbh_device_alloc(struct usbh_contex *const uhs_ctx)
 
 void usbh_device_free(struct usb_device *const udev)
 {
-	struct usbh_contex *const uhs_ctx = udev->ctx;
+	struct usbh_context *const uhs_ctx = udev->ctx;
 
 	sys_bitarray_clear_bit(uhs_ctx->addr_ba, udev->addr);
 	sys_dlist_remove(&udev->node);
 	if (udev->cfg_desc != NULL) {
 		k_heap_free(&usb_device_heap, udev->cfg_desc);
+		udev->cfg_desc = NULL;
 	}
 
 	k_mem_slab_free(&usb_device_slab, (void *)udev);
 }
 
-struct usb_device *usbh_device_get_any(struct usbh_contex *const uhs_ctx)
+struct usb_device *usbh_device_get_any(struct usbh_context *const uhs_ctx)
 {
 	sys_dnode_t *const node = sys_dlist_peek_head(&uhs_ctx->udevs);
 	struct usb_device *udev;
@@ -58,7 +60,7 @@ struct usb_device *usbh_device_get_any(struct usbh_contex *const uhs_ctx)
 	return udev;
 }
 
-struct usb_device *usbh_device_get(struct usbh_contex *const uhs_ctx, const uint8_t addr)
+struct usb_device *usbh_device_get(struct usbh_context *const uhs_ctx, const uint8_t addr)
 {
 	struct usb_device *udev;
 
@@ -75,7 +77,7 @@ static int validate_device_mps0(const struct usb_device *const udev)
 {
 	const uint8_t mps0 = udev->dev_desc.bMaxPacketSize0;
 
-	if (udev->speed == USB_SPEED_SPEED_SS || udev->speed == USB_SPEED_SPEED_LS) {
+	if (udev->speed == USB_SPEED_SPEED_SS) {
 		LOG_ERR("USB device speed not supported");
 		return -ENOTSUP;
 	}
@@ -94,12 +96,19 @@ static int validate_device_mps0(const struct usb_device *const udev)
 		}
 	}
 
+	if (udev->speed == USB_SPEED_SPEED_LS) {
+		if (mps0 != 8) {
+			LOG_ERR("LS device has wrong bMaxPacketSize0 %u", mps0);
+			return -EINVAL;
+		}
+	}
+
 	return 0;
 }
 
 static int alloc_device_address(struct usb_device *const udev, uint8_t *const addr)
 {
-	struct usbh_contex *const uhs_ctx = udev->ctx;
+	struct usbh_context *const uhs_ctx = udev->ctx;
 	int val;
 	int err;
 
@@ -119,7 +128,7 @@ static int alloc_device_address(struct usb_device *const udev, uint8_t *const ad
 }
 
 enum ep_op {
-	EP_OP_TEST, /* Verify endpont descriptor */
+	EP_OP_TEST, /* Verify endpoint descriptor */
 	EP_OP_UP,   /* Enable endpoint and update endpoint pointers */
 	EP_OP_DOWN, /* Disable endpoint and update endpoint pointers */
 };
@@ -285,7 +294,14 @@ static int parse_configuration_descriptor(struct usb_device *const udev)
 	dhp = (void *)((uint8_t *)udev->cfg_desc + cfg_desc->bLength);
 	desc_end = (void *)((uint8_t *)udev->cfg_desc + cfg_desc->wTotalLength);
 
-	while ((dhp->bDescriptorType != 0 || dhp->bLength != 0) && (void *)dhp < desc_end) {
+	while ((void *)dhp < desc_end) {
+		if ((uint8_t *)dhp + sizeof(struct usb_desc_header) > (uint8_t *)desc_end ||
+		    (uint8_t *)dhp + dhp->bLength > (uint8_t *)desc_end ||
+		    dhp->bLength <= sizeof(struct usb_desc_header)) {
+			LOG_ERR("Invalid descriptor size %d.", dhp->bLength);
+			return -EINVAL;
+		}
+
 		if (dhp->bDescriptorType == USB_DESC_INTERFACE_ASSOC) {
 			iad = (struct usb_association_descriptor *)dhp;
 			LOG_DBG("bFirstInterface %u", iad->bFirstInterface);
@@ -303,6 +319,11 @@ static int parse_configuration_descriptor(struct usb_device *const udev)
 				}
 
 				udev->ifaces[tmp_nif].dhp = dhp;
+				if (iad != NULL &&
+				    iad->bFirstInterface == if_desc->bInterfaceNumber) {
+					udev->ifaces[tmp_nif].iad = iad;
+				}
+
 				tmp_nif++;
 			}
 		}
@@ -343,6 +364,15 @@ static void reset_configuration(struct usb_device *const udev)
 	udev->state = USB_STATE_ADDRESSED;
 }
 
+/*
+ * usbh_device_set_configuration() does not attempt to restore the previous
+ * configuration. If something fails, the device state will be set to addressed
+ * and all resources will be released. We could increase resilience by reading
+ * all configuration descriptors at once, but that would increase memory usage.
+ *
+ * TODO: Although almost everything is in place, there should be tests covering
+ * it before it is made a public interface for users and applications.
+ */
 int usbh_device_set_configuration(struct usb_device *const udev, const uint8_t num)
 {
 	struct usb_cfg_descriptor cfg_desc;
@@ -360,8 +390,13 @@ int usbh_device_set_configuration(struct usb_device *const udev, const uint8_t n
 		goto error;
 	}
 
+	/* Free any allocated resources unconditionally */
+	usbh_class_remove_all(udev);
+	k_heap_free(&usb_device_heap, udev->cfg_desc);
+	udev->cfg_desc = NULL;
+	reset_configuration(udev);
+
 	if (num == 0) {
-		reset_configuration(udev);
 		err = usbh_req_set_cfg(udev, num);
 		if (err) {
 			LOG_ERR("Set Configuration %u request failed", num);
@@ -397,7 +432,7 @@ int usbh_device_set_configuration(struct usb_device *const udev, const uint8_t n
 	}
 
 	udev->cfg_desc = k_heap_alloc(&usb_device_heap,
-				      cfg_desc.wTotalLength,
+				      cfg_desc.wTotalLength + sizeof(struct usb_desc_header),
 				      K_NO_WAIT);
 	if (udev->cfg_desc == NULL) {
 		LOG_ERR("Failed to allocate memory for configuration descriptor");
@@ -411,21 +446,21 @@ int usbh_device_set_configuration(struct usb_device *const udev, const uint8_t n
 		goto error;
 	}
 
-	memset(udev->cfg_desc, 0, cfg_desc.wTotalLength);
-	if (udev->state == USB_STATE_CONFIGURED) {
-		reset_configuration(udev);
-	}
-
+	memset(udev->cfg_desc, 0, cfg_desc.wTotalLength + sizeof(struct usb_desc_header));
 	err = usbh_req_desc_cfg(udev, idx, cfg_desc.wTotalLength, udev->cfg_desc);
 	if (err) {
-		LOG_ERR("Failed to read configuration descriptor");
+		LOG_ERR("Failed to read configuration descriptor of %u bytes: %d",
+			cfg_desc.wTotalLength, err);
 		k_heap_free(&usb_device_heap, udev->cfg_desc);
+		udev->cfg_desc = NULL;
 		goto error;
 	}
 
 	if (memcmp(udev->cfg_desc, &cfg_desc, sizeof(cfg_desc))) {
 		LOG_ERR("Configuration descriptor read mismatch");
 		k_heap_free(&usb_device_heap, udev->cfg_desc);
+		udev->cfg_desc = NULL;
+		err = -EINVAL;
 		goto error;
 	}
 
@@ -435,11 +470,14 @@ int usbh_device_set_configuration(struct usb_device *const udev, const uint8_t n
 	err = parse_configuration_descriptor(udev);
 	if (err) {
 		k_heap_free(&usb_device_heap, udev->cfg_desc);
+		udev->cfg_desc = NULL;
 		goto error;
 	}
 
 	udev->actual_cfg = num;
 	udev->state = USB_STATE_CONFIGURED;
+
+	usbh_class_probe_device(udev);
 
 error:
 	k_mutex_unlock(&udev->mutex);
@@ -447,9 +485,35 @@ error:
 	return err;
 }
 
+int usbh_device_set_address(struct usb_device *const udev, const uint8_t new_addr)
+{
+	int err;
+
+	err = usbh_req_set_address(udev, new_addr);
+	if (err) {
+		LOG_ERR("Failed to set device address to 0x%02x", new_addr);
+		return err;
+	}
+
+	udev->addr = new_addr;
+
+	if (new_addr == 0) {
+		udev->state = USB_STATE_DEFAULT;
+	} else {
+		udev->state = USB_STATE_ADDRESSED;
+	}
+
+	return 0;
+}
+
+struct usb_device *usbh_device_get_root(struct usbh_context *const ctx)
+{
+	return ctx->root;
+}
+
 int usbh_device_init(struct usb_device *const udev)
 {
-	struct usbh_contex *const uhs_ctx = udev->ctx;
+	struct usbh_context *const uhs_ctx = udev->ctx;
 	uint8_t new_addr;
 	int err;
 
@@ -464,11 +528,12 @@ int usbh_device_init(struct usb_device *const udev)
 		return err;
 	}
 
-	/* FIXME: The port to which the device is connected should be reset. */
-	err = uhc_bus_reset(uhs_ctx->dev);
-	if (err) {
-		LOG_ERR("Failed to signal bus reset");
-		return err;
+	if (usbh_device_is_root(uhs_ctx, udev)) {
+		err = uhc_bus_reset(uhs_ctx->dev);
+		if (err) {
+			LOG_ERR("Failed to signal bus reset");
+			return err;
+		}
 	}
 
 	/*
@@ -487,6 +552,19 @@ int usbh_device_init(struct usb_device *const udev)
 		goto error;
 	}
 
+	err = alloc_device_address(udev, &new_addr);
+	if (err) {
+		LOG_ERR("Failed to allocate device address");
+		goto error;
+	}
+
+	err = usbh_device_set_address(udev, new_addr);
+	if (err) {
+		goto error;
+	}
+
+	LOG_INF("New device with address %u state %u", udev->addr, udev->state);
+
 	err = usbh_req_desc_dev(udev, sizeof(udev->dev_desc), &udev->dev_desc);
 	if (err) {
 		LOG_ERR("Failed to read device descriptor");
@@ -496,35 +574,73 @@ int usbh_device_init(struct usb_device *const udev)
 	if (!udev->dev_desc.bNumConfigurations) {
 		LOG_ERR("Device has no configurations, bNumConfigurations %d",
 			udev->dev_desc.bNumConfigurations);
+		err = -EINVAL;
 		goto error;
-	}
-
-	err = alloc_device_address(udev, &new_addr);
-	if (err) {
-		LOG_ERR("Failed to allocate device address");
-		goto error;
-	}
-
-	err = usbh_req_set_address(udev, new_addr);
-	if (err) {
-		LOG_ERR("Failed to set device address");
-		udev->addr = 0;
-
-		goto error;
-	}
-
-	udev->addr = new_addr;
-	udev->state = USB_STATE_ADDRESSED;
-
-	LOG_INF("New device with address %u state %u", udev->addr, udev->state);
-
-	err = usbh_device_set_configuration(udev, 1);
-	if (err) {
-		LOG_ERR("Failed to configure new device with address %u", udev->addr);
 	}
 
 error:
 	k_mutex_unlock(&udev->mutex);
 
 	return err;
+}
+
+int usbh_device_connect(struct usbh_context *const ctx,
+			struct usb_device *const udev)
+{
+	int err;
+
+	LOG_DBG("Device connected event");
+
+	udev->state = USB_STATE_DEFAULT;
+
+	if (ctx->root == NULL) {
+		ctx->root = udev;
+		udev->level = 1;
+	}
+
+	err = usbh_device_init(udev);
+	if (err != 0) {
+		LOG_ERR("Failed to init new USB device");
+		if (usbh_device_is_root(ctx, udev)) {
+			ctx->root = NULL;
+		}
+
+		usbh_device_free(udev);
+		return err;
+	}
+
+	/*
+	 * For now, choosing the configuration is quite simple. If a current
+	 * configuration is not used by any driver, try the next one. There is
+	 * no reason to revert to first configuration if no driver uses
+	 * anything.
+	 */
+	for (int n = 1; n < udev->dev_desc.bNumConfigurations + 1; n++) {
+		err = usbh_device_set_configuration(udev, n);
+		if (err) {
+			LOG_ERR("Failed to set device %u configuration to %u",
+				udev->addr, n);
+			break;
+		}
+
+		LOG_DBG("Set device %u configuration to %u", udev->addr, n);
+		if (usbh_class_is_any_iface_bound(udev)) {
+			break;
+		}
+	}
+
+	return 0;
+}
+
+void usbh_device_disconnect(struct usbh_context *ctx, struct usb_device *udev)
+{
+	usbh_class_remove_all(udev);
+
+	if (usbh_device_is_root(ctx, udev)) {
+		ctx->root = NULL;
+	}
+
+	usbh_device_free(udev);
+
+	LOG_DBG("Device removed");
 }

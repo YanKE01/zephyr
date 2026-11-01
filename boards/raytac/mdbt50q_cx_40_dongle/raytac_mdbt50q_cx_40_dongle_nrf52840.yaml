@@ -12,9 +12,8 @@ toolchain:
   - zephyr
   - gnuarmemb
 supported:
-  - usb_device
-  - usb_cdc
-  - ble
+  - usbd
+  - bluetooth
   - pwm
   - watchdog
   - counter

@@ -8,7 +8,6 @@
 
 #include <string.h>
 #include <stdarg.h>
-#include <stdarg.h>
 
 #include "gnss_nmea0183.h"
 #include "gnss_parse.h"
@@ -667,6 +666,11 @@ int gnss_nmea0183_parse_gsv_svs(const char **argv, uint16_t argc,
 	}
 
 	sv_args_size = (argc - GNSS_NMEA0183_GSV_HDR_ARG_CNT) / GNSS_NMEA0183_GSV_SV_ARG_CNT;
+
+	/* Some receivers pad the last GSV message with empty satellite fields */
+	while ((sv_args_size > 0) && (sv_args[sv_args_size - 1].prn[0] == '\0')) {
+		sv_args_size--;
+	}
 
 	if (size < sv_args_size) {
 		return -ENOMEM;

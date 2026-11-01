@@ -1,7 +1,7 @@
 # Copyright (c) 2022 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 include(ExternalProject)
 
 if(BOARD STREQUAL "unit_testing" OR BOARD STREQUAL "unit_testing/unit_testing")
@@ -38,7 +38,7 @@ endif()
 ExternalProject_Add(core
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/core
     CMAKE_ARGS
-      -DBOARD:STRING=${BOARD}${BOARD_QUALIFIERS}
+      -DBOARD:STRING=${BOARD}/${BOARD_QUALIFIERS}
       -DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_BINARY_DIR}/core
       ${fail_test_config}
 )

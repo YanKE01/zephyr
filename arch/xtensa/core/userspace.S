@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <xtensa_asm2_s.h>
+#include <xtensa_asm2.inc.S>
 #include <zephyr/offsets.h>
 #include <offsets_short.h>
 #include <zephyr/syscall.h>
@@ -277,7 +277,7 @@ xtensa_userspace_enter:
 #endif
 #endif
 #ifdef CONFIG_XTENSA_MPU
-	call4 xtensa_mpu_map_write
+	call4 xtensa_mpu_thread_map_write
 #endif
 
 #if XCHAL_HAVE_THREADPTR
@@ -325,7 +325,7 @@ xtensa_userspace_enter:
 
 	wsr.ZSR_EPS a0
 
-	/* Wipe out a0 (thre is no return from this function */
+	/* Wipe out a0 (there is no return from this function */
 	movi a0, 0
 
 	rfi ZSR_RFI_LEVEL

@@ -24,7 +24,10 @@
 			compatible = "xuantie,c907", "riscv";
 			device_type = "cpu";
 			reg = <0>;
-			riscv,isa = "rv32imac_zicsr_zifencei";
+			riscv,isa-base = "rv32i";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "v",
+					       "zicsr", "zifencei", "xtheadcmo";
+			mmu-type = "riscv,sv32";
 			clock-frequency = <DT_FREQ_M(24)>;
 			d-cache-line-size = <64>;
 			i-cache-line-size = <64>;
@@ -81,7 +84,7 @@
 		};
 
 		gpioa: gpio@2000000 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x02000000 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <0>;
@@ -94,7 +97,7 @@
 		};
 
 		gpiob: gpio@2000030 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x02000030 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <1>;
@@ -107,7 +110,7 @@
 		};
 
 		gpioc: gpio@2000060 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x02000060 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <2>;
@@ -120,7 +123,7 @@
 		};
 
 		gpiod: gpio@2000090 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x02000090 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <3>;
@@ -133,7 +136,7 @@
 		};
 
 		gpioe: gpio@20000c0 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x020000c0 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <4>;
@@ -146,7 +149,7 @@
 		};
 
 		gpiof: gpio@20000f0 {
-			compatible = "allwinner,sunxi-gpio";
+			compatible = "allwinner,sun252i-f101-gpio";
 			reg = <0x020000f0 0x30>;
 			allwinner,pio-hw-type = <ALLWINNER_PIO_HW_TYPE0>;
 			allwinner,bank = <5>;

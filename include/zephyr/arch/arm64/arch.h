@@ -19,8 +19,9 @@
 /* Add include for DTS generated information */
 #include <zephyr/devicetree.h>
 
+#include <zephyr/arch/arm64/bit_rev.h>
 #include <zephyr/arch/arm64/thread.h>
-#include <zephyr/arch/arm64/exception.h>
+#include <zephyr/arch/exception.h>
 #include <zephyr/arch/arm64/irq.h>
 #include <zephyr/arch/arm64/misc.h>
 #include <zephyr/arch/arm64/asm_inline.h>

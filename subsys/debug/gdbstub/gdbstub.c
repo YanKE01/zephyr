@@ -19,7 +19,6 @@ LOG_MODULE_REGISTER(gdbstub);
 #include <string.h>
 #include <zephyr/toolchain.h>
 #include <sys/types.h>
-#include <zephyr/sys/util.h>
 
 #include <zephyr/debug/gdbstub.h>
 #include "gdbstub_backend.h"
@@ -38,11 +37,11 @@ LOG_MODULE_REGISTER(gdbstub);
 
 static bool not_first_start;
 
-/* Empty memory region array */
-__weak const struct gdb_mem_region gdb_mem_region_array[0];
-
 /* Number of memory regions */
 __weak const size_t gdb_mem_num_regions;
+
+/* Fall-back memory region array */
+__weak const struct gdb_mem_region gdb_mem_region_array[1];
 
 /**
  * Given a starting address and length of a memory block, find a memory
@@ -141,7 +140,12 @@ bool gdb_mem_can_write(const uintptr_t addr, const size_t len, uint8_t *align)
 
 size_t gdb_bin2hex(const uint8_t *buf, size_t buflen, char *hex, size_t hexlen)
 {
-	if ((hexlen + 1) < buflen * 2) {
+	/* The loop below writes exactly 2 * buflen characters (indices
+	 * 0 .. 2*buflen-1). The previous `(hexlen + 1) < buflen * 2` check was
+	 * off by one and admitted hexlen == 2*buflen-1, writing one past the
+	 * destination.
+	 */
+	if (hexlen < buflen * 2) {
 		return 0;
 	}
 
@@ -255,6 +259,16 @@ static int gdb_get_packet(uint8_t *buf, size_t buf_len, size_t *len)
 		(*len)++;
 	}
 
+	if (*len >= (buf_len - 1)) {
+		LOG_DBG("Packet too large. Got %u but only has %u", *len, (buf_len - 1));
+		/* Drain checksum to keep RX stream aligned with GDB RSP framing */
+		(void)z_gdb_getchar();
+		(void)z_gdb_getchar();
+		/* NACK packet */
+		z_gdb_putchar('-');
+		return -2;
+	}
+
 	buf[*len] = '\0';
 
 	/* Get checksum now */
@@ -277,11 +291,7 @@ static int gdb_get_packet(uint8_t *buf, size_t buf_len, size_t *len)
 	/* ACK packet */
 	z_gdb_putchar('+');
 
-	if (*len >= (buf_len - 1)) {
-		return -2;
-	} else {
-		return 0;
-	}
+	return 0;
 }
 
 /* Read memory byte-by-byte */
@@ -507,16 +517,18 @@ static int gdb_mem_write_aligned(const uint8_t *buf, uintptr_t addr,
 		/* Write data to memory */
 		*(uint32_t *)mem_ptr = data.u32;
 
-		/* Point to the next aligned datum. */
-		mem_ptr += align;
+		if (remaining > 0) {
+			/* Point to the next aligned datum. */
+			mem_ptr += align;
 
-		if (write_sz != align) {
-			/*
-			 * Since we are not writing a full aligned datum,
-			 * we need to do read-modify-write. Hence reading
-			 * it here before the next hex2bin() call.
-			 */
-			data.u32 = *(uint32_t *)mem_ptr;
+			if (write_sz != align) {
+				/*
+				 * Since we are not writing a full aligned datum,
+				 * we need to do read-modify-write. Hence reading
+				 * it here before the next hex2bin() call.
+				 */
+				data.u32 = *(uint32_t *)mem_ptr;
+			}
 		}
 
 		/*

@@ -9,8 +9,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_SUBSYS_BLUETOOTH_AUDIO_CSIP_H_
-#define ZEPHYR_SUBSYS_BLUETOOTH_AUDIO_CSIP_H_
+#ifndef ZEPHYR_INCLUDE_BLUETOOTH_AUDIO_CSIP_H_
+#define ZEPHYR_INCLUDE_BLUETOOTH_AUDIO_CSIP_H_
 
 /**
  * @brief Coordinated Set Identification Profile (CSIP)
@@ -33,8 +33,10 @@
 
 #include <zephyr/autoconf.h>
 #include <zephyr/bluetooth/addr.h>
+#include <zephyr/bluetooth/assigned_numbers.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/data.h>
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/slist.h>
@@ -53,35 +55,35 @@ extern "C" {
 #if defined(CONFIG_BT_CSIP_SET_COORDINATOR)
 #define BT_CSIP_SET_COORDINATOR_MAX_CSIS_INSTANCES CONFIG_BT_CSIP_SET_COORDINATOR_MAX_CSIS_INSTANCES
 #else
-#define BT_CSIP_SET_COORDINATOR_MAX_CSIS_INSTANCES 0
+#define BT_CSIP_SET_COORDINATOR_MAX_CSIS_INSTANCES 0U
 #endif /* CONFIG_BT_CSIP_SET_COORDINATOR */
 
 /** Accept the request to read the SIRK as plaintext */
-#define BT_CSIP_READ_SIRK_REQ_RSP_ACCEPT        0x00
+#define BT_CSIP_READ_SIRK_REQ_RSP_ACCEPT        0x00U
 /** Accept the request to read the SIRK, but return encrypted SIRK */
-#define BT_CSIP_READ_SIRK_REQ_RSP_ACCEPT_ENC    0x01
+#define BT_CSIP_READ_SIRK_REQ_RSP_ACCEPT_ENC    0x01U
 /** Reject the request to read the SIRK */
-#define BT_CSIP_READ_SIRK_REQ_RSP_REJECT        0x02
+#define BT_CSIP_READ_SIRK_REQ_RSP_REJECT        0x02U
 /** SIRK is available only via an OOB procedure */
-#define BT_CSIP_READ_SIRK_REQ_RSP_OOB_ONLY      0x03
+#define BT_CSIP_READ_SIRK_REQ_RSP_OOB_ONLY      0x03U
 
 /** Size of the Set Identification Resolving Key (SIRK) */
-#define BT_CSIP_SIRK_SIZE 16
+#define BT_CSIP_SIRK_SIZE                       16U
 
 /** Size of the Resolvable Set Identifier (RSI) */
-#define BT_CSIP_RSI_SIZE                        6
+#define BT_CSIP_RSI_SIZE                        6U
 
 /* Coordinate Set Identification Service Error codes */
 /** Service is already locked */
-#define BT_CSIP_ERROR_LOCK_DENIED               0x80
+#define BT_CSIP_ERROR_LOCK_DENIED               0x80U
 /** Service is not locked */
-#define BT_CSIP_ERROR_LOCK_RELEASE_DENIED       0x81
+#define BT_CSIP_ERROR_LOCK_RELEASE_DENIED       0x81U
 /** Invalid lock value */
-#define BT_CSIP_ERROR_LOCK_INVAL_VALUE          0x82
+#define BT_CSIP_ERROR_LOCK_INVAL_VALUE          0x82U
 /** SIRK only available out-of-band */
-#define BT_CSIP_ERROR_SIRK_OOB_ONLY             0x83
+#define BT_CSIP_ERROR_SIRK_OOB_ONLY             0x83U
 /** Client is already owner of the lock */
-#define BT_CSIP_ERROR_LOCK_ALREADY_GRANTED      0x84
+#define BT_CSIP_ERROR_LOCK_ALREADY_GRANTED      0x84U
 
 /**
  * @brief Helper to declare bt_data array including RSI
@@ -93,7 +95,10 @@ extern "C" {
  */
 #define BT_CSIP_DATA_RSI(_rsi) BT_DATA(BT_DATA_CSIS_RSI, _rsi, BT_CSIP_RSI_SIZE)
 
-/** @brief Opaque Coordinated Set Identification Service instance. */
+/**
+ * @struct bt_csip_set_member_svc_inst
+ * @brief Opaque Coordinated Set Identification Service instance.
+ */
 struct bt_csip_set_member_svc_inst;
 
 /** Callback structure for the Coordinated Set Identification Service */
@@ -136,6 +141,8 @@ struct bt_csip_set_member_register_param {
 	 * @brief Size of the set.
 	 *
 	 * If set to 0, the set size characteristic won't be initialized.
+	 * If @kconfig{CONFIG_BT_CSIP_SET_MEMBER_SIZE_SUPPORT} is not enabled,
+	 * this will be ignored.
 	 */
 	uint8_t set_size;
 
@@ -151,6 +158,8 @@ struct bt_csip_set_member_register_param {
 	 * @brief Boolean to set whether the set is lockable by clients
 	 *
 	 * Setting this to false will disable the lock characteristic.
+	 * If @kconfig{CONFIG_BT_CSIP_SET_MEMBER_LOCK_SUPPORT} is not enabled,
+	 * this will be ignored.
 	 */
 	bool lockable;
 
@@ -158,8 +167,12 @@ struct bt_csip_set_member_register_param {
 	 * @brief Rank of this device in this set.
 	 *
 	 * If the lockable parameter is set to true, this shall be > 0 and
-	 * <= to the set_size. If the lockable parameter is set to false, this
-	 * may be set to 0 to disable the rank characteristic.
+	 * <= to the set_size (if set size support is enabled).
+	 * If the lockable parameter is set to false,
+	 * this may be set to 0 to disable the rank characteristic.
+	 *
+	 * If @kconfig{CONFIG_BT_CSIP_SET_MEMBER_RANK_SUPPORT} is not enabled,
+	 * this will be ignored.
 	 */
 	uint8_t rank;
 
@@ -236,17 +249,23 @@ int bt_csip_set_member_sirk(struct bt_csip_set_member_svc_inst *svc_inst,
  * It is important to note that a set cannot have multiple devices with the same rank in a set,
  * and it is up to the caller of this function to ensure that.
  * Similarly, it is important that the size is updated on all devices in the set at the same time.
+ * The rank of a device cannot be modified on its own, and a new rank can only be set if the @p size
+ * is different from the current set size.
  *
  * If @kconfig{CONFIG_BT_CSIP_SET_MEMBER_SIZE_NOTIFIABLE} is enabled, this will also send a
  * notification to all connected or bonded clients.
  *
+ * Available if either @kconfig{CONFIG_BT_CSIP_SET_MEMBER_SIZE_SUPPORT} or
+ * @kconfig{CONFIG_BT_CSIP_SET_MEMBER_RANK_SUPPORT} is enabled.
+ * The disabled parameter (i.e. @p rank or @p size) will not be set.
+ *
  * @param svc_inst The service instance.
  * @param size The new set size.
- * @param rank The new rank. Ignored if the @p svc_inst is not lockable.
+ * @param rank The new rank.
  *
  * @retval -EINVAL @p svc_inst is NULL, @p size is less than 1, @p rank is less than 1 or higher
  *                 than @p size for a lockable @p svc_inst.
- * @retval -EALREADY @p size and @p rank are already the provided values.
+ * @retval -EALREADY @p size is already set.
  * @retval 0 Success.
  */
 int bt_csip_set_member_set_size_and_rank(struct bt_csip_set_member_svc_inst *svc_inst, uint8_t size,
@@ -257,20 +276,36 @@ struct bt_csip_set_member_set_info {
 	/** The 16-octet SIRK */
 	uint8_t sirk[BT_CSIP_SIRK_SIZE];
 
-	/** The set size */
+	/**
+	 * @brief The set size
+	 *
+	 * Will always be 0 if @kconfig{CONFIG_BT_CSIP_SET_MEMBER_SIZE_SUPPORT}
+	 * is not enabled.
+	 */
 	uint8_t set_size;
 
 	/**
 	 * @brief The rank
 	 *
-	 * May be 0 if the set is not lockable
+	 * Will always be 0 if the set is not lockable or the option
+	 * @kconfig{CONFIG_BT_CSIP_SET_MEMBER_RANK_SUPPORT} is not enabled.
 	 */
 	uint8_t rank;
 
-	/** Whether the set is lockable  */
+	/**
+	 * @brief Whether the set is lockable
+	 *
+	 * Will always be false if @kconfig{CONFIG_BT_CSIP_SET_MEMBER_LOCK_SUPPORT}
+	 * is not enabled.
+	 */
 	bool lockable: 1;
 
-	/** Whether the set is currently locked */
+	/**
+	 * @brief Whether the set is currently locked
+	 *
+	 * Will always be false if @kconfig{CONFIG_BT_CSIP_SET_MEMBER_LOCK_SUPPORT}
+	 * is not enabled.
+	 */
 	bool locked: 1;
 
 	/**
@@ -308,6 +343,8 @@ int bt_csip_set_member_generate_rsi(const struct bt_csip_set_member_svc_inst *sv
 
 /**
  * @brief Locks a specific Coordinated Set Identification Service instance on the server.
+ *
+ * @kconfig_dep{CONFIG_BT_CSIP_SET_MEMBER_LOCK_SUPPORT}
  *
  * @param svc_inst  Pointer to the Coordinated Set Identification Service.
  * @param lock      If true lock the set, if false release the set.
@@ -422,8 +459,6 @@ typedef void (*bt_csip_set_coordinator_lock_set_cb)(int err);
  * @param inst    The Coordinated Set Identification Service instance that was
  *                changed.
  * @param locked  Whether the lock is locked or release.
- *
- * @return int Return 0 on success, or an errno value on error.
  */
 typedef void (*bt_csip_set_coordinator_lock_changed_cb)(
 	struct bt_csip_set_coordinator_csis_inst *inst, bool locked);
@@ -450,6 +485,7 @@ typedef void (*bt_csip_set_coordinator_sirk_changed_cb)(
  * bt_csip_set_coordinator_discover() to rediscover and read the characteristic values of the sets
  * on each device.
  *
+ * @param conn    Pointer to the remote device.
  * @param inst    The Coordinated Set Identification Service instance that was changed.
  *                The new size is stored in the @p inst->info.size.
  */
@@ -613,4 +649,4 @@ int bt_csip_set_coordinator_release(const struct bt_csip_set_coordinator_set_mem
  * @}
  */
 
-#endif /* ZEPHYR_SUBSYS_BLUETOOTH_AUDIO_CSIP_H_ */
+#endif /* ZEPHYR_INCLUDE_BLUETOOTH_AUDIO_CSIP_H_ */

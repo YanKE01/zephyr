@@ -78,7 +78,9 @@ net:
 
 posix:
   files:
-    - lib/posix/
+    - subsys/portability/posix/
+    - include/zephyr/posix/
+    - tests/subsys/portability/posix
 
 test_framework:
   files:
@@ -96,9 +98,10 @@ wifi:
     - include/zephyr/net/wifi_mgmt.h
     - include/zephyr/net/wifi_nm.h
     - include/zephyr/net/wifi_utils.h
+    - modules/nrf_wifi/
 # zephyr-keep-sorted-stop
 
 # cbprintf:
 #    files:
 #        - lib/os/cbprintf*
-#        - lib/posix
+#        - subsys/portability/posix

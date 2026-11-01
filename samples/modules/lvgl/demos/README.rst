@@ -9,18 +9,18 @@ Overview
 
 A sample showcasing upstream LVGL demos.
 
-* Music
-      The music player demo shows what kind of modern, smartphone-like user interfaces can be created on LVGL.
-* Benchmark
-      The benchmark demo tests the performance in various cases. For example rectangle, border, shadow, text, image blending, image transformation, blending modes, etc.
-* Stress
-      A stress test for LVGL. It contains a lot of object creation, deletion, animations, styles usage, and so on. It can be used if there is any memory corruption during heavy usage or any memory leaks.
-* Widgets
-      Shows how the widgets look like out of the box using the built-in material theme.
-* Keypad and Encoder
-      Shows how to control widget with a keypad and hardware encoder.
-* Render
-      Collection of multiple rendering tests.
+Music
+    The music player demo shows what kind of modern, smartphone-like user interfaces can be created on LVGL.
+Benchmark
+    The benchmark demo tests the performance in various cases. For example rectangle, border, shadow, text, image blending, image transformation, blending modes, etc.
+Stress
+    A stress test for LVGL. It contains a lot of object creation, deletion, animations, styles usage, and so on. It can be used if there is any memory corruption during heavy usage or any memory leaks.
+Widgets
+    Shows how the widgets look like out of the box using the built-in material theme.
+Keypad and Encoder
+    Shows how to control widget with a keypad and hardware encoder.
+Render
+    Collection of multiple rendering tests.
 
 More details can be found in `LVGL demos Readme`_.
 
@@ -30,17 +30,23 @@ Requirements
 * A board with display, ideally with 480x272 resolution or higher.
 * A pointer input device: touchpad, mouse, or touch screen capable display, compatible with :dtcompatible:`zephyr,lvgl-pointer-input`.
 
-Note that other input devices types are not demonstrated in these demos, namely keyboards, keypads (:dtcompatible:`zephyr,lvgl-keypad-input`), rotary encoders (:dtcompatible:`zephyr,lvgl-encoder-input`) and hardware buttons (:dtcompatible:`zephyr,lvgl-button-input`).
+Note that other input devices types are not demonstrated in these demos, namely keyboards, keypads (:dtcompatible:`zephyr,lvgl-keypad-input`) and hardware buttons (:dtcompatible:`zephyr,lvgl-button-input`).
+
+Keypad and Encoder demo on native_sim
+*************************************
+
+On :zephyr:board:`native_sim` the Keypad and Encoder demo is driven by a rotary
+encoder (:dtcompatible:`zephyr,lvgl-encoder-input`) emulated with the SDL mouse:
+the mouse wheel rotates the encoder and the middle button (wheel-click) acts as
+ENTER. No extra hardware is required.
+
+Since this demo is meant to be navigated with the encoder, the LVGL pointer that
+is otherwise derived from the ``zephyr,touch`` chosen device is disabled for it,
+so that pointer clicks do not short-circuit the encoder navigation. The other
+demos keep their pointer.
 
 Building and Running
 ********************
-
-Example building for :zephyr:board:`mimxrt1060_evk`:
-
-.. zephyr-app-commands::
-   :zephyr-app: samples/modules/lvgl/demos
-   :board: mimxrt1060_evk
-   :goals: build flash
 
 Example building for :zephyr:board:`yuzukineko` (1024x768 MIPI DSI panel and GT967 touch panel, the
 options are in ``boards/yuzukineko.conf`` and ``boards/yuzukineko.overlay``; pick the demo with

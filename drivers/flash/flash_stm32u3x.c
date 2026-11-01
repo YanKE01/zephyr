@@ -11,6 +11,7 @@ LOG_MODULE_REGISTER(LOG_DOMAIN);
 
 #include <soc.h>
 #include <stm32_ll_icache.h>
+#include <stm32_ll_pwr.h>
 #include <stm32_ll_system.h>
 #include <string.h>
 #include <zephyr/cache.h>
@@ -18,6 +19,7 @@ LOG_MODULE_REGISTER(LOG_DOMAIN);
 #include <zephyr/drivers/flash.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/barrier.h>
 
 #include "flash_stm32.h"
 
@@ -45,7 +47,7 @@ bool flash_stm32_valid_range(const struct device *dev, off_t offset,
 static int write_nwords(const struct device *dev, off_t offset, const uint32_t *buff, size_t n)
 {
 	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
-	volatile uint32_t *flash = (uint32_t *)(offset
+	volatile uint32_t *flash = (uint32_t *)((uintptr_t)offset
 						+ FLASH_STM32_BASE_ADDRESS);
 	bool full_zero = true;
 	uint32_t tmp;
@@ -156,6 +158,10 @@ static int erase_page(const struct device *dev, unsigned int offset)
 			return -EINVAL;
 		}
 	} else {
+		/* On 512-Kbyte flash single-bank, set BKER = 0 to select bank 1. */
+		if (FLASH_SIZE ==  512 * 1024) {
+			regs->CR &= ~FLASH_STM32_NSBKER_MSK;
+		}
 		page = offset / FLASH_PAGE_SIZE_128_BITS;
 		LOG_DBG("Erase page %d", page);
 	}
@@ -200,6 +206,17 @@ int flash_stm32_block_erase_loop(const struct device *dev,
 
 	sys_cache_instr_disable();
 
+	/* Prior to erase operation, the voltage range must be set to range 1. */
+	uint32_t voltage_scale = LL_PWR_GetRegulVoltageScaling();
+
+	if (voltage_scale != LL_PWR_REGU_VOLTAGE_SCALE1) {
+		/* If not, then set the voltage scale 1 */
+		LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE1);
+		while (LL_PWR_GetRegulCurrentVOS() != LL_PWR_REGU_VOLTAGE_SCALE1) {
+			/* and wait for the R1RDY flag */
+		}
+	}
+
 	for (address = offset; address <= offset + len - 1; address += FLASH_PAGE_SIZE) {
 		rc = erase_page(dev, address);
 		if (rc < 0) {
@@ -209,6 +226,15 @@ int flash_stm32_block_erase_loop(const struct device *dev,
 
 	if (cache_enabled) {
 		sys_cache_instr_enable();
+	}
+
+	/* Restore the voltage scale at its initial range : LL_PWR_REGU_VOLTAGE_SCALE2 */
+	if (voltage_scale != LL_PWR_REGU_VOLTAGE_SCALE1) {
+		/* If not, then restore the voltage scale */
+		LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE2);
+		while (LL_PWR_GetRegulCurrentVOS() != LL_PWR_REGU_VOLTAGE_SCALE2) {
+			/* and wait for the R2RDY flag */
+		}
 	}
 
 	return rc;
@@ -229,6 +255,17 @@ int flash_stm32_write_range(const struct device *dev, unsigned int offset,
 
 	sys_cache_instr_disable();
 
+	/* Prior to write operation, the voltage range must be set to range 1. */
+	uint32_t voltage_scale = LL_PWR_GetRegulVoltageScaling();
+
+	if (voltage_scale != LL_PWR_REGU_VOLTAGE_SCALE1) {
+		/* If not, then set the voltage scale 1 */
+		LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE1);
+		while (LL_PWR_GetRegulCurrentVOS() != LL_PWR_REGU_VOLTAGE_SCALE1) {
+			/* and wait for the R1RDY flag */
+		}
+	}
+
 	for (i = 0; i < len; i += FLASH_STM32_WRITE_BLOCK_SIZE) {
 		rc = write_nwords(dev, offset + i, ((const uint32_t *)data + (i >> 2)),
 				  FLASH_STM32_WRITE_BLOCK_SIZE / 4);
@@ -241,6 +278,15 @@ int flash_stm32_write_range(const struct device *dev, unsigned int offset,
 		sys_cache_instr_enable();
 	}
 
+	/* Restore the voltage scale at its initial range : LL_PWR_REGU_VOLTAGE_SCALE2 */
+	if (voltage_scale != LL_PWR_REGU_VOLTAGE_SCALE1) {
+		/* If not, then restore the voltage scale */
+		LL_PWR_SetRegulVoltageScaling(LL_PWR_REGU_VOLTAGE_SCALE2);
+		while (LL_PWR_GetRegulCurrentVOS() != LL_PWR_REGU_VOLTAGE_SCALE2) {
+			/* and wait for the R2RDY flag */
+		}
+	}
+
 	return rc;
 }
 
@@ -251,14 +297,66 @@ void flash_stm32_page_layout(const struct device *dev,
 	static struct flash_pages_layout stm32_flash_layout[1];
 
 	if (stm32_flash_layout[0].pages_count == 0) {
-		if (stm32_flash_has_2_banks(dev)) {
-			stm32_flash_layout[0].pages_count = FLASH_PAGE_NB * 2;
-		} else {
-			stm32_flash_layout[0].pages_count = FLASH_PAGE_NB;
-		}
+		/* Considering one layout of full flash size, even with 2 banks */
+		stm32_flash_layout[0].pages_count = FLASH_SIZE / FLASH_PAGE_SIZE;
+		/* stm32U3 flash pages are always 4 kB in size */
 		stm32_flash_layout[0].pages_size = FLASH_PAGE_SIZE;
 	}
 
 	*layout = stm32_flash_layout;
 	*layout_size = 1;
+}
+
+#if defined(CONFIG_FLASH_STM32_READOUT_PROTECTION)
+
+uint8_t flash_stm32_get_rdp_level(const struct device *dev)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+
+	return (regs->OPTR & FLASH_OPTR_RDP_Msk) >> FLASH_OPTR_RDP_Pos;
+}
+
+void flash_stm32_set_rdp_level(const struct device *dev, uint8_t level)
+{
+	flash_stm32_option_bytes_write(dev, FLASH_OPTR_RDP_Msk,
+				       (uint32_t)level << FLASH_OPTR_RDP_Pos);
+}
+#endif /* CONFIG_FLASH_STM32_READOUT_PROTECTION */
+
+int flash_stm32_option_bytes_write(const struct device *dev, uint32_t mask, uint32_t value)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+	int rc;
+
+	if ((regs->OPTR & mask) == value) {
+		return 0;
+	}
+
+	if (regs->CR & FLASH_CR_OPTLOCK) {
+		return -EIO;
+	}
+
+	/* Update the target value in the Option Register */
+	regs->OPTR = (regs->OPTR & ~mask) | value;
+	regs->CR |= FLASH_CR_OPTSTRT;
+
+	/* make sure previous write is completed. */
+	barrier_dsync_fence_full();
+
+	rc = flash_stm32_wait_flash_idle(dev);
+	if (rc < 0) {
+		return rc;
+	}
+
+	/* Force the option byte loading (triggers system reset) */
+	regs->CR |= FLASH_CR_OBL_LAUNCH;
+
+	return flash_stm32_wait_flash_idle(dev);
+}
+
+uint32_t flash_stm32_option_bytes_read(const struct device *dev)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+
+	return regs->OPTR;
 }

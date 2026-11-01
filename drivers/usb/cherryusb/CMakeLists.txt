@@ -3,6 +3,8 @@
 
 zephyr_library()
 zephyr_include_directories(.)
+# The pinned OSAL includes version.h without the zephyr/ namespace.
+zephyr_include_directories("${ZEPHYR_BINARY_DIR}/include/generated/zephyr")
 zephyr_library_sources(usb_glue_cache.c)
 zephyr_library_sources_ifdef(CONFIG_CHERRYUSB_DEVICE usb_glue_sunxi.c)
 

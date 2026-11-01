@@ -1,6 +1,7 @@
 # Copyright 2025 NXP
 #
 # SPDX-License-Identifier: Apache-2.0
+# pylint: disable=duplicate-code
 
 import logging
 import re
@@ -18,7 +19,7 @@ def pytest_addoption(parser) -> None:
 
 @pytest.fixture(name='initialize', scope='session')
 def fixture_initialize(request, shell: Shell, dut: DeviceAdapter):
-    """Session initializtion"""
+    """Session initialization"""
     # Get HCI transport for bumble
     hci = request.config.getoption('--hci-transport')
 
@@ -31,8 +32,8 @@ def fixture_initialize(request, shell: Shell, dut: DeviceAdapter):
     assert hci is not None
 
     lines = shell.exec_command("bt init")
-    lines = dut.readlines_until("Bluetooth initialized")
-    regex = r'Identity: *(?P<bd_addr>([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2}) *\((.*?)\))'
+    lines = dut.readlines_until(regex="Bluetooth initialized")
+    regex = r'Identity: *[PR]:(?P<bd_addr>([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})'
     bd_addr = None
     for line in lines:
         logger.info(f"Shell log {line}")

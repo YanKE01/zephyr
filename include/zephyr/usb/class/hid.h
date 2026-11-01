@@ -173,7 +173,7 @@ extern "C" {
 #define HID_USAGE_SENSORS_EVENT_SENSOR_STATE			0x201
 /** HID Sensors Friendly Name Property Usage ID */
 #define HID_USAGE_SENSORS_PROPERTY_FRIENDLY_NAME		0x301
-/** HID Sensors Enviromental Temperature Data Usage ID */
+/** HID Sensors Environmental Temperature Data Usage ID */
 #define HID_USAGE_SENSORS_DATA_ENVIRONMENTAL_TEMPERATURE	0x434
 /** HID Sensors Timestamp Property Usage ID */
 #define HID_USAGE_SENSORS_PROPERTY_TIMESTAMP			0x529
@@ -280,6 +280,15 @@ extern "C" {
 	HID_ITEM(HID_ITEM_TAG_USAGE_PAGE, HID_ITEM_TYPE_GLOBAL, 1), page
 
 /**
+ * @brief Define HID Usage Page item with the data length of two bytes.
+ *
+ * @param page Usage Page
+ * @return     HID Usage Page item
+ */
+#define HID_USAGE_PAGE16(page)		\
+	HID_ITEM(HID_ITEM_TAG_USAGE_PAGE, HID_ITEM_TYPE_GLOBAL, 2), (uint8_t)page, (page >> 8)
+
+/**
  * @brief Define HID Logical Minimum item with the data length of one byte.
  *
  * For usage examples, see @ref HID_MOUSE_REPORT_DESC(),
@@ -316,8 +325,8 @@ extern "C" {
 /**
  * @brief Define HID Logical Maximum item with the data length of two bytes.
  *
- * @param a Minimum value lower byte
- * @param b Minimum value higher byte
+ * @param a Maximum value lower byte
+ * @param b Maximum value higher byte
  * @return  HID Logical Maximum item
  */
 #define HID_LOGICAL_MAX16(a, b)		\
@@ -338,10 +347,10 @@ extern "C" {
 /**
  * @brief Define HID Logical Maximum item with the data length of four bytes.
  *
- * @param a Minimum value lower byte
- * @param b Minimum value low middle byte
- * @param c Minimum value high middle byte
- * @param d Minimum value higher byte
+ * @param a Maximum value lower byte
+ * @param b Maximum value low middle byte
+ * @param c Maximum value high middle byte
+ * @param d Maximum value higher byte
  * @return  HID Logical Maximum item
  */
 #define HID_LOGICAL_MAX32(a, b, c, d)	\
@@ -658,6 +667,8 @@ enum hid_kbd_code {
 	HID_KEY_KP_8		= 96,
 	HID_KEY_KP_9		= 97,
 	HID_KEY_KP_0		= 98,
+	HID_KEY_KPDOT		= 99,
+	HID_KEY_MENU		= 101,
 };
 
 /**

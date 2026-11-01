@@ -7,7 +7,7 @@
 #if defined (CONFIG_CPP)
 	SECTION_PROLOGUE(.gcc_except_table,,ONLY_IF_RO)
 	{
-	*(.gcc_except_table .gcc_except_table.*)
+	KEEP (*(.gcc_except_table .gcc_except_table.*))
 	} GROUP_ROM_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
 #if defined (CONFIG_CPP_EXCEPTIONS)
@@ -30,5 +30,9 @@
 #endif /* CONFIG_CPP */
 
 #if !defined(CONFIG_CPP_EXCEPTIONS)
+	PROVIDE(__eh_frame_start = 0);
+	PROVIDE(__eh_frame_end = 0);
+	PROVIDE(__eh_frame_hdr_start = 0);
+	PROVIDE(__eh_frame_hdr_end = 0);
 	/DISCARD/ : { *(.eh_frame) }
 #endif

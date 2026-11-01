@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 
 if(CMAKE_SCRIPT_MODE_FILE)
   # Script mode initialization (re-run)
@@ -596,7 +596,7 @@ run_suite(
   test_snippets_scope
 )
 
-if (NOT CMAKE_SCRIPT_MODE_FILE AND NOT SYSBUILD)
+if(NOT CMAKE_SCRIPT_MODE_FILE AND NOT SYSBUILD)
   # Re-run this testsuite in plain script mode
   execute_process(COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_FILE})
 endif()

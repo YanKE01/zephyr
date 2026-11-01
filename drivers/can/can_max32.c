@@ -54,7 +54,7 @@ struct max32_can_data {
 	struct max32_req_data tx_data;
 
 	uint32_t filter_usage;
-	struct max32_can_rx_callback rx_callbacks[CONFIG_CAN_MAX_FILTER];
+	struct max32_can_rx_callback rx_callbacks[CONFIG_CAN_MAX32_MAX_FILTERS];
 	struct max32_req_data rx_data;
 };
 
@@ -352,12 +352,13 @@ static int can_max32_add_rx_filter(const struct device *dev, can_rx_callback_t c
 	k_mutex_lock(&dev_data->inst_mutex, K_FOREVER);
 
 	/* find free filter */
-	while ((BIT(filter_idx) & dev_data->filter_usage) && (filter_idx < CONFIG_CAN_MAX_FILTER)) {
+	while ((BIT(filter_idx) & dev_data->filter_usage) &&
+		(filter_idx < CONFIG_CAN_MAX32_MAX_FILTERS)) {
 		filter_idx++;
 	}
 
 	/* setup filter */
-	if (filter_idx < CONFIG_CAN_MAX_FILTER) {
+	if (filter_idx < CONFIG_CAN_MAX32_MAX_FILTERS) {
 		unsigned int key = irq_lock();
 
 		dev_data->filter_usage |= BIT(filter_idx);
@@ -371,7 +372,8 @@ static int can_max32_add_rx_filter(const struct device *dev, can_rx_callback_t c
 		LOG_DBG("Set filter id:%08X mask:%08X", filter->id, filter->mask);
 	} else {
 		filter_idx = -ENOSPC;
-		LOG_WRN("All filters are used CONFIG_CAN_MAX_FILTER=%d", CONFIG_CAN_MAX_FILTER);
+		LOG_WRN("All filters are used CONFIG_CAN_MAX32_MAX_FILTERS=%d",
+			CONFIG_CAN_MAX32_MAX_FILTERS);
 	}
 
 	k_mutex_unlock(&dev_data->inst_mutex);
@@ -384,7 +386,7 @@ static void can_max32_remove_rx_filter(const struct device *dev, int filter_idx)
 	struct max32_can_data *dev_data = dev->data;
 	unsigned int key;
 
-	if ((filter_idx < 0) || (filter_idx >= CONFIG_CAN_MAX_FILTER)) {
+	if ((filter_idx < 0) || (filter_idx >= CONFIG_CAN_MAX32_MAX_FILTERS)) {
 		LOG_ERR("Filter ID %d out of bounds", filter_idx);
 		return;
 	}
@@ -411,19 +413,12 @@ static void can_max32_remove_rx_filter(const struct device *dev, int filter_idx)
 
 static void can_max32_state_change_handler(const struct device *dev, enum can_state old_state)
 {
-	struct max32_can_data *dev_data = dev->data;
 	struct can_bus_err_cnt err_cnt;
 	enum can_state new_state;
-	can_state_change_callback_t state_change_cb;
-
-	state_change_cb = dev_data->common.state_change_cb;
 
 	can_get_state(dev, &new_state, &err_cnt);
 	if (old_state != new_state) {
-		if (state_change_cb) {
-			state_change_cb(dev, new_state, err_cnt,
-					dev_data->common.state_change_cb_user_data);
-		}
+		can_fire_state_change_callbacks(dev, new_state, err_cnt);
 	}
 }
 
@@ -446,26 +441,12 @@ static int can_max32_get_state(const struct device *dev, enum can_state *state,
 	return 0;
 }
 
-static void can_max32_set_state_change_callback(const struct device *dev,
-						can_state_change_callback_t cb, void *user_data)
-{
-	struct max32_can_data *dev_data = dev->data;
-	unsigned int key;
-
-	key = irq_lock();
-
-	dev_data->common.state_change_cb = cb;
-	dev_data->common.state_change_cb_user_data = user_data;
-
-	irq_unlock(key);
-}
-
 static int can_max32_get_max_filters(const struct device *dev, bool ide)
 {
 	ARG_UNUSED(dev);
 	ARG_UNUSED(ide);
 
-	return CONFIG_CAN_MAX_FILTER;
+	return CONFIG_CAN_MAX32_MAX_FILTERS;
 }
 
 #ifdef CONFIG_CAN_MANUAL_RECOVERY_MODE
@@ -510,7 +491,7 @@ static void can_max32_rx_soft_filter(const struct device *dev, struct can_frame 
 	}
 #endif /* !CONFIG_CAN_ACCEPT_RTR */
 
-	for (; filter_id < CONFIG_CAN_MAX_FILTER; filter_id++) {
+	for (; filter_id < CONFIG_CAN_MAX32_MAX_FILTERS; filter_id++) {
 		if (!(BIT(filter_id) & dev_data->filter_usage)) {
 			continue; /* filter slot empty */
 		}
@@ -607,18 +588,19 @@ static int can_max32_init(const struct device *dev)
 	struct can_timing timing = {0};
 	int ret = 0;
 
+	sys_slist_init(&dev_data->common.state_change_callbacks);
 	k_mutex_init(&dev_data->inst_mutex);
 	k_sem_init(&dev_data->tx_sem, 1, 1);
 
 	if (dev_cfg->common.phy != NULL) {
 		if (!device_is_ready(dev_cfg->common.phy)) {
-			LOG_ERR("CAN transceiver not ready");
+			LOG_ERR_DEVICE_NOT_READY(dev_cfg->common.phy);
 			return -ENODEV;
 		}
 	}
 
 	if (!device_is_ready(dev_cfg->clock)) {
-		LOG_ERR("CAN clock is not ready");
+		LOG_ERR_DEVICE_NOT_READY(dev_cfg->clock);
 		return -ENODEV;
 	}
 
@@ -695,7 +677,6 @@ static DEVICE_API(can, can_max32_api) = {
 	.recover = can_max32_recover,
 #endif
 	.get_state = can_max32_get_state,
-	.set_state_change_callback = can_max32_set_state_change_callback,
 	.get_core_clock = can_max32_get_core_clock,
 	.get_max_filters = can_max32_get_max_filters,
 	.timing_min = {

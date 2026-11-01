@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "zephyr/irq.h"
+#include <zephyr/irq.h>
 #include <zephyr/ztest.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util_loops.h>
@@ -127,7 +127,10 @@ static void mpsc_consumer(void *p1, void *p2, void *p3)
 
 		nn = CONTAINER_OF(n, struct test_mpsc_node, n);
 
-		spsc_acquire(node_q[nn->id]);
+		/* Return node to producer's free queue - must retry if queue is full */
+		while (spsc_acquire(node_q[nn->id]) == NULL) {
+			k_yield();
+		}
 		spsc_produce(node_q[nn->id]);
 	}
 }

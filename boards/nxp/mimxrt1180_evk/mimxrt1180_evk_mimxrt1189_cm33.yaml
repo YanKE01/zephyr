@@ -1,11 +1,11 @@
 #
-# Copyright 2024 NXP
+# Copyright 2024-2026 NXP
 #
 # SPDX-License-Identifier: Apache-2.0
 #
 
 identifier: mimxrt1180_evk/mimxrt1189/cm33
-name: NXP MIMXRT1180-EVK CM33
+name: NXP MIMXRT1180-EVK (CM33)
 type: mcu
 arch: arm
 toolchain:
@@ -21,7 +21,9 @@ supported:
   - gpio
   - i2c
   - mbox
+  - mecc
   - netif:eth
+  - ptp_clock
   - pwm
   - uart
   - i3c
@@ -30,4 +32,6 @@ supported:
   - watchdog
   - usbd
   - sdhc
+  - dac
+  - i2s
 vendor: nxp

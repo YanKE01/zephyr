@@ -28,7 +28,15 @@ Requirements
 Building and Running
 ********************
 
-This sample can be found under :zephyr_file:`samples/bluetooth/peripheral_accept_list` in the
-Zephyr tree.
+Build and flash the sample as follows, replacing ``<board>`` with your target board:
 
-See :zephyr:code-sample-category:`bluetooth` samples for details.
+.. zephyr-app-commands::
+   :zephyr-app: samples/bluetooth/peripheral_accept_list
+   :board: <board>
+   :goals: build flash
+   :compact:
+
+After flashing, on first boot the device advertises openly. Use a smartphone or another
+board to bond with it. On subsequent boots, only the bonded device will be accepted —
+other centrals will not see scan response data and their connection requests will be
+rejected.

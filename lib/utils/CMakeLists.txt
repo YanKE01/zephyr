@@ -6,17 +6,20 @@ zephyr_sources(
   dec.c
   hex.c
   rb.c
+  set.c
   timeutil.c
   bitarray.c
+  bitmask.c
   )
+
+zephyr_library_sources_ifdef(CONFIG_GETOPT getopt/getopt.c getopt/getopt_common.c)
+zephyr_library_sources_ifdef(CONFIG_GETOPT_LONG getopt/getopt_long.c)
 
 zephyr_sources_ifdef(CONFIG_ONOFF onoff.c)
 
 zephyr_sources_ifdef(CONFIG_NOTIFY notify.c)
 
 zephyr_sources_ifdef(CONFIG_JSON_LIBRARY json.c)
-
-zephyr_sources_ifdef(CONFIG_RING_BUFFER ring_buffer.c)
 
 zephyr_sources_ifdef(CONFIG_UTF8 utf8.c)
 

@@ -13,6 +13,12 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <cortex_m/dwt.h>
+#include <cortex_m/debug.h>
+
+/* Some vendor device headers (e.g. STM32) define COMP1 as a peripheral
+ * instance macro, which clashes with the DWT_Type member of the same name.
+ */
+#undef COMP1
 
 /**
  * @brief Assess whether a debug monitor event should be treated as an error

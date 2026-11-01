@@ -4,8 +4,8 @@ Overview
 ********
 
 UDOO Neo Full is an open source Arduino Uno compatible single board computer.
-It is equipped with an NXP |reg| i.MX 6SoloX hybrid multicore processor
-composed of one ARM |reg| Cortex-A9 core running up to 1 GHz and one Cortex-M4
+It is equipped with an NXP® i.MX 6SoloX hybrid multicore processor
+composed of one ARM® Cortex-A9 core running up to 1 GHz and one Cortex-M4
 core running up to 227 MHz for high CPU performance and real-time response.
 Zephyr was ported to run on the Cortex-M4 core only. In a future release, it
 will also communicate with the Cortex-A9 core (running Linux) via OpenAMP.
@@ -179,9 +179,7 @@ DT_FLASH_SIZE macro to determine the region size and DT_FLASH_ADDR to determine
 the address where the region begins.
 
 If you want to have the data placed in the subregion of a memory, which will
-likely be the case when using DDR, select "zephyr,sram = &sram", which sets the
-CONFIG_SRAM_SIZE macro to determine the region size and
-CONFIG_SRAM_BASE_ADDRESS to determine the address where the region begins.
+likely be the case when using DDR, select "zephyr,sram = &sram".
 
 Otherwise set "zephyr,flash" and/or "zephyr,sram" to one of the predefined
 regions:

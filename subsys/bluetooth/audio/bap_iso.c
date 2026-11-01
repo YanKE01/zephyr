@@ -26,6 +26,7 @@
 #include "bap_iso.h"
 #include "audio_internal.h"
 #include "bap_endpoint.h"
+#include "bap_internal.h"
 
 LOG_MODULE_REGISTER(bt_bap_iso, CONFIG_BT_BAP_ISO_LOG_LEVEL);
 
@@ -38,7 +39,7 @@ struct bt_bap_iso *bt_bap_iso_new(void)
 {
 	struct bt_bap_iso *iso = NULL;
 
-	for (size_t i = 0; i < ARRAY_SIZE(iso_pool); i++) {
+	for (size_t i = 0U; i < ARRAY_SIZE(iso_pool); i++) {
 		if (atomic_cas(&iso_pool[i].ref, 0, 1)) {
 			iso = &iso_pool[i];
 			break;
@@ -89,7 +90,7 @@ void bt_bap_iso_unref(struct bt_bap_iso *iso)
 
 void bt_bap_iso_foreach(bt_bap_iso_func_t func, void *user_data)
 {
-	for (size_t i = 0; i < ARRAY_SIZE(iso_pool); i++) {
+	for (size_t i = 0U; i < ARRAY_SIZE(iso_pool); i++) {
 		struct bt_bap_iso *iso = bt_bap_iso_ref(&iso_pool[i]);
 		bool iter;
 
@@ -173,11 +174,11 @@ static struct bt_bap_iso_dir *bap_iso_get_iso_dir(bool unicast_client, struct bt
 
 void bt_bap_setup_iso_data_path(struct bt_bap_stream *stream)
 {
-	struct bt_audio_codec_cfg *codec_cfg = stream->codec_cfg;
+	const struct bt_audio_codec_cfg *codec_cfg = stream->codec_cfg;
 	struct bt_bap_ep *ep = stream->ep;
 	struct bt_bap_iso *bap_iso = ep->iso;
 	const bool is_unicast_client =
-		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 	struct bt_bap_iso_dir *iso_dir = bap_iso_get_iso_dir(is_unicast_client, bap_iso, ep->dir);
 	struct bt_iso_chan_path path = {0};
 	uint8_t dir;
@@ -216,7 +217,7 @@ void bt_bap_remove_iso_data_path(struct bt_bap_stream *stream)
 	struct bt_bap_ep *ep = stream->ep;
 	struct bt_bap_iso *bap_iso = ep->iso;
 	const bool is_unicast_client =
-		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+		IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 	struct bt_bap_iso_dir *iso_dir = bap_iso_get_iso_dir(is_unicast_client, bap_iso, ep->dir);
 	uint8_t dir;
 	int err;
@@ -235,11 +236,12 @@ void bt_bap_remove_iso_data_path(struct bt_bap_stream *stream)
 
 static bool is_unicast_client_ep(struct bt_bap_ep *ep)
 {
-	return IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_ep_is_unicast_client(ep);
+	return IS_ENABLED(CONFIG_BT_BAP_UNICAST_CLIENT) && bt_bap_unicast_client_has_ep(ep);
 }
 
 void bt_bap_iso_bind_ep(struct bt_bap_iso *iso, struct bt_bap_ep *ep)
 {
+	const struct bt_bap_ep *paired_ep;
 	struct bt_bap_iso_dir *iso_dir;
 
 	__ASSERT_NO_MSG(ep != NULL);
@@ -248,13 +250,22 @@ void bt_bap_iso_bind_ep(struct bt_bap_iso *iso, struct bt_bap_ep *ep)
 	__ASSERT(ep->dir == BT_AUDIO_DIR_SINK || ep->dir == BT_AUDIO_DIR_SOURCE,
 		 "invalid dir: %u", ep->dir);
 
-	LOG_DBG("iso %p ep %p dir %s", iso, ep, bt_audio_dir_str(ep->dir));
+	LOG_DBG("iso %p ep %p dir %s", iso, ep, bt_audio_dir_to_str(ep->dir));
 
 	iso_dir = bap_iso_get_iso_dir(is_unicast_client_ep(ep), iso, ep->dir);
 	__ASSERT(iso_dir->ep == NULL, "iso %p bound with ep %p", iso, iso_dir);
 	iso_dir->ep = ep;
 
 	ep->iso = bt_bap_iso_ref(iso);
+
+	paired_ep = bt_bap_iso_get_paired_ep(ep);
+	if (paired_ep != NULL && paired_ep->stream != NULL && paired_ep->stream->conn != NULL &&
+	    ep->stream != NULL && ep->stream->conn != NULL) {
+		__ASSERT(paired_ep->stream->conn == ep->stream->conn,
+			 "Cannot bind ep %p with conn %p to iso %p with paired_ep %p with "
+			 "different conn %p",
+			 ep, ep->stream->conn, iso, paired_ep, paired_ep->stream->conn);
+	}
 }
 
 void bt_bap_iso_unbind_ep(struct bt_bap_iso *iso, struct bt_bap_ep *ep)
@@ -268,7 +279,7 @@ void bt_bap_iso_unbind_ep(struct bt_bap_iso *iso, struct bt_bap_ep *ep)
 	__ASSERT(ep->dir == BT_AUDIO_DIR_SINK || ep->dir == BT_AUDIO_DIR_SOURCE,
 		 "Invalid dir: %u", ep->dir);
 
-	LOG_DBG("iso %p ep %p dir %s", iso, ep, bt_audio_dir_str(ep->dir));
+	LOG_DBG("iso %p ep %p dir %s", iso, ep, bt_audio_dir_to_str(ep->dir));
 
 	iso_dir = bap_iso_get_iso_dir(is_unicast_client_ep(ep), iso, ep->dir);
 	__ASSERT(iso_dir->ep == ep, "iso %p not bound with ep %p", iso, ep);
@@ -286,7 +297,7 @@ struct bt_bap_ep *bt_bap_iso_get_ep(bool unicast_client, struct bt_bap_iso *iso,
 	__ASSERT(dir == BT_AUDIO_DIR_SINK || dir == BT_AUDIO_DIR_SOURCE,
 		 "invalid dir: %u", dir);
 
-	LOG_DBG("iso %p dir %s", iso, bt_audio_dir_str(dir));
+	LOG_DBG("iso %p dir %s", iso, bt_audio_dir_to_str(dir));
 
 	iso_dir = bap_iso_get_iso_dir(unicast_client, iso, dir);
 
@@ -310,10 +321,10 @@ void bt_bap_iso_bind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *st
 
 	__ASSERT_NO_MSG(stream != NULL);
 	__ASSERT_NO_MSG(bap_iso != NULL);
-	__ASSERT(stream->bap_iso == NULL, "stream %p bound with bap_iso %p already", stream,
-		 stream->bap_iso);
+	__ASSERT(stream->iso == NULL, "stream %p bound with bap_iso %p already", stream,
+		 CONTAINER_OF(stream->iso, struct bt_bap_iso, chan));
 
-	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_str(dir));
+	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_to_str(dir));
 
 	/* For the unicast client, the direction and tx/rx is reversed */
 	if (dir == BT_AUDIO_DIR_SOURCE) {
@@ -326,19 +337,20 @@ void bt_bap_iso_bind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *st
 		 bap_iso_ep->stream);
 	bap_iso_ep->stream = stream;
 
-	stream->bap_iso = bt_bap_iso_ref(bap_iso);
+	stream->iso = &bt_bap_iso_ref(bap_iso)->chan;
 }
 
-void bt_bap_iso_unbind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *stream,
-			      enum bt_audio_dir dir)
+void bt_bap_iso_unbind_stream(struct bt_bap_stream *stream, enum bt_audio_dir dir)
 {
 	struct bt_bap_iso_dir *bap_iso_ep;
+	struct bt_bap_iso *bap_iso;
 
 	__ASSERT_NO_MSG(stream != NULL);
-	__ASSERT_NO_MSG(bap_iso != NULL);
-	__ASSERT(stream->bap_iso != NULL, "stream %p not bound with an bap_iso", stream);
+	__ASSERT(stream->iso != NULL, "stream %p not bound with an bap_iso", stream);
 
-	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_str(dir));
+	bap_iso = CONTAINER_OF(stream->iso, struct bt_bap_iso, chan);
+
+	LOG_DBG("bap_iso %p stream %p dir %s", bap_iso, stream, bt_audio_dir_to_str(dir));
 
 	/* For the unicast client, the direction and tx/rx is reversed */
 	if (dir == BT_AUDIO_DIR_SOURCE) {
@@ -348,11 +360,12 @@ void bt_bap_iso_unbind_stream(struct bt_bap_iso *bap_iso, struct bt_bap_stream *
 	}
 
 	__ASSERT(bap_iso_ep->stream == stream, "bap_iso %p (%p) not bound with stream %p (%p)",
-		 bap_iso, bap_iso_ep->stream, stream, stream->bap_iso);
+		 bap_iso, bap_iso_ep->stream, stream,
+		 CONTAINER_OF(stream->iso, struct bt_bap_iso, chan));
 	bap_iso_ep->stream = NULL;
 
 	bt_bap_iso_unref(bap_iso);
-	stream->bap_iso = NULL;
+	stream->iso = NULL;
 }
 
 struct bt_bap_stream *bt_bap_iso_get_stream(struct bt_bap_iso *iso, enum bt_audio_dir dir)
@@ -360,7 +373,7 @@ struct bt_bap_stream *bt_bap_iso_get_stream(struct bt_bap_iso *iso, enum bt_audi
 	__ASSERT(dir == BT_AUDIO_DIR_SINK || dir == BT_AUDIO_DIR_SOURCE,
 		 "invalid dir: %u", dir);
 
-	LOG_DBG("iso %p dir %s", iso, bt_audio_dir_str(dir));
+	LOG_DBG("iso %p dir %s", iso, bt_audio_dir_to_str(dir));
 
 	/* For the unicast client, the direction and tx/rx is reversed */
 	if (dir == BT_AUDIO_DIR_SOURCE) {

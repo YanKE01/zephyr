@@ -2,7 +2,7 @@
  * Userspace and service handler hooks
  *
  * Copyright (c) 2017 Linaro Limited
- * Copyright 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
+ * Copyright 2025-2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -27,10 +27,25 @@ GTEXT(arch_user_string_nlen)
 GTEXT(z_arm_user_string_nlen_fault_start)
 GTEXT(z_arm_user_string_nlen_fault_end)
 GTEXT(z_arm_user_string_nlen_fixup)
+GTEXT(z_syscall_exit_race1)
+GTEXT(z_syscall_exit_race2)
 GDATA(_kernel)
 
 /* Imports */
 GDATA(_k_syscall_table)
+
+#if defined(CONFIG_USE_SWITCH)
+#if defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
+# define LOCK(reg)   mov reg, #_EXC_IRQ_DEFAULT_PRIO ; msr BASEPRI, reg
+# define UNLOCK(reg) mov reg, #0 ; msr BASEPRI, reg
+#else
+# define LOCK(unused)   cpsid i
+# define UNLOCK(unused) cpsie i
+#endif
+#else
+# define LOCK(unused)
+# define UNLOCK(unused)
+#endif
 
 /**
  *
@@ -48,6 +63,8 @@ GDATA(_k_syscall_table)
 SECTION_FUNC(TEXT,z_arm_userspace_enter)
     /* move user_entry to lr */
     mov lr, r0
+
+    LOCK(r0)
 
     /* load arguments from stack:
      *   r4 = user stack start
@@ -185,14 +202,18 @@ SECTION_FUNC(TEXT,z_arm_userspace_enter)
      * large enough to accommodate a maximum exception stack frame.
      */
 
+#ifndef CONFIG_USE_SWITCH
     /* Temporarily store current IRQ locking status in ip */
     mrs ip, BASEPRI
+#endif
     push {r0, ip}
 
+#ifndef CONFIG_USE_SWITCH
     /* Lock PendSV while reprogramming PSP and PSPLIM */
     mov r0, #_EXC_PENDSV_PRIO_MASK
     msr BASEPRI_MAX, r0
     isb
+#endif
 
     /* Set PSPLIM to guard the thread's user stack. */
     msr PSPLIM, r4
@@ -204,7 +225,8 @@ SECTION_FUNC(TEXT,z_arm_userspace_enter)
     msr PSP, r0
 #endif
 
-#if defined(CONFIG_BUILTIN_STACK_GUARD)
+    UNLOCK(r0)
+#if !defined(CONFIG_USE_SWITCH) && defined(CONFIG_BUILTIN_STACK_GUARD)
     /* Restore interrupt lock status */
     msr BASEPRI, ip
     isb
@@ -242,10 +264,24 @@ SECTION_FUNC(TEXT,z_arm_userspace_enter)
     orrs ip, ip, #1
     /* Store (unprivileged) mode in thread's mode state variable */
     str r1, [r0, #_thread_offset_to_mode]
+
+#ifdef CONFIG_ARM_PAC_PER_THREAD
+    /* Read thread's dedicated PAC key and since we are in unprivileged mode write them in the
+     * unprivileged PAC key registers.
+     * This needs to be done before we switch to unprivileged mode.
+     */
+    add r1, r0, #_thread_offset_to_pac_keys
+    ldmia r1!, {r3-r6}
+    msr  PAC_KEY_U_0, r3
+    msr  PAC_KEY_U_1, r4
+    msr  PAC_KEY_U_2, r5
+    msr  PAC_KEY_U_3, r6
+    clrm {r3-r6}
+#endif
 #endif
     dsb
     msr CONTROL, ip
-#endif
+#endif /* CONFIG_CPU_AARCH32_CORTEX_R */
 
     /* ISB is not strictly necessary here (stack pointer is not being
      * touched), but it's recommended to avoid executing pre-fetched
@@ -314,6 +350,8 @@ SECTION_FUNC(TEXT, z_arm_do_syscall)
      * privileged stack we are safe, as long as the stack can accommodate
      * the maximum exception stack frame.
      */
+
+    UNLOCK(ip)
 
     /*
      * r0-r5 contain arguments
@@ -399,6 +437,7 @@ dispatch_syscall:
     ldr lr, [sp,#16]
 #endif
 
+    LOCK(ip)
 
 #if defined(CONFIG_BUILTIN_STACK_GUARD)
     /*
@@ -418,6 +457,7 @@ dispatch_syscall:
      * large enough to accommodate a maximum exception stack frame.
      */
 
+#ifndef CONFIG_USE_SWITCH
     /* Temporarily store current IRQ locking status in r2 */
     mrs r2, BASEPRI
 
@@ -425,6 +465,7 @@ dispatch_syscall:
     mov r3, #_EXC_PENDSV_PRIO_MASK
     msr BASEPRI_MAX, r3
     isb
+#endif
 
     /* Set PSPLIM to guard the thread's user stack. */
     ldr r3, =_kernel
@@ -448,7 +489,7 @@ dispatch_syscall:
     msr PSP, ip
 #endif
 
-#if defined(CONFIG_BUILTIN_STACK_GUARD)
+#if !defined(CONFIG_USE_SWITCH) && defined(CONFIG_BUILTIN_STACK_GUARD)
     /* Restore interrupt lock status */
     msr BASEPRI, r2
     isb
@@ -469,6 +510,7 @@ dispatch_syscall:
     /* drop privileges by setting bit 0 in CONTROL */
     mrs r2, CONTROL
     orrs r2, r2, r3
+
     msr CONTROL, r2
     pop {r2, r3}
 #elif defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE) \
@@ -480,11 +522,19 @@ dispatch_syscall:
     /* Store (unprivileged) mode in thread's mode state variable */
     str r1, [r0, #_thread_offset_to_mode]
     dsb
+
 #if defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
     /* drop privileges by setting bit 0 in CONTROL */
     mrs ip, CONTROL
     orrs ip, ip, #1
+
+    /* drop lock immediately before setting CONTROL, see comments in arm-m-switch.c */
+    UNLOCK(r0)
+z_syscall_exit_race1:
     msr CONTROL, ip
+z_syscall_exit_race2:
+#else
+    UNLOCK(r0)
 #endif
 #endif
 
@@ -578,6 +628,8 @@ SECTION_FUNC(TEXT, arch_user_string_nlen)
     movs r3, #0		/* r3 is the counter */
 
 strlen_loop:
+    cmp r3, r1
+    beq strlen_done
 z_arm_user_string_nlen_fault_start:
     /* r0 contains the string. r5 = *(r0 + r3]). This could fault. */
     ldrb r5, [r0, r3]
@@ -585,9 +637,6 @@ z_arm_user_string_nlen_fault_start:
 z_arm_user_string_nlen_fault_end:
 #if defined(CONFIG_CPU_AARCH32_CORTEX_R)
     cmp r5, #0
-    beq strlen_done
-
-    cmp r3, r1
     beq strlen_done
 
     adds r3, #1
@@ -599,9 +648,6 @@ z_arm_user_string_nlen_fault_end:
 #elif defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
     cbz	r5, strlen_done
 #endif
-    cmp	r3, r1
-    beq.n strlen_done
-
     adds r3, #1
     b.n	strlen_loop
 #endif

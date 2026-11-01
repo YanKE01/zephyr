@@ -9,6 +9,8 @@
 #include <zephyr/modem/ubx.h>
 #include <zephyr/sys/check.h>
 
+#include "modem_workqueue.h"
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(modem_ubx, CONFIG_MODEM_MODULES_LOG_LEVEL);
 
@@ -19,7 +21,9 @@ static void modem_ubx_pipe_callback(struct modem_pipe *pipe,
 	struct modem_ubx *ubx = (struct modem_ubx *)user_data;
 
 	if (event == MODEM_PIPE_EVENT_RECEIVE_READY) {
-		k_work_submit(&ubx->process_work);
+		modem_work_submit(&ubx->process_work);
+	} else if (event == MODEM_PIPE_EVENT_TRANSMIT_IDLE) {
+		k_sem_give(&ubx->script_sent_sem);
 	}
 }
 
@@ -40,12 +44,16 @@ int modem_ubx_run_script(struct modem_ubx *ubx, struct modem_ubx_script *script)
 	int32_t ms_per_attempt = (uint64_t)k_ticks_to_ms_floor64(script->timeout.ticks) / tries;
 
 	do {
+		k_sem_reset(&ubx->script_sent_sem);
+
 		ret = modem_pipe_transmit(ubx->pipe,
 					  (const uint8_t *)ubx->script->request.buf,
 					  ubx->script->request.len);
 
 		if (wait_for_rsp) {
 			ret = k_sem_take(&ubx->script_stopped_sem, K_MSEC(ms_per_attempt));
+		} else if (ret > 0) {
+			ret = k_sem_take(&ubx->script_sent_sem, K_MSEC(ms_per_attempt));
 		}
 		tries--;
 	} while ((tries > 0) && (ret < 0));
@@ -214,6 +222,7 @@ void modem_ubx_release(struct modem_ubx *ubx)
 	modem_pipe_release(ubx->pipe);
 	k_work_cancel_sync(&ubx->process_work, &sync);
 	k_sem_reset(&ubx->script_stopped_sem);
+	k_sem_reset(&ubx->script_sent_sem);
 	k_sem_reset(&ubx->script_running_sem);
 	ubx->pipe = NULL;
 }
@@ -238,6 +247,7 @@ int modem_ubx_init(struct modem_ubx *ubx, const struct modem_ubx_config *config)
 
 	k_work_init(&ubx->process_work, modem_ubx_process_handler);
 	k_sem_init(&ubx->script_stopped_sem, 0, 1);
+	k_sem_init(&ubx->script_sent_sem, 0, 1);
 	k_sem_init(&ubx->script_running_sem, 1, 1);
 
 	return 0;

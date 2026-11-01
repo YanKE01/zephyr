@@ -14,10 +14,11 @@ zephyr_library_sources(
   irq_manage.c
   prep_c.c
   thread.c
-  cpu_idle.S
+  cpu_idle.c
   smp.c
   )
 
+zephyr_library_sources_ifdef(CONFIG_IRQ_OFFLOAD irq_offload.c)
 zephyr_library_sources_ifdef(CONFIG_GEN_SW_ISR_TABLE isr_wrapper.S)
 zephyr_library_sources_ifdef(CONFIG_USERSPACE thread.c)
 zephyr_library_sources_ifdef(CONFIG_SEMIHOST semihost.c)

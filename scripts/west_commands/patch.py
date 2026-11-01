@@ -19,6 +19,7 @@ from west.commands import WestCommand
 
 sys.path.append(os.fspath(Path(__file__).parent.parent))
 import zephyr_module
+
 from zephyr_ext_common import ZEPHYR_BASE
 
 try:
@@ -39,15 +40,14 @@ class Patch(WestCommand):
     def __init__(self):
         super().__init__(
             "patch",
-            "apply patches to the west workspace",
-            "Apply patches to the west workspace",
+            "",
+            description="Apply patches to the west workspace",
             accepts_unknown_args=False,
         )
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(
             self.name,
-            help=self.help,
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=self.description,
             epilog=textwrap.dedent("""\
@@ -55,6 +55,11 @@ class Patch(WestCommand):
 
                 Run "west patch apply" to apply patches.
                 See "west patch apply --help" for details.
+
+            Reversing Patches:
+
+                Run "west patch reverse" to reverse patches.
+                See "west patch reverse --help" for details.
 
             Cleaning Patches:
 
@@ -170,9 +175,27 @@ class Patch(WestCommand):
         apply_arg_parser.add_argument(
             "-r",
             "--roll-back",
-            help="Roll back if any patch fails to apply",
             action="store_true",
             default=False,
+            help="""
+                clean all changes from patched modules if a patch fails to apply.
+                All changes in the module will be lost, including changes that
+                are not part of any patch.""",
+        )
+
+        subparsers.add_parser(
+            "reverse",
+            help="Reverse patches",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=textwrap.dedent(
+                """
+            Reversing Patches:
+
+                Run "west patch reverse" to reverse patches. Changes in the module
+                that are not part of a patch will be left in place. Patches are
+                processed in reverse order of apply.
+            """
+            ),
         )
 
         subparsers.add_parser(
@@ -183,7 +206,9 @@ class Patch(WestCommand):
                 """
             Cleaning Patches:
 
-                Run "west patch clean" to clean patches.
+                Run "west patch clean" to clean patches. All changes in the
+                module will be lost, including changes that are not part of
+                a patch.
             """
             ),
         )
@@ -334,6 +359,7 @@ class Patch(WestCommand):
 
         method = {
             "apply": self.apply,
+            "reverse": self.reverse,
             "clean": self.clean,
             "list": self.list,
             "gh-fetch": self.gh_fetch,
@@ -341,16 +367,87 @@ class Patch(WestCommand):
 
         method[args.subcommand](args, yml, args.dst_modules)
 
-    def apply(self, args, yml, dst_mods=None):
+    def execute_on_patch(self, args, patch_info, command, squelch_errors=False):
+        """
+        Execute an arbitrary command given the patch information.
+
+        Arguments:
+            - args: Patch command arguments
+            - patch_info: Patch information from the patches.yml file
+            - command: Command to execute (e.g. "git apply")
+
+        Returns:
+            - True: The command executed successfully
+            - False: The command failed to execute, or the hash check failed
+        """
+        mod = self.get_module_path(patch_info["module"])
+        if mod is None:
+            return False
+
+        mod_path = Path(args.west_workspace) / mod
+
+        pth = patch_info["path"]
+        patch_path = Path(args.patch_base / pth).resolve()
+
+        self.dbg(f"reading patch file {pth}")
+        expect_sha256 = patch_info["sha256sum"]
+        try:
+            actual_sha256 = self.get_file_sha256sum(patch_path)
+        except OSError as e:
+            self.die(f"failed to read {pth}: {e}")
+
+        if actual_sha256 != expect_sha256:
+            self.dbg("FAIL")
+            self.err(
+                f"sha256 mismatch for {pth}:\n"
+                f"expect: {expect_sha256}\n"
+                f"actual: {actual_sha256}"
+            )
+            return False
+        self.dbg("OK")
+
+        self.dbg(f"executing '{command}' for patch {pth} in module {mod}... ")
+        command_list = shlex.split(command)
+        command_list.append(patch_path)
+        proc = subprocess.run(
+            command_list, capture_output=True, cwd=mod_path, encoding="utf-8"
+        )
+        if proc.returncode:
+            if not squelch_errors:
+                self.err(f"Unable to execute '{command}' for patch {pth} in module {mod}")
+                self.err(proc.stderr)
+            return False
+
+        self.dbg("OK")
+        return True
+
+    def patch(self, args, yml, patch_cmd, test_cmd,
+              reverse_order=False, dst_mods=None):
+        """
+        Execute a patching command for all patches in the patches.yml file.
+
+        Arguments:
+            - args: Patch command arguments
+            - yml: Parsed patches.yml file
+            - patch_cmd: Command tag in the yml file to execute for patching (e.g. "apply-command")
+            - test_cmd: Command tag in the yml file to execute for checking if the patch
+                         has already been applied (e.g. "reverse-test-command")
+            - reverse_order: If True, apply patches in reverse order
+            - dst_mods: List of modules to apply the patch command to. If None, apply to all
+
+        Returns:
+            - True: All patches were processed successfully
+            - False: A patch failed to process
+        """
         patches = yml.get("patches", [])
         if not patches:
-            return
+            return True
 
         patch_count = 0
         failed_patch = None
         patched_mods = set()
 
-        for patch_info in patches:
+        for patch_info in (reversed(patches) if reverse_order else patches):
             mod = self.get_module_path(patch_info["module"])
             if mod is None:
                 continue
@@ -358,63 +455,62 @@ class Patch(WestCommand):
             if dst_mods and mod not in dst_mods:
                 continue
 
-            pth = patch_info["path"]
-            patch_path = os.path.realpath(Path(args.patch_base) / pth)
-
-            apply_cmd = patch_info["apply-command"]
-            apply_cmd_list = shlex.split(apply_cmd)
-
-            self.dbg(f"reading patch file {pth}")
-            patch_file_data = None
-
-            try:
-                with open(patch_path, "rb") as pf:
-                    patch_file_data = pf.read()
-            except Exception as e:
-                self.err(f"failed to read {pth}: {e}")
-                failed_patch = pth
-                break
-
-            self.dbg("checking patch integrity... ", end="")
-            expect_sha256 = patch_info["sha256sum"]
-            hasher = hashlib.sha256()
-            hasher.update(patch_file_data)
-            actual_sha256 = hasher.hexdigest()
-            if actual_sha256 != expect_sha256:
-                self.dbg("FAIL")
-                self.err(
-                    f"sha256 mismatch for {pth}:\n"
-                    f"expect: {expect_sha256}\n"
-                    f"actual: {actual_sha256}"
-                )
-                failed_patch = pth
-                break
-            self.dbg("OK")
-            patch_count += 1
-            patch_file_data = None
-
-            mod_path = Path(args.west_workspace) / mod
             patched_mods.add(mod)
 
-            self.dbg(f"patching {mod}... ", end="")
-            apply_cmd += patch_path
-            apply_cmd_list.extend([patch_path])
-            proc = subprocess.run(apply_cmd_list, cwd=mod_path)
-            if proc.returncode:
-                self.dbg("FAIL")
-                self.err(proc.stderr)
-                failed_patch = pth
+            # Do our best to see if the working directory is in an appropriate
+            # state before trying to apply or reverse the patch. This is a best
+            # effort check and may not be totally accurate. Errors are squelched
+            # because we expect to fail if the directory is in the correct state.
+            if self.execute_on_patch(
+                args, patch_info, patch_info[test_cmd], squelch_errors=True
+            ):
+                self.inf(f"Skipping {patch_info['path']}: "
+                         f"{'patch already reversed, or never applied' if reverse_order
+                         else 'patch already applied'}")
+                continue
+
+            if not self.execute_on_patch(
+                args, patch_info, patch_info[patch_cmd], squelch_errors=False
+            ):
+                failed_patch = patch_info["path"]
                 break
-            self.dbg("OK")
+
+            patch_count += 1
 
         if not failed_patch:
-            self.inf(f"{patch_count} patches applied successfully \\o/")
-            return
+            self.inf(f"{patch_count} patches processed successfully \\o/")
+            return True
 
-        if args.roll_back:
+        # Only the apply subcommand has the --roll-back option, so we need to check for it first
+        if hasattr(args, "roll_back") and args.roll_back:
             self.clean(args, yml, patched_mods)
 
-        self.die(f"failed to apply patch {failed_patch}")
+        self.err(f"failed to process patch {failed_patch}, is there a conflict?")
+        return False
+
+    def apply(self, args, yml, dst_mods=None):
+        success = self.patch(
+            args, yml,
+            patch_cmd="apply-command",
+            test_cmd="reverse-test-command",
+            reverse_order=False,
+            dst_mods=dst_mods
+        )
+
+        if not success:
+            self.die("failed to apply patches")
+
+    def reverse(self, args, yml, dst_mods=None):
+        success = self.patch(
+            args, yml,
+            patch_cmd="reverse-command",
+            test_cmd="apply-test-command",
+            reverse_order=True,
+            dst_mods=dst_mods
+        )
+
+        if not success:
+            self.die("failed to reverse patches")
 
     def clean(self, args, yml, dst_mods=None):
         clean_cmd = yml["clean-command"]
@@ -438,7 +534,9 @@ class Patch(WestCommand):
             try:
                 if checkout_cmd:
                     self.dbg(f"Running '{checkout_cmd}' in {mod}.. ", end="")
-                    proc = subprocess.run(checkout_cmd_list, capture_output=True, cwd=mod_path)
+                    proc = subprocess.run(
+                        checkout_cmd_list, capture_output=True, cwd=mod_path, encoding="utf-8"
+                    )
                     if proc.returncode:
                         self.dbg("FAIL")
                         self.err(f"{checkout_cmd} failed for {mod}\n{proc.stderr}")
@@ -447,7 +545,9 @@ class Patch(WestCommand):
 
                 if clean_cmd:
                     self.dbg(f"Running '{clean_cmd}' in {mod}.. ", end="")
-                    proc = subprocess.run(clean_cmd_list, capture_output=True, cwd=mod_path)
+                    proc = subprocess.run(
+                        clean_cmd_list, capture_output=True, cwd=mod_path, encoding="utf-8"
+                    )
                     if proc.returncode:
                         self.dbg("FAIL")
                         self.err(f"{clean_cmd} failed for {mod}\n{proc.stderr}")
@@ -529,12 +629,14 @@ class Patch(WestCommand):
 
     @staticmethod
     def get_file_sha256sum(filename: Path) -> str:
-        with open(filename, "rb") as fp:
-            # NOTE: If python 3.11 is the minimum, the following can be replaced with:
-            # digest = hashlib.file_digest(fp, "sha256")
-            digest = hashlib.new("sha256")
-            while chunk := fp.read(2**10):
-                digest.update(chunk)
+        # Read as text to normalize line endings
+        with open(filename, encoding="utf-8", newline=None) as fp:
+            content = fp.read()
+
+        # NOTE: If python 3.11 is the minimum, the following can be replaced with:
+        # digest = hashlib.file_digest(BytesIO(content_bytes), "sha256")
+        digest = hashlib.new("sha256")
+        digest.update(content.encode("utf-8"))
 
         return digest.hexdigest()
 

@@ -2,10 +2,11 @@
 #
 # Copyright (c) 2023 Antmicro <www.antmicro.com>
 # Copyright (c) 2025, Ambiq Micro Inc. <www.ambiq.com>
-
+# Copyright (c) 2025, Linumiz GmbH
+#
 config AMBIQ_HAL
 	bool "Ambiq HAL drivers support"
-	depends on SOC_SERIES_APOLLO3X || SOC_SERIES_APOLLO4X || SOC_SERIES_APOLLO5X
+	depends on SOC_SERIES_APOLLO2X || SOC_SERIES_APOLLO3X || SOC_SERIES_APOLLO4X || SOC_SERIES_APOLLO5X
 	help
 	  Use the Ambiq HAL
 
@@ -60,6 +61,11 @@ config AMBIQ_HAL_USE_I2C
 	bool
 	help
 	  Use the I2C driver from Ambiq HAL
+
+config AMBIQ_HAL_USE_IOS_I2C
+	bool
+	help
+	  Use the I2C Target driver from Ambiq HAL
 
 config AMBIQ_HAL_USE_SPIC
 	bool

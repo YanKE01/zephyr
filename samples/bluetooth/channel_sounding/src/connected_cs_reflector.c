@@ -25,6 +25,7 @@ static K_SEM_DEFINE(sem_written, 0, 1);
 
 static uint16_t step_data_attr_handle;
 static struct bt_conn *connection;
+static uint16_t latest_procedure_counter = UINT16_MAX;
 static uint8_t latest_local_steps[STEP_DATA_BUF_LEN];
 
 static const char sample_str[] = "CS Sample";
@@ -34,6 +35,13 @@ static const struct bt_data ad[] = {
 
 static void subevent_result_cb(struct bt_conn *conn, struct bt_conn_le_cs_subevent_result *result)
 {
+	if (result->header.procedure_counter == latest_procedure_counter) {
+		printk("The sample does not handle CS procedures with multiple CS subevents.\n");
+		latest_procedure_counter = result->header.procedure_counter;
+		return;
+	}
+	latest_procedure_counter = result->header.procedure_counter;
+
 	if (result->step_data_buf) {
 		if (result->step_data_buf->len <= STEP_DATA_BUF_LEN) {
 			memcpy(latest_local_steps, result->step_data_buf->data,
@@ -57,16 +65,12 @@ static void mtu_exchange_cb(struct bt_conn *conn, uint8_t err,
 
 static void connected_cb(struct bt_conn *conn, uint8_t err)
 {
-	char addr[BT_ADDR_LE_STR_LEN];
-
-	(void)bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-	printk("Connected to %s (err 0x%02X)\n", addr, err);
+	printk("Connected to %s (err 0x%02X)\n", bt_conn_dst_str(conn), err);
 
 	__ASSERT(connection == conn, "Unexpected connected callback");
 
 	if (err) {
-		bt_conn_unref(conn);
-		connection = NULL;
+		bt_conn_drop(&connection);
 	}
 
 	connection = bt_conn_ref(conn);
@@ -85,8 +89,7 @@ static void disconnected_cb(struct bt_conn *conn, uint8_t reason)
 {
 	printk("Disconnected (reason 0x%02X)\n", reason);
 
-	bt_conn_unref(conn);
-	connection = NULL;
+	bt_conn_drop(&connection);
 }
 
 static void remote_capabilities_cb(struct bt_conn *conn,

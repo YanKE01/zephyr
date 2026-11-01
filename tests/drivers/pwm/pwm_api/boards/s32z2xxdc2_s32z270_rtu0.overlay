@@ -4,11 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <nxp/s32/S32Z27-BGA594-pinctrl.h>
+#include <nxp/s32/pinctrl/S32Z27-BGA594-pinctrl.h>
 
 / {
 	aliases {
-		pwm-0 = &emios0_pwm;
+		pwm-test = &emios0_pwm;
 	};
 };
 

@@ -5,14 +5,15 @@
  */
 
 #include <zephyr/init.h>
+#include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/pm/pm.h>
 
 #include <clock_control/clock_stm32_ll_common.h>
-#include <stm32u0xx_ll_cortex.h>
-#include <stm32u0xx_ll_pwr.h>
-#include <stm32u0xx_ll_rcc.h>
+#include <stm32_ll_cortex.h>
+#include <stm32_ll_pwr.h>
+#include <stm32_ll_rcc.h>
 
 LOG_MODULE_DECLARE(soc, CONFIG_SOC_LOG_LEVEL);
 

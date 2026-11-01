@@ -1,13 +1,13 @@
 /*
- * Copyright (c) 2024-2025 Renesas Electronics Corporation
+ * Copyright (c) 2024-2026 Renesas Electronics Corporation
  * SPDX-License-Identifier: Apache-2.0
  */
 
 /dts-v1/;
 
 #include <renesas/ra/ra6/r7fa6e10f2cfp.dtsi>
-#include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 
 #include "fpb_ra6e1-pinctrl.dtsi"
@@ -18,19 +18,22 @@
 
 	chosen {
 		zephyr,sram = &sram0;
-		zephyr,flash-controller = &flash1;
-		zephyr,flash = &flash0;
+		zephyr,flash-controller = &code_flash_ctrl;
+		zephyr,flash = &code_flash;
 		zephyr,console = &uart0;
 		zephyr,shell-uart = &uart0;
 		zephyr,entropy = &trng;
+		zephyr,crc = &crc;
 	};
 
 	leds {
 		compatible = "gpio-leds";
+
 		led1: led1 {
 			gpios = <&ioport4 7 GPIO_ACTIVE_HIGH>;
 			label = "LED1";
 		};
+
 		led2: led2 {
 			gpios = <&ioport4 8 GPIO_ACTIVE_HIGH>;
 			label = "LED2";
@@ -39,6 +42,7 @@
 
 	buttons {
 		compatible = "gpio-keys";
+
 		button0: s1 {
 			gpios = <&ioport2 5 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "Push button switch 1";
@@ -50,6 +54,7 @@
 		led0 = &led1;
 		sw0 = &button0;
 		watchdog0 = &wdt;
+		i2c-0 = &iic0;
 	};
 };
 
@@ -57,6 +62,7 @@
 	pinctrl-0 = <&sci0_default>;
 	pinctrl-names = "default";
 	status = "okay";
+
 	uart0: uart {
 		current-speed = <115200>;
 		status = "okay";
@@ -69,7 +75,7 @@
 	#size-cells = <0>;
 	interrupts = <91 1>, <92 1>, <93 1>, <94 1>;
 	interrupt-names = "rxi", "txi", "tei", "eri";
-	clock-frequency = <DT_FREQ_M(1)>;
+	clock-frequency = <I2C_BITRATE_FAST>;
 	pinctrl-0 = <&iic0_default>;
 	pinctrl-names = "default";
 };
@@ -88,10 +94,6 @@
 	status = "okay";
 };
 
-&subclk {
-	status = "okay";
-};
-
 &pll {
 	clocks = <&hoco>;
 	div = <2>;
@@ -99,15 +101,16 @@
 	status = "okay";
 };
 
-&flash1 {
+&data_flash {
 	partitions {
-		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		storage_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
-			reg = <0X0 DT_SIZE_K(8)>;
+			reg = <0x0 DT_SIZE_K(8)>;
 		};
 	};
 };
@@ -142,5 +145,9 @@
 };
 
 &wdt {
+	status = "okay";
+};
+
+&crc {
 	status = "okay";
 };

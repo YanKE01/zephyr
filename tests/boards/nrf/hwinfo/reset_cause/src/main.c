@@ -134,6 +134,16 @@ static void print_supported_reset_cause(void)
 		} else {
 			LOG_INF("14: no support for RESET_TEMPERATURE");
 		}
+		if (supported & RESET_BOOTLOADER) {
+			LOG_INF("15: RESET_BOOTLOADER is supported");
+		} else {
+			LOG_INF("15: no support for RESET_BOOTLOADER");
+		}
+		if (supported & RESET_FLASH) {
+			LOG_INF("16: RESET_FLASH is supported");
+		} else {
+			LOG_INF("16: no support for RESET_FLASH");
+		}
 	} else if (ret == -ENOSYS) {
 		LOG_INF("hwinfo_get_supported_reset_cause() is NOT supported");
 		supported = 0;
@@ -197,11 +207,29 @@ static void print_current_reset_cause(uint32_t *cause)
 		if (*cause & RESET_TEMPERATURE) {
 			LOG_INF("14: reset due to RESET_TEMPERATURE");
 		}
+		if (*cause & RESET_BOOTLOADER) {
+			LOG_INF("15: reset due to RESET_BOOTLOADER");
+		}
+		if (*cause & RESET_FLASH) {
+			LOG_INF("16: reset due to RESET_FLASH");
+		}
 	} else if (ret == -ENOSYS) {
 		LOG_INF("hwinfo_get_reset_cause() is NOT supported");
 		*cause = 0;
 	} else {
 		LOG_ERR("hwinfo_get_reset_cause() failed (ret = %d)", ret);
+	}
+	print_bar();
+}
+
+/* Verify that a previously detected reset cause is no longer set. */
+static void test_previous_reset_cause_absent(uint32_t cause, uint32_t previous, const char *name)
+{
+	LOG_INF("TEST that %s is not set", name);
+	if (cause & previous) {
+		LOG_INF("%s is still set (cause=0x%x)", name, cause);
+	} else {
+		LOG_INF("PASS: %s is not set", name);
 	}
 	print_bar();
 }
@@ -251,6 +279,7 @@ void test_reset_software(uint32_t cause)
 			if (cause & RESET_SOFTWARE) {
 				LOG_INF("PASS: RESET_SOFTWARE detected");
 				print_bar();
+				test_previous_reset_cause_absent(cause, RESET_PIN, "RESET_PIN");
 				/* Check RESET_SOFTWARE can be cleared */
 				test_clear_reset_cause();
 			} else {
@@ -297,7 +326,7 @@ void test_reset_watchdog(uint32_t cause)
 
 			/* Flush cache as reboot may invalidate all lines. */
 			sys_cache_data_flush_range((void *) &machine_state, sizeof(machine_state));
-			LOG_INF("Watchdog shall fire in ~%u miliseconds", watchdog_window);
+			LOG_INF("Watchdog shall fire in ~%u milliseconds", watchdog_window);
 			print_bar();
 			k_sleep(K_FOREVER);
 		} else {
@@ -306,6 +335,8 @@ void test_reset_watchdog(uint32_t cause)
 			if (cause & RESET_WATCHDOG) {
 				LOG_INF("PASS: RESET_WATCHDOG detected");
 				print_bar();
+				test_previous_reset_cause_absent(cause, RESET_SOFTWARE,
+					"RESET_SOFTWARE");
 				/* Check RESET_WATCHDOG can be cleared */
 				test_clear_reset_cause();
 			} else {
@@ -348,7 +379,9 @@ void test_reset_cpu_lockup(uint32_t cause)
 			if (cause & RESET_CPU_LOCKUP) {
 				LOG_INF("PASS: RESET_CPU_LOCKUP detected");
 				print_bar();
-				/* Check RESET_SOFTWARE can be cleared */
+				test_previous_reset_cause_absent(cause, RESET_WATCHDOG,
+					"RESET_WATCHDOG");
+				/* Check RESET_CPU_LOCKUP can be cleared */
 				test_clear_reset_cause();
 			} else {
 				LOG_ERR("FAIL: RESET_CPU_LOCKUP not set");

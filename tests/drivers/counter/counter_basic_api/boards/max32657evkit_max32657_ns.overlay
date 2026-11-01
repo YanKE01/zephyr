@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Analog Devices, Inc.
+ * Copyright (c) 2024-2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -7,6 +7,7 @@
 &timer0 {
 	status = "okay";
 	prescaler = <2>;
+
 	counter {
 		status = "okay";
 	};
@@ -15,6 +16,7 @@
 &timer1 {
 	status = "okay";
 	prescaler = <2>;
+
 	counter {
 		status = "okay";
 	};
@@ -23,6 +25,7 @@
 &timer2 {
 	status = "okay";
 	prescaler = <2>;
+
 	counter {
 		status = "okay";
 	};
@@ -31,6 +34,7 @@
 &timer3 {
 	status = "okay";
 	prescaler = <2>;
+
 	counter {
 		status = "okay";
 	};
@@ -38,6 +42,7 @@
 
 &timer4 {
 	status = "okay";
+
 	counter {
 		status = "okay";
 	};
@@ -45,7 +50,26 @@
 
 &timer5 {
 	status = "okay";
+
 	counter {
 		status = "okay";
 	};
+};
+
+&wut0 {
+	status = "okay";
+	prescaler = <2>;
+
+	counter {
+		status = "okay";
+	};
+};
+
+/*
+ * SRAM banks marked with the following property are retained in backup mode
+ *
+ * SRAM banks are listed in max32657_common.dtsi
+ */
+&sram2 {
+	adi,ram-bank-retained;
 };

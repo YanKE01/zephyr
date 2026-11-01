@@ -514,7 +514,7 @@ static int rtc_smartbond_alarm_is_pending(const struct device *dev, uint16_t id)
 	key = DA1469X_IRQ_DISABLE();
 	status = data->is_alarm_pending;
 	/* After reading, the alarm status should be cleared. */
-	data->is_alarm_pending = 0;
+	data->is_alarm_pending = false;
 	DA1469X_IRQ_ENABLE(key);
 
 	return status;
@@ -605,12 +605,12 @@ static void rtc_smartbond_100HZ_clock_cfg(void)
 	uint32_t clk_rtcdiv_reg;
 
 	if (!device_is_ready(dev)) {
-		__ASSERT_MSG_INFO("Clock device is not ready");
+		LOG_ERR("Clock device is not ready");
 	}
 
 	if (clock_control_get_rate(dev, (clock_control_subsys_t)SMARTBOND_CLK_LP_CLK,
 								&lp_clk_rate) < 0) {
-		__ASSERT_MSG_INFO("Cannot extract LP clock rate");
+		LOG_ERR("Cannot extract LP clock rate");
 	}
 
 	clk_rtcdiv_reg = CRG_TOP->CLK_RTCDIV_REG;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Analog Devices, Inc.
+ * Copyright (c) 2024-2026 Analog Devices, Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -10,11 +10,14 @@
 #include <zephyr/drivers/clock_control/adi_max32_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/irq.h>
+#include <zephyr/logging/log.h>
 
 #include <rtc.h>
 #include <wrap_max32_lp.h>
 
-/* Resoultion is 1sec for time of day alarm*/
+LOG_MODULE_REGISTER(max32_counter_rtc, CONFIG_COUNTER_LOG_LEVEL);
+
+/* Resolution is 1sec for time of day alarm*/
 #define MAX32_RTC_COUNTER_FREQ 1
 
 /* 20bits used for time of day alarm */
@@ -22,6 +25,11 @@
 
 #define MAX32_RTC_COUNTER_INT_FL MXC_RTC_INT_FL_LONG
 #define MAX32_RTC_COUNTER_INT_EN MXC_RTC_INT_EN_LONG
+
+#define MAX32_RTC_COUNTER_SQW_1HZ 1
+#define MAX32_RTC_COUNTER_SQW_512HZ 512
+#define MAX32_RTC_COUNTER_SQW_4KHZ 4096
+#define MAX32_RTC_COUNTER_SQW_32KHZ 32768
 
 struct max32_rtc_data {
 	counter_alarm_callback_t alarm_callback;
@@ -33,7 +41,10 @@ struct max32_rtc_data {
 struct max32_rtc_config {
 	struct counter_config_info info;
 	mxc_rtc_regs_t *regs;
+	const struct pinctrl_dev_config *pctrl;
+	uint16_t sqw_freq;
 	void (*irq_func)(void);
+	struct max32_perclk perclk;
 };
 
 static int api_start(const struct device *dev)
@@ -67,13 +78,13 @@ static int api_get_value(const struct device *dev, uint32_t *ticks)
 	mxc_rtc_regs_t *regs = cfg->regs;
 	uint32_t sec = 0, subsec = 0;
 
-	/* Read twice incase of glitch */
+	/* Read twice in case of glitch */
 	sec = regs->sec;
 	if (regs->sec != sec) {
 		sec = regs->sec;
 	}
 
-	/* Read twice incase of glitch */
+	/* Read twice in case of glitch */
 	subsec = regs->ssec;
 	if (regs->ssec != subsec) {
 		subsec = regs->ssec;
@@ -133,7 +144,7 @@ static int api_set_alarm(const struct device *dev, uint8_t chan,
 	uint32_t ticks = alarm_cfg->ticks;
 	uint32_t current;
 
-	/* Alarm frequenct is 1Hz so that it seems ticks becomes 0
+	/* Alarm frequency is 1Hz so that it seems ticks becomes 0
 	 * some times, in that case system being blocked.
 	 * Set it to 1 if ticks is 0
 	 */
@@ -205,12 +216,60 @@ static void rtc_max32_isr(const struct device *dev)
 	MXC_RTC_ClearFlags(flags);
 }
 
+static int configure_sqw(uint16_t sqw_freq)
+{
+	mxc_rtc_freq_sel_t freq_sel;
+
+	switch (sqw_freq) {
+	case MAX32_RTC_COUNTER_SQW_1HZ:
+		freq_sel = MXC_RTC_F_1HZ;
+		break;
+	case MAX32_RTC_COUNTER_SQW_512HZ:
+		freq_sel = MXC_RTC_F_512HZ;
+		break;
+	case MAX32_RTC_COUNTER_SQW_4KHZ:
+		freq_sel = MXC_RTC_F_4KHZ;
+		break;
+	case MAX32_RTC_COUNTER_SQW_32KHZ:
+		freq_sel = MXC_RTC_F_32KHZ;
+		break;
+	default:
+		LOG_ERR("Unsupported square wave frequency: %d", sqw_freq);
+		return -ENOTSUP;
+	}
+
+	if (MXC_RTC_SquareWaveStart(freq_sel) != E_SUCCESS) {
+		LOG_ERR("Failed to start square wave output");
+		return -EIO;
+	}
+
+	return 0;
+}
+
 static int rtc_max32_init(const struct device *dev)
 {
+	int ret;
 	const struct max32_rtc_config *cfg = dev->config;
 
-	while (MXC_RTC_Init(0, 0) == E_BUSY) {
-		;
+	while ((ret = MXC_RTC_Init(0, 0)) != E_SUCCESS) {
+		if (ret < 0) {
+			LOG_ERR("RTC initialization failed.");
+			return -EIO;
+		}
+	}
+
+	if (cfg->sqw_freq != 0) {
+		ret = pinctrl_apply_state(cfg->pctrl, PINCTRL_STATE_DEFAULT);
+		if (ret < 0) {
+			LOG_ERR("Failed to apply pinctrl state: %d", ret);
+			return ret;
+		}
+
+		ret = configure_sqw(cfg->sqw_freq);
+		if (ret < 0) {
+			LOG_ERR("Failed to configure square wave output: %d", ret);
+			return ret;
+		}
 	}
 
 	api_stop(dev);
@@ -233,6 +292,7 @@ static DEVICE_API(counter, counter_rtc_max32_driver_api) = {
 
 #define COUNTER_RTC_MAX32_INIT(_num)                                                               \
 	static struct max32_rtc_data rtc_max32_data_##_num;                                        \
+	PINCTRL_DT_INST_DEFINE(_num);                                                              \
 	static void max32_rtc_irq_init_##_num(void)                                                \
 	{                                                                                          \
 		IRQ_CONNECT(DT_INST_IRQN(_num), DT_INST_IRQ(_num, priority), rtc_max32_isr,        \
@@ -251,6 +311,8 @@ static DEVICE_API(counter, counter_rtc_max32_driver_api) = {
 				.channels = 1,                                                     \
 			},                                                                         \
 		.regs = (mxc_rtc_regs_t *)DT_INST_REG_ADDR(_num),                                  \
+		.pctrl = PINCTRL_DT_INST_DEV_CONFIG_GET(_num),                                     \
+		.sqw_freq = DT_INST_PROP(_num, sqw_frequency),                               \
 		.irq_func = max32_rtc_irq_init_##_num,                                             \
 	};                                                                                         \
                                                                                                    \

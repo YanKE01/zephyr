@@ -36,10 +36,10 @@
 #define FPSCR_MASK (0xffffffffU)
 #endif
 
-extern void z_move_thread_to_end_of_prio_q(struct k_thread *thread);
+extern void z_yield_testing_only(void);
 
 static struct k_thread alt_thread;
-static K_THREAD_STACK_DEFINE(alt_thread_stack, 1024);
+static K_THREAD_STACK_DEFINE(alt_thread_stack, 1024 + CONFIG_TEST_EXTRA_STACK_SIZE);
 
 /* Status variable to indicate that context-switch has occurred. */
 bool volatile switch_flag;
@@ -227,7 +227,7 @@ static void alt_thread_entry(void *p1, void *p2, void *p3)
 	 * expect lazy stacking and long guard to be enabled.
 	 */
 	zassert_true((_current->arch.mode & Z_ARM_MODE_MPU_GUARD_FLOAT_Msk) != 0,
-		     "Alt thread MPU GUAR DFLOAT flag not set at initialization\n");
+		     "Alt thread MPU GUARD FLOAT flag not set at initialization\n");
 	zassert_true((_current->base.user_options & K_FP_REGS) != 0,
 		     "Alt thread K_FP_REGS not set at initialization\n");
 	zassert_true((FPU->FPCCR & FPU_FPCCR_LSPEN_Msk) != 0,
@@ -268,7 +268,7 @@ static void alt_thread_entry(void *p1, void *p2, void *p3)
 	p_ztest_thread->arch.swap_return_value = SWAP_RETVAL;
 #endif
 
-	z_move_thread_to_end_of_prio_q(_current);
+	z_yield_testing_only();
 
 	/* Modify the callee-saved registers by zero-ing them.
 	 * The main test thread will, later, assert that they
@@ -455,14 +455,6 @@ ZTEST(arm_thread_swap, test_arm_thread_swap)
 	 */
 	zassert_true((_current->arch.mode_exc_return & EXC_RETURN_FTYPE) != 0,
 		     "Thread Ftype flag not set at initialization\n");
-#if defined(CONFIG_MPU_STACK_GUARD)
-	zassert_true((_current->arch.mode & Z_ARM_MODE_MPU_GUARD_FLOAT_Msk) == 0,
-		     "Thread MPU GUAR DFLOAT flag not clear at initialization\n");
-	zassert_true((_current->base.user_options & K_FP_REGS) == 0,
-		     "Thread K_FP_REGS not clear at initialization\n");
-	zassert_true((FPU->FPCCR & FPU_FPCCR_LSPEN_Msk) == 0,
-		     "Lazy FP Stacking not clear at initialization\n");
-#endif
 #endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
 
 	/* Create an alternative (supervisor) testing thread */
@@ -482,7 +474,7 @@ ZTEST(arm_thread_swap, test_arm_thread_swap)
 	 * explicitly required by the test.
 	 */
 	(void)irq_lock();
-	z_move_thread_to_end_of_prio_q(_current);
+	z_yield_testing_only();
 
 	/* Clear the thread's callee-saved registers' container.
 	 * The container will, later, be populated by the swap
@@ -658,7 +650,7 @@ ZTEST(arm_thread_swap, test_arm_thread_swap)
 	zassert_true((_current->arch.mode & Z_ARM_MODE_MPU_GUARD_FLOAT_Msk) != 0,
 		     "Thread MPU GUARD FLOAT flag not set\n");
 	zassert_true((_current->base.user_options & K_FP_REGS) != 0,
-		     "Thread K_FPREGS not set after main returned back\n");
+		     "Thread K_FP_REGS not set after main returned back\n");
 	zassert_true((FPU->FPCCR & FPU_FPCCR_LSPEN_Msk) != 0,
 		     "Lazy FP Stacking not set after main returned back\n");
 #endif

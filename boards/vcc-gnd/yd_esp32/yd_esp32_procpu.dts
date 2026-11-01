@@ -1,9 +1,11 @@
 /*
+ * Copyright (c) 2023 Espressif Systems (Shanghai) Co., Ltd.
+ *
  * SPDX-License-Identifier: Apache-2.0
  */
 /dts-v1/;
 
-#include <espressif/esp32/esp32_wroom_32ue_n16.dtsi>
+#include <espressif/esp32/esp32.dtsi>
 #include <zephyr/dt-bindings/led/led.h>
 #include "yd_esp32-pinctrl.dtsi"
 #include <zephyr/dt-bindings/input/input-event-codes.h>
@@ -23,6 +25,7 @@
 
 	buttons {
 		compatible = "gpio-keys";
+
 		button0: button_0 {
 			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			label = "BOOT Button";
@@ -38,6 +41,11 @@
 		zephyr,code-partition = &slot0_partition;
 		zephyr,bt-hci = &esp32_bt_hci;
 	};
+};
+
+&flash0 {
+	reg = <0x0 DT_SIZE_M(16)>;
+	ranges = <0x0 0x0 DT_SIZE_M(16)>;
 };
 
 &pinctrl {
@@ -69,10 +77,12 @@
 };
 
 &gpio0 {
+	gpio-reserved-ranges = <6 6>, <20 1>, <24 1>, <28 4>;
 	status = "okay";
 };
 
 &gpio1 {
+	gpio-reserved-ranges = <5 2>;
 	status = "okay";
 };
 

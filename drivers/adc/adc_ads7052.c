@@ -293,12 +293,12 @@ static DEVICE_API(adc, ads7052_api) = {
 };
 
 #define ADC_ADS7052_SPI_CFG \
-	SPI_OP_MODE_MASTER | SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8) | SPI_TRANSFER_MSB
+	SPI_OP_MODE_CONTROLLER | SPI_MODE_CPOL | SPI_MODE_CPHA | SPI_WORD_SET(8) | SPI_TRANSFER_MSB
 
 #define ADC_ADS7052_INIT(n)                                                                        \
                                                                                                    \
 	static const struct ads7052_config ads7052_cfg_##n = {                                     \
-		.bus = SPI_DT_SPEC_INST_GET(n, ADC_ADS7052_SPI_CFG, 1U),                           \
+		.bus = SPI_DT_SPEC_INST_GET(n, ADC_ADS7052_SPI_CFG),                               \
 		.channels = 1,                                                                     \
 	};                                                                                         \
                                                                                                    \

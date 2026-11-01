@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_LLEXT_H
-#define ZEPHYR_LLEXT_H
+#ifndef ZEPHYR_INCLUDE_LLEXT_LLEXT_H_
+#define ZEPHYR_INCLUDE_LLEXT_LLEXT_H_
 
 #include <zephyr/sys/slist.h>
 #include <zephyr/llext/elf.h>
@@ -45,6 +45,9 @@ enum llext_mem {
 	LLEXT_MEM_TEXT,         /**< Executable code */
 	LLEXT_MEM_DATA,         /**< Initialized data */
 	LLEXT_MEM_RODATA,       /**< Read-only data */
+#ifdef CONFIG_LLEXT_VENEERS
+	LLEXT_MEM_VENEER,       /**< Architecture-specific veneer table */
+#endif
 	LLEXT_MEM_BSS,          /**< Uninitialized data */
 	LLEXT_MEM_EXPORT,       /**< Exported symbol table */
 	LLEXT_MEM_SYMTAB,       /**< Symbol table */
@@ -53,7 +56,9 @@ enum llext_mem {
 	LLEXT_MEM_PREINIT,      /**< Array of early setup functions */
 	LLEXT_MEM_INIT,         /**< Array of setup functions */
 	LLEXT_MEM_FINI,         /**< Array of cleanup functions */
-
+#ifdef CONFIG_LLEXT_RODATA_NO_RELOC
+	LLEXT_MEM_RODATA_NO_RELOC,  /**< Read-only data without relocations (kept in flash) */
+#endif
 	LLEXT_MEM_COUNT,        /**< Number of regions managed by LLEXT */
 };
 
@@ -61,6 +66,22 @@ enum llext_mem {
 
 /* Number of memory partitions used by LLEXT */
 #define LLEXT_MEM_PARTITIONS (LLEXT_MEM_BSS+1)
+
+#ifdef CONFIG_LLEXT_RODATA_NO_RELOC
+/* Section name for read-only data kept in flash */
+#define LLEXT_SECT_RODATA_NO_RELOC llext.rodata.noreloc
+
+/* Full section name as string for comparisons */
+#define LLEXT_SECTION_RODATA_NO_RELOC ("." STRINGIFY(LLEXT_SECT_RODATA_NO_RELOC))
+
+/**
+ * Use this attribute on read-only data that should remain in flash
+ * instead of being copied to RAM.
+ */
+#define LLEXT_RODATA_NO_RELOC Z_GENERIC_DOT_SECTION(LLEXT_SECT_RODATA_NO_RELOC)
+#else
+#define LLEXT_RODATA_NO_RELOC
+#endif
 
 struct llext_loader;
 /** @endcond */
@@ -70,6 +91,17 @@ struct llext_loader;
 
 /** Maximum number of dependency LLEXTs */
 #define LLEXT_MAX_DEPENDENCIES 8
+
+#ifdef CONFIG_LLEXT_HEAP_MEMBLK
+struct llext_alloc {
+	int num_blocks;
+	void *memblk_ptr;
+};
+struct llext_alloc_map {
+	int idx;
+	struct llext_alloc map[LLEXT_MEM_COUNT];
+};
+#endif
 
 /**
  * @brief Structure describing a linkable loadable extension
@@ -83,7 +115,6 @@ struct llext {
 
 #ifdef CONFIG_USERSPACE
 	struct k_mem_partition mem_parts[LLEXT_MEM_PARTITIONS];
-	struct k_mem_domain mem_domain;
 #endif
 
 	/** @endcond */
@@ -96,6 +127,10 @@ struct llext {
 
 	/** Is the memory for this region allocated on heap? */
 	bool mem_on_heap[LLEXT_MEM_COUNT];
+
+#ifdef CONFIG_LLEXT_HEAP_MEMBLK
+	struct llext_alloc_map mem_alloc_map;
+#endif
 
 	/** Size of each stored region */
 	size_t mem_size[LLEXT_MEM_COUNT];
@@ -132,11 +167,29 @@ struct llext {
 	/** @endcond */
 };
 
+/**
+ * @brief Get the ELF section headers of an extension.
+ *
+ * The section headers are only available if the extension was loaded with
+ * @ref llext_load_param.keep_section_info set, and until
+ * @ref llext_free_inspection_data is called for it.
+ *
+ * @param ext Extension to inspect.
+ *
+ * @return Pointer to the first of @ref llext_section_count section headers.
+ */
 static inline const elf_shdr_t *llext_section_headers(const struct llext *ext)
 {
 	return ext->sect_hdrs;
 }
 
+/**
+ * @brief Get the number of ELF sections of an extension.
+ *
+ * @param ext Extension to inspect.
+ *
+ * @return Number of sections.
+ */
 static inline unsigned int llext_section_count(const struct llext *ext)
 {
 	return ext->sect_cnt;
@@ -289,24 +342,24 @@ int llext_teardown(struct llext *ext);
 void llext_bootstrap(struct llext *ext, llext_entry_fn_t entry_fn, void *user_data);
 
 /**
- * @brief Get pointers to setup or cleanup functions for an extension.
+ * @brief Get a pointer to a setup or cleanup function for an extension.
  *
- * This syscall can be used to get the addresses of all the functions that
- * have to be called for full extension setup or cleanup.
+ * This syscall can be used to get the addresses of every function that
+ * has to be called for full extension setup or cleanup.
  *
  * @see llext_bootstrap
  *
  * @param[in]    ext Extension to initialize.
  * @param[in]    is_init `true` to get functions to be called at setup time,
  *                       `false` to get the cleanup ones.
- * @param[inout] buf Buffer to store the function pointers in. Can be `NULL`
- *                   to only get the minimum required size.
- * @param[in]    size Allocated size of the buffer in bytes.
- * @returns the size used by the array in bytes, or a negative error code.
+ * @param[inout] ptr Address of pointer to store the function pointer in.
+ *                   Can be `NULL` to retrieve the number of defined functions.
+ * @param[in]    idx Index of the function to retrieve. Ignored if @a ptr is `NULL`.
+ * @returns the number of functions if ptr is NULL, 0 or a negative error code otherwise.
  * @retval -EFAULT A relocation issue was detected
  * @retval -ENOMEM Array does not fit in the allocated buffer
  */
-__syscall ssize_t llext_get_fn_table(struct llext *ext, bool is_init, void *buf, size_t size);
+__syscall ssize_t llext_get_fn_table_entry(struct llext *ext, bool is_init, void **ptr, size_t idx);
 
 /**
  * @brief Find the address for an arbitrary symbol.
@@ -397,7 +450,7 @@ ssize_t llext_find_section(struct llext_loader *loader, const char *search_name)
  * @retval -ENOTSUP "peek" method not supported
  * @retval -ENOENT section not found
  */
-int llext_get_section_header(struct llext_loader *loader, struct llext *ext,
+int llext_get_section_header(const struct llext_loader *loader, const struct llext *ext,
 			     const char *search_name, elf_shdr_t *shdr);
 
 /**
@@ -409,9 +462,26 @@ int llext_get_section_header(struct llext_loader *loader, struct llext *ext,
  * @param bytes Size of memory region, in bytes
  *
  * @returns 0 on success, or a negative error code.
- * @retval -ENOSYS Option @kconfig{CONFIG_LLEXT_HEAP_DYNAMIC} is not enabled or supported
+ * @retval -ENOSYS Option @kconfig{CONFIG_LLEXT_HEAP_DYNAMIC} is not enabled or supported,
+ *         or it is and option @kconfig{CONFIG_HARVARD} is enabled
  */
 int llext_heap_init(void *mem, size_t bytes);
+
+/**
+ * @brief Initialize LLEXT heap dynamically for Harvard architecture
+ *
+ * Use the provided memory blocks as the LLEXT heaps at runtime.
+ *
+ * @param instr_mem Pointer to instruction memory.
+ * @param instr_bytes Size of instruction memory region, in bytes
+ * @param data_mem Pointer to data memory.
+ * @param data_bytes Size of data memory region, in bytes
+ *
+ * @returns 0 on success, or a negative error code.
+ * @retval -ENOSYS Option @kconfig{CONFIG_LLEXT_HEAP_DYNAMIC} is not enabled or supported,
+ *         or it is and option @kconfig{CONFIG_HARVARD} is not enabled
+ */
+int llext_heap_init_harvard(void *instr_mem, size_t instr_bytes, void *data_mem, size_t data_bytes);
 
 /**
  * @brief Mark LLEXT heap as uninitialized.
@@ -448,7 +518,7 @@ int llext_relink_dependency(struct llext *ext, unsigned int n_ext);
  * During suspend the user has saved all the extension and loader descriptors
  * and related objects and called @ref llext_relink_dependency() to prepare
  * dependency pointers.
- * When resuming llext_alloc() has to be used to re-allocate all the objects,
+ * When resuming llext_alloc_metadata() has to be used to re-allocate all the objects,
  * therefore the user needs support from LLEXT core to accomplish that.
  * This function takes arrays of pointers to saved copies of extensions and
  * loaders as arguments and re-allocates all the objects, while also adding them
@@ -478,4 +548,4 @@ int llext_restore(struct llext **ext, struct llext_loader **ldr, unsigned int n_
 
 #include <zephyr/syscalls/llext.h>
 
-#endif /* ZEPHYR_LLEXT_H */
+#endif /* ZEPHYR_INCLUDE_LLEXT_LLEXT_H_ */

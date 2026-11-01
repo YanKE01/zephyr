@@ -81,32 +81,7 @@ For more information about the PSOC 63 BLE MCU SoC and CY8CKIT-062-BLE board:
 Supported Features
 ==================
 
-The board configuration supports the following hardware features:
-
-+-----------+------------+-----------------------+
-| Interface | Controller | Driver/Component      |
-+===========+============+=======================+
-| NVIC      | on-chip    | nested vectored       |
-|           |            | interrupt controller  |
-+-----------+------------+-----------------------+
-| SYSTICK   | on-chip    | system clock          |
-+-----------+------------+-----------------------+
-| GPIO      | on-chip    | gpio                  |
-+-----------+------------+-----------------------+
-| PINCTRL   | on-chip    | pin control           |
-+-----------+------------+-----------------------+
-| SPI       | on-chip    | spi                   |
-+-----------+------------+-----------------------+
-| UART      | on-chip    | serial port-polling;  |
-|           |            | serial port-interrupt |
-+-----------+------------+-----------------------+
-
-
-The default configurations can be found in the Kconfig
-:zephyr_file:`boards/cypress/cy8ckit_062_ble/cy8ckit_062_ble_cy8c6347_m0_defconfig` for
-Cortex-M0+ and on the Kconfig
-:zephyr_file:`boards/cypress/cy8ckit_062_ble/cy8ckit_062_ble_cy8c6347_m4_defconfig` for
-Cortex-M4
+.. zephyr:board-supported-hw::
 
 System Clock
 ============
@@ -281,7 +256,7 @@ References
 .. target-notes::
 
 .. _PSOC 63 BLE MCU SoC Website:
-	https://www.cypress.com/products/32-bit-arm-cortex-m4-cortex-m0-psoc-63-connectivity-line
+	https://www.infineon.com/products/microcontroller/32-bit-psoc-arm-cortex/psoc-6-m4-mcu/psoc-63
 
 .. _PSOC 63 BLE MCU Datasheet:
 	https://www.cypress.com/documentation/datasheets/psoc-6-mcu-psoc-63-ble-datasheet-programmable-system-chip-psoc

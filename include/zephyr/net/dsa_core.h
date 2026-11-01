@@ -15,6 +15,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/phy.h>
+#include <zephyr/net/ethernet.h>
 
 /**
  * @brief Distributed Switch Architecture (DSA)
@@ -33,12 +34,6 @@
 #define DSA_PORT_MAX_COUNT 0
 #endif
 
-#if defined(CONFIG_DSA_TAG_SIZE)
-#define DSA_TAG_SIZE CONFIG_DSA_TAG_SIZE
-#else
-#define DSA_TAG_SIZE 0
-#endif
-
 /** @endcond */
 
 #ifdef __cplusplus
@@ -53,11 +48,8 @@ extern "C" {
  * @param cfg	Pointer to dsa_port_config.
  */
 #define DSA_PORT_INST_INIT(port, n, cfg)                                                           \
-	NET_DEVICE_INIT_INSTANCE(CONCAT(dsa_, n, port), DEVICE_DT_NAME(port), DT_REG_ADDR(port),   \
-				 dsa_port_initialize, NULL, &dsa_switch_context_##n, cfg,          \
-				 CONFIG_ETH_INIT_PRIORITY, &dsa_eth_api, ETHERNET_L2,              \
-				 NET_L2_GET_CTX_TYPE(ETHERNET_L2), NET_ETH_MTU);
-
+	ETH_NET_DEVICE_DT_DEFINE(port, dsa_port_initialize, NULL, &dsa_switch_context_##n, cfg,    \
+				 CONFIG_ETH_INIT_PRIORITY, &dsa_eth_api, NET_ETH_MTU)
 /**
  * @brief Macro for DSA switch instance initialization.
  *
@@ -94,6 +86,9 @@ struct dsa_switch_context {
 
 	/** Number of initialized ports in the DSA switch */
 	uint8_t init_ports;
+
+	/** DSA tagger data provided by instance when connecting to tag protocol */
+	void *tagger_data;
 };
 
 /**
@@ -113,14 +108,34 @@ struct dsa_api {
 	int (*port_init)(const struct device *dev);
 
 	/** Port link change */
-	void (*port_phylink_change)(const struct device *dev, struct phy_link_state *state,
-				    void *user_data);
+	void (*port_phylink_change)(const struct device *phy_dev, struct phy_link_state *state,
+				    const struct device *dev);
 
-	/** Port generates random mac address */
-	void (*port_generate_random_mac)(uint8_t *mac_addr);
-
+#if defined(CONFIG_NET_L2_PTP_TIMESTAMPING) || defined(__DOXYGEN__)
+	/**
+	 * Port TX timestamp handling
+	 * @kconfig_dep{CONFIG_NET_L2_PTP_TIMESTAMPING}
+	 */
+	int (*port_txtstamp)(const struct device *dev, struct net_pkt *pkt);
+#endif
 	/** Switch setup */
 	int (*switch_setup)(const struct dsa_switch_context *dsa_switch_ctx);
+
+	/** Connect the switch to the tag protocol */
+	int (*connect_tag_protocol)(struct dsa_switch_context *dsa_switch_ctx, int tag_proto);
+
+	/** Get the device capabilities */
+	enum ethernet_hw_caps (*get_capabilities)(const struct device *dev);
+
+	/** Set specific hardware configuration */
+	int (*set_config)(const struct device *dev,
+			  enum ethernet_config_type type,
+			  const struct ethernet_config *config);
+
+	/** Get hardware specific configuration */
+	int (*get_config)(const struct device *dev,
+			  enum ethernet_config_type type,
+			  struct ethernet_config *config);
 };
 
 /**
@@ -128,30 +143,29 @@ struct dsa_api {
  */
 struct dsa_port_config {
 	/** Port mac address */
-	uint8_t mac_addr[6];
-	/** Use random mac address or not */
-	const bool use_random_mac_addr;
+	struct net_eth_mac_config mcfg;
 	/** Port index */
 	const int port_idx;
 	/** PHY device */
 	const struct device *phy_dev;
 	/** PHY mode */
 	const char *phy_mode;
+	/** Tag protocol */
+	const int tag_proto;
 	/** Ethernet device connected to the port */
 	const struct device *ethernet_connection;
+#if defined(CONFIG_NET_L2_PTP_TIMESTAMPING) || defined(__DOXYGEN__)
+	/**
+	 * PTP clock used on the port
+	 * @kconfig_dep{CONFIG_NET_L2_PTP_TIMESTAMPING}
+	 */
+	const struct device *ptp_clock;
+#endif
 	/** Instance specific config */
 	void *prv_config;
 };
 
 /** @cond INTERNAL_HIDDEN */
-
-enum dsa_port_type {
-	NON_DSA_PORT,
-	DSA_CONDUIT_PORT,
-	DSA_USER_PORT,
-	DSA_CPU_PORT,
-	DSA_PORT,
-};
 
 /*
  * DSA port init

@@ -18,16 +18,6 @@ struct lpspi_driver_data {
 	uint8_t lpspi_op_mode;
 };
 
-static inline uint8_t rx_fifo_cur_len(LPSPI_Type *base)
-{
-	return (base->FSR & LPSPI_FSR_RXCOUNT_MASK) >> LPSPI_FSR_RXCOUNT_SHIFT;
-}
-
-static inline uint8_t tx_fifo_cur_len(LPSPI_Type *base)
-{
-	return (base->FSR & LPSPI_FSR_TXCOUNT_MASK) >> LPSPI_FSR_TXCOUNT_SHIFT;
-}
-
 /* Reads a word from the RX fifo and handles writing it into the RX spi buf */
 static inline void lpspi_rx_word_write_bytes(const struct device *dev, size_t offset)
 {
@@ -39,7 +29,7 @@ static inline void lpspi_rx_word_write_bytes(const struct device *dev, size_t of
 	uint8_t *buf = ctx->rx_buf + offset;
 	uint32_t word = base->RDR;
 
-	if (!spi_context_rx_buf_on(ctx) && spi_context_rx_on(ctx)) {
+	if (!spi_context_rx_buf_on(ctx)) {
 		/* receive no actual data if rx buf is NULL */
 		return;
 	}
@@ -55,14 +45,12 @@ static inline size_t lpspi_rx_buf_write_words(const struct device *dev, uint8_t 
 	struct lpspi_data *data = dev->data;
 	struct lpspi_driver_data *lpspi_data = (struct lpspi_driver_data *)data->driver_data;
 	struct spi_context *ctx = &data->ctx;
-	size_t buf_len = ctx->rx_len;
-	uint8_t words_read = 0;
+	size_t words_read = MIN(ctx->rx_len, (size_t)max_read);
 	size_t offset = 0;
 
-	while (buf_len-- > 0 && max_read-- > 0) {
+	for (size_t i = 0; i < words_read; i++) {
 		lpspi_rx_word_write_bytes(dev, offset);
 		offset += lpspi_data->word_size_bytes;
-		words_read++;
 	}
 
 	return words_read;
@@ -81,7 +69,7 @@ static inline void lpspi_handle_rx_irq(const struct device *dev)
 
 	base->SR = LPSPI_SR_RDF_MASK;
 
-	LOG_DBG("RX FIFO: %d, RX BUF: %p", rx_fsr, ctx->rx_buf);
+	LOG_DBG("RX BUF: %p", ctx->rx_buf);
 
 	while ((rx_fsr = rx_fifo_cur_len(base)) > 0 && spi_context_rx_on(ctx)) {
 		words_read = lpspi_rx_buf_write_words(dev, rx_fsr);
@@ -128,7 +116,7 @@ static inline void lpspi_fill_tx_fifo(const struct device *dev, const uint8_t *b
 	}
 
 	lpspi_data->words_clocked += fill_len;
-	LOG_DBG("Filled TX FIFO to %d words (%d bytes)", fill_len, offset);
+	LOG_DBG("Filled TX FIFO to %zu words (%zu bytes)", fill_len, offset);
 }
 
 /* just fills TX fifo with the specified amount of NOPS */
@@ -143,7 +131,7 @@ static void lpspi_fill_tx_fifo_nop(const struct device *dev, size_t fill_len)
 	}
 
 	lpspi_data->words_clocked += fill_len;
-	LOG_DBG("Filled TX fifo with %d NOPs", fill_len);
+	LOG_DBG("Filled TX fifo with %zu NOPs", fill_len);
 }
 
 /* handles refilling the TX fifo from empty */
@@ -206,7 +194,7 @@ static inline void lpspi_handle_tx_irq(const struct device *dev)
 
 	base->SR = LPSPI_SR_TDF_MASK;
 
-	if (op_mode == SPI_OP_MODE_SLAVE && (status_flags & LPSPI_SR_TEF_MASK)) {
+	if (op_mode == SPI_OP_MODE_PERIPHERAL && (status_flags & LPSPI_SR_TEF_MASK)) {
 		/* handling err051588 */
 		base->SR = LPSPI_SR_TEF_MASK;
 		/* workaround is to reset the transmit fifo before writing any new data */
@@ -228,14 +216,18 @@ static inline void lpspi_handle_tx_irq(const struct device *dev)
 static inline void lpspi_end_xfer(const struct device *dev)
 {
 	LPSPI_Type *base = (LPSPI_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
-	const struct lpspi_config *config = dev->config;
 	struct lpspi_data *data = dev->data;
 	struct spi_context *ctx = &data->ctx;
 
 	spi_context_complete(ctx, dev, 0);
+
+#ifdef CONFIG_CPU_CORTEX_M
+	const struct lpspi_config *config = dev->config;
 	NVIC_ClearPendingIRQ(config->irqn);
+#endif
+
 	if (!(ctx->config->operation & SPI_HOLD_ON_CS)) {
-		base->TCR &= ~(LPSPI_TCR_CONT_MASK | LPSPI_TCR_CONTC_MASK);
+		base->TCR = lpspi_read_tcr(base) & ~(LPSPI_TCR_CONT_MASK | LPSPI_TCR_CONTC_MASK);
 		/* don't need to wait for TCR since we are at end of xfer + in IRQ context */
 	}
 	spi_context_cs_control(ctx, false);
@@ -287,7 +279,7 @@ static void lpspi_isr(const struct device *dev)
 		 * in order to get last bit clocked out on bus. So all we need to do is touch the
 		 * TCR by writing to fifo through TCR register and wait for final RX interrupt.
 		 */
-		base->TCR = base->TCR;
+		base->TCR = lpspi_read_tcr(base);
 		return;
 	}
 
@@ -324,7 +316,8 @@ static void lpspi_isr(const struct device *dev)
 	lpspi_fill_tx_fifo_nop(dev, max_fill);
 }
 
-static void lpspi_master_setup_native_cs(const struct device *dev, const struct spi_config *spi_cfg)
+static void lpspi_controller_setup_native_cs(const struct device *dev,
+					     const struct spi_config *spi_cfg)
 {
 	LPSPI_Type *base = (LPSPI_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
 
@@ -333,10 +326,10 @@ static void lpspi_master_setup_native_cs(const struct device *dev, const struct 
 	 * to also set CONTC in order to continue the previous command to keep CS
 	 * asserted.
 	 */
-	if (spi_cfg->operation & SPI_HOLD_ON_CS || base->TCR & LPSPI_TCR_CONTC_MASK) {
-		base->TCR |= LPSPI_TCR_CONTC_MASK | LPSPI_TCR_CONT_MASK;
+	if (spi_cfg->operation & SPI_HOLD_ON_CS || lpspi_read_tcr(base) & LPSPI_TCR_CONTC_MASK) {
+		base->TCR = lpspi_read_tcr(base) | LPSPI_TCR_CONTC_MASK | LPSPI_TCR_CONT_MASK;
 	} else {
-		base->TCR |= LPSPI_TCR_CONT_MASK;
+		base->TCR = lpspi_read_tcr(base) | LPSPI_TCR_CONT_MASK;
 	}
 
 	/* tcr is written to tx fifo */
@@ -365,13 +358,14 @@ static int transceive(const struct device *dev, const struct spi_config *spi_cfg
 		goto error;
 	}
 
-	if (op_mode == SPI_OP_MODE_SLAVE && !(spi_cfg->operation & SPI_MODE_CPHA)) {
+	if (op_mode == SPI_OP_MODE_PERIPHERAL && !(spi_cfg->operation & SPI_MODE_CPHA)) {
 		LOG_ERR("CPHA=0 not supported with LPSPI peripheral mode");
 		ret = -ENOTSUP;
 		goto error;
 	}
 
-	if (data->major_version < 2 && spi_cfg->operation & SPI_HOLD_ON_CS) {
+	if (data->major_version < 2 && spi_cfg->operation & SPI_HOLD_ON_CS &&
+	    !spi_cs_is_gpio(spi_cfg)) {
 		/* on this version of LPSPI, due to errata in design
 		 * CS must be deasserted in order to clock all words,
 		 * so HOLD_ON_CS flag cannot be supported.
@@ -400,26 +394,26 @@ static int transceive(const struct device *dev, const struct spi_config *spi_cfg
 	LOG_DBG("Starting LPSPI transfer");
 	spi_context_cs_control(ctx, true);
 
-	if (op_mode == SPI_OP_MODE_MASTER) {
+	if (op_mode == SPI_OP_MODE_CONTROLLER) {
 		/* set watermarks to 0 so get tx interrupt when fifo empty
 		 * and rx interrupt when any data received
 		 */
 		base->FCR = 0;
 	} else {
-		 /* set watermarks so that we are as responsive to master as possible and don't
-		  * miss any communication. This means RX interrupt at 0 so that if we ever
-		  * get any data, we get interrupt and handle immediately, and TX interrupt
-		  * to one less than the max of the fifo (-2 of size) so that we have as much
-		  * data ready to send to master as possible at any time
-		  */
+		/* set watermarks so that we are as responsive to controller as possible and don't
+		 * miss any communication. This means RX interrupt at 0 so that if we ever
+		 * get any data, we get interrupt and handle immediately, and TX interrupt
+		 * to one less than the max of the fifo (-2 of size) so that we have as much
+		 * data ready to send to controller as possible at any time
+		 */
 		base->FCR = LPSPI_FCR_TXWATER(config->tx_fifo_size - 1);
 		base->CFGR1 |= LPSPI_CFGR1_AUTOPCS_MASK;
 	}
 
-	base->CR |= LPSPI_CR_MEN_MASK;
+	lpspi_enable(base, true);
 
-	if (op_mode == SPI_OP_MODE_MASTER) {
-		lpspi_master_setup_native_cs(dev, spi_cfg);
+	if (op_mode == SPI_OP_MODE_CONTROLLER) {
+		lpspi_controller_setup_native_cs(dev, spi_cfg);
 	}
 
 	/* start the transfer sequence which are handled by irqs */
@@ -467,7 +461,7 @@ static DEVICE_API(spi, lpspi_driver_api) = {
 
 static int lpspi_init(const struct device *dev)
 {
-	LPSPI_Type *base = (LPSPI_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
+	LPSPI_Type *base;
 	struct lpspi_data *data = dev->data;
 	int err = 0;
 
@@ -476,7 +470,9 @@ static int lpspi_init(const struct device *dev)
 		return err;
 	}
 
-	/* Starting config should be master with active low CS, to make sure
+	base = (LPSPI_Type *)DEVICE_MMIO_NAMED_GET(dev, reg_base);
+
+	/* Starting config should be controller with active low CS, to make sure
 	 * the CS lines are configured properly at init for the most common use
 	 * cases. This can be changed later on transceive call if user specifies
 	 * different spi configuration.

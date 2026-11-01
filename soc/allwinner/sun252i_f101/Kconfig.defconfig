@@ -3,6 +3,9 @@
 
 if SOC_SUN252I_F101
 
+config RISCV_CUSTOM_CSR_THEAD_CMO
+	default n
+
 config NUM_IRQS
 	default 204
 

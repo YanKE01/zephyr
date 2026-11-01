@@ -35,7 +35,7 @@ int icm42x70_apex_enable(inv_imu_device_t *s)
 
 	/*
 	 * Configure the power mode Normal mode.
-	 *  Avalaible mode : Low Power mode (WoM+Pedometer),
+	 *  Available mode : Low Power mode (WoM+Pedometer),
 	 *  configure the WoM to wake-up the DMP once it goes in power save mode
 	 */
 	apex_inputs.power_save = APEX_CONFIG0_DMP_POWER_SAVE_DIS;
@@ -109,8 +109,17 @@ void icm42x70_apex_pedometer_cadence_convert(struct sensor_value *val, uint8_t r
 {
 	int64_t conv_val;
 
-	/* Converting u6.2 */
-	conv_val = (int64_t)(dmp_odr_hz << 2) * 1000000 / (raw_val + (raw_val & 0x03));
+	/*
+	 * raw_val is the number of samples between two steps, in u6.2 format:
+	 * cadence (steps/s) = dmp_odr_hz / (raw_val / 4)
+	 */
+	if (raw_val == 0) {
+		val->val1 = 0;
+		val->val2 = 0;
+		return;
+	}
+
+	conv_val = (int64_t)dmp_odr_hz * 4 * 1000000 / raw_val;
 	val->val1 = conv_val / 1000000;
 	val->val2 = conv_val % 1000000;
 }

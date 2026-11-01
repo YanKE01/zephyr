@@ -14,18 +14,18 @@
 #include <platform/argus_irq.h>
 #include <api/argus_status.h>
 
-/** Used to get instance data from slave index */
+/** Used to get instance data from peripheral index */
 #include <../drivers/sensor/broadcom/afbr_s50/platform.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(afbr_s2pi, CONFIG_SENSOR_LOG_LEVEL);
 
-status_t S2PI_GetStatus(s2pi_slave_t slave)
+status_t S2PI_GetStatus(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		return ERROR_FAIL;
 	}
@@ -37,23 +37,22 @@ status_t S2PI_GetStatus(s2pi_slave_t slave)
  * need to get a mutex. If more AFBR's are lumped together in a bus, these
  * two APIs need an implementation.
  */
-status_t S2PI_TryGetMutex(s2pi_slave_t slave)
+status_t S2PI_TryGetMutex(s2pi_slave_t peripheral)
 {
 	return STATUS_OK;
 }
 
-void S2PI_ReleaseMutex(s2pi_slave_t slave)
+void S2PI_ReleaseMutex(s2pi_slave_t peripheral)
 {
 	/* See comment above. */
 }
 
 static void S2PI_complete_callback(struct rtio *ctx,
 				   const struct rtio_sqe *sqe,
-				   void *arg)
+				   int err, void *arg)
 {
 	struct afbr_s50_platform_data *data = (struct afbr_s50_platform_data *)arg;
 	struct rtio_cqe *cqe;
-	int err = 0;
 	status_t status = STATUS_OK;
 
 	do {
@@ -82,7 +81,7 @@ static void S2PI_complete_callback(struct rtio *ctx,
 	}
 }
 
-status_t S2PI_TransferFrame(s2pi_slave_t slave,
+status_t S2PI_TransferFrame(s2pi_slave_t peripheral,
 			    uint8_t const *txData,
 			    uint8_t *rxData,
 			    size_t frameSize,
@@ -92,7 +91,7 @@ status_t S2PI_TransferFrame(s2pi_slave_t slave,
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		return ERROR_S2PI_INVALID_SLAVE;
 	}
@@ -139,31 +138,31 @@ status_t S2PI_TransferFrame(s2pi_slave_t slave,
 	return STATUS_OK;
 }
 
-status_t S2PI_Abort(s2pi_slave_t slave)
+status_t S2PI_Abort(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		return ERROR_S2PI_INVALID_SLAVE;
 	}
 
 	(void)atomic_set(&data->s2pi.rtio.state, ERROR_ABORTED);
 
-	S2PI_complete_callback(data->s2pi.rtio.ctx, NULL, data);
+	S2PI_complete_callback(data->s2pi.rtio.ctx, NULL, 0, data);
 
 	return STATUS_OK;
 }
 
-status_t S2PI_SetIrqCallback(s2pi_slave_t slave,
+status_t S2PI_SetIrqCallback(s2pi_slave_t peripheral,
 			     s2pi_irq_callback_t callback,
 			     void *callbackData)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		return ERROR_S2PI_INVALID_SLAVE;
 	}
@@ -188,12 +187,12 @@ status_t S2PI_SetIrqCallback(s2pi_slave_t slave,
 	return STATUS_OK;
 }
 
-uint32_t S2PI_ReadIrqPin(s2pi_slave_t slave)
+uint32_t S2PI_ReadIrqPin(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return 0;
@@ -211,12 +210,12 @@ uint32_t S2PI_ReadIrqPin(s2pi_slave_t slave)
 	return !value;
 }
 
-status_t S2PI_CycleCsPin(s2pi_slave_t slave)
+status_t S2PI_CycleCsPin(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return ERROR_S2PI_INVALID_SLAVE;
@@ -239,12 +238,12 @@ status_t S2PI_CycleCsPin(s2pi_slave_t slave)
 	return STATUS_OK;
 }
 
-status_t S2PI_CaptureGpioControl(s2pi_slave_t slave)
+status_t S2PI_CaptureGpioControl(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return ERROR_S2PI_INVALID_SLAVE;
@@ -256,8 +255,8 @@ status_t S2PI_CaptureGpioControl(s2pi_slave_t slave)
 		return ERROR_FAIL;
 	}
 
-	err = gpio_pin_configure_dt(data->s2pi.gpio.spi.miso, GPIO_INPUT | GPIO_PULL_UP);
-	err |= gpio_pin_configure_dt(data->s2pi.gpio.spi.mosi, GPIO_OUTPUT);
+	err = gpio_pin_configure_dt(data->s2pi.gpio.spi.sdo, GPIO_INPUT | GPIO_PULL_UP);
+	err |= gpio_pin_configure_dt(data->s2pi.gpio.spi.sdi, GPIO_OUTPUT);
 	err |= gpio_pin_configure_dt(data->s2pi.gpio.spi.clk, GPIO_OUTPUT);
 	CHECKIF(err) {
 		LOG_ERR("Error configuring GPIO pins: %d", err);
@@ -269,19 +268,19 @@ status_t S2PI_CaptureGpioControl(s2pi_slave_t slave)
 	return STATUS_OK;
 }
 
-status_t S2PI_ReleaseGpioControl(s2pi_slave_t slave)
+status_t S2PI_ReleaseGpioControl(s2pi_slave_t peripheral)
 {
 	struct afbr_s50_platform_data *data;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return ERROR_S2PI_INVALID_SLAVE;
 	}
 
-	(void)gpio_pin_configure_dt(data->s2pi.gpio.spi.miso, GPIO_DISCONNECTED);
-	(void)gpio_pin_configure_dt(data->s2pi.gpio.spi.mosi, GPIO_DISCONNECTED);
+	(void)gpio_pin_configure_dt(data->s2pi.gpio.spi.sdo, GPIO_DISCONNECTED);
+	(void)gpio_pin_configure_dt(data->s2pi.gpio.spi.sdi, GPIO_DISCONNECTED);
 	(void)gpio_pin_configure_dt(data->s2pi.gpio.spi.clk, GPIO_DISCONNECTED);
 
 	err = pinctrl_apply_state(data->s2pi.pincfg, PINCTRL_STATE_DEFAULT);
@@ -295,13 +294,13 @@ status_t S2PI_ReleaseGpioControl(s2pi_slave_t slave)
 	return STATUS_OK;
 }
 
-status_t S2PI_WriteGpioPin(s2pi_slave_t slave, s2pi_pin_t pin, uint32_t value)
+status_t S2PI_WriteGpioPin(s2pi_slave_t peripheral, s2pi_pin_t pin, uint32_t value)
 {
 	struct afbr_s50_platform_data *data;
 	const struct gpio_dt_spec *gpio_pin;
 	int err;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return ERROR_S2PI_INVALID_SLAVE;
@@ -320,10 +319,10 @@ status_t S2PI_WriteGpioPin(s2pi_slave_t slave, s2pi_pin_t pin, uint32_t value)
 		gpio_pin = data->s2pi.gpio.spi.clk;
 		break;
 	case S2PI_MOSI:
-		gpio_pin = data->s2pi.gpio.spi.mosi;
+		gpio_pin = data->s2pi.gpio.spi.sdi;
 		break;
 	case S2PI_MISO:
-		gpio_pin = data->s2pi.gpio.spi.miso;
+		gpio_pin = data->s2pi.gpio.spi.sdo;
 		break;
 	default:
 		CHECKIF(true) {
@@ -344,14 +343,14 @@ status_t S2PI_WriteGpioPin(s2pi_slave_t slave, s2pi_pin_t pin, uint32_t value)
 	return STATUS_OK;
 }
 
-status_t S2PI_ReadGpioPin(s2pi_slave_t slave, s2pi_pin_t pin, uint32_t *value)
+status_t S2PI_ReadGpioPin(s2pi_slave_t peripheral, s2pi_pin_t pin, uint32_t *value)
 {
 	struct afbr_s50_platform_data *data;
 	const struct gpio_dt_spec *gpio_pin;
 	int err;
 	int pin_value;
 
-	err = afbr_s50_platform_get_by_id(slave, &data);
+	err = afbr_s50_platform_get_by_id(peripheral, &data);
 	CHECKIF(err) {
 		LOG_ERR("Error getting platform data: %d", err);
 		return ERROR_S2PI_INVALID_SLAVE;
@@ -370,10 +369,10 @@ status_t S2PI_ReadGpioPin(s2pi_slave_t slave, s2pi_pin_t pin, uint32_t *value)
 		gpio_pin = data->s2pi.gpio.spi.clk;
 		break;
 	case S2PI_MOSI:
-		gpio_pin = data->s2pi.gpio.spi.mosi;
+		gpio_pin = data->s2pi.gpio.spi.sdi;
 		break;
 	case S2PI_MISO:
-		gpio_pin = data->s2pi.gpio.spi.miso;
+		gpio_pin = data->s2pi.gpio.spi.sdo;
 		break;
 	default:
 		CHECKIF(true) {

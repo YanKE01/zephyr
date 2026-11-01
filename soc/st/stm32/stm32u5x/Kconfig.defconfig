@@ -5,18 +5,7 @@
 
 if SOC_SERIES_STM32U5X
 
-rsource "Kconfig.defconfig.stm32u5*"
-
-config ROM_START_OFFSET
-	default 0x400 if BOOTLOADER_MCUBOOT
-
-config ICACHE
-	default y
-
-config DCACHE
-	default y
-
-config CACHE_MANAGEMENT
+configdefault CACHE_MANAGEMENT
 	default y
 
 choice CACHE_TYPE
@@ -44,5 +33,11 @@ config IDLE_STACK_SIZE
 	default 512
 
 endif #STM32_USE_STOP3
+
+config STM32_INT_FLASH_SECURE_BASE_ADDRESS
+	default 0x0c000000
+
+configdefault LV_Z_DRAW_DMA2D_HAL_INCLUDE
+	default "stm32u5xx.h" if LVGL && LV_Z_DRAW_DMA2D
 
 endif # SOC_SERIES_STM32U5X

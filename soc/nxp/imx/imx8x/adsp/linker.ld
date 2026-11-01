@@ -180,10 +180,8 @@ SECTIONS
 #endif
 
 #include <zephyr/linker/rel-sections.ld>
-
-#ifdef CONFIG_LLEXT
 #include <zephyr/linker/llext-sections.ld>
-#endif
+
   .ResetVector.text : ALIGN(4)
   {
     _ResetVector_text_start = ABSOLUTE(.);
@@ -538,5 +536,4 @@ SECTIONS
     . = ALIGN(_EXT_MAN_ALIGN_);
   } >fw_metadata_seg :metadata_entries_phdr
 
-  /DISCARD/ : { *(.note.GNU-stack) }
 }

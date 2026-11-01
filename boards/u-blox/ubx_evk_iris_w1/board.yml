@@ -4,9 +4,13 @@ board:
   vendor: u-blox
   revision:
     format: custom
-    default: fidelex
+    default: fidelix
     revisions:
+      - name: "fidelix"
+      - name: "fidelix_16mb"
       - name: "macronix"
-      - name: "fidelex"
+      - name: "macronix_16mb"
   socs:
     - name: rw612
+      variants:
+        - name: ethernet

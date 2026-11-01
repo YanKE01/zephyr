@@ -23,6 +23,14 @@ LOG_MODULE_REGISTER(espi, CONFIG_ESPI_LOG_LEVEL);
 #include "reg/reg_kbc.h"
 #include "reg/reg_port80.h"
 
+#ifdef CONFIG_PM
+#include "reg/reg_gpio.h"
+#include <zephyr/pm/device.h>
+#include <zephyr/pm/policy.h>
+#include "reg/reg_system.h"
+#include <zephyr/drivers/gpio/gpio_rts5912.h>
+#endif
+
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1, "support only one espi compatible node");
 
 struct espi_rts5912_config {
@@ -56,6 +64,9 @@ struct espi_rts5912_config {
 	volatile struct port80_reg *const port80_reg;
 	uint32_t port80_clk_grp;
 	uint32_t port80_clk_idx;
+#endif
+#ifdef CONFIG_PM
+	struct gpio_dt_spec cs_pin;
 #endif
 	const struct device *clk_dev;
 	const struct pinctrl_dev_config *pcfg;
@@ -471,8 +482,11 @@ static void promt0_ibf_isr(const struct device *dev)
 				 .evt_details = ESPI_PERIPHERAL_EC_HOST_CMD,
 				 .evt_data = ESPI_PERIPHERAL_NODATA};
 
-	promt0_reg->STS |= ACPI_STS_STS0;
-	evt.evt_data = (uint8_t)promt0_reg->IB;
+	if (promt0_reg->STS & ACPI_STS_IBF) {
+		promt0_reg->STS |= ACPI_STS_STS0;
+		evt.evt_data = (uint8_t)promt0_reg->IB;
+	}
+
 	espi_send_callbacks(&data->callbacks, dev, evt);
 }
 
@@ -670,6 +684,8 @@ static void espi_periph_ch_setup(const struct device *dev)
 
 #ifdef CONFIG_ESPI_PERIPHERAL_DEBUG_PORT_80
 
+#define P80_MAX_ITEM 16
+
 static void espi_port80_isr(const struct device *dev)
 {
 	const struct espi_rts5912_config *const espi_config = dev->config;
@@ -679,8 +695,13 @@ static void espi_port80_isr(const struct device *dev)
 				 ESPI_PERIPHERAL_NODATA};
 	volatile struct port80_reg *const port80_reg = espi_config->port80_reg;
 
-	evt.evt_data = port80_reg->DATA;
-	espi_send_callbacks(&espi_data->callbacks, dev, evt);
+	int i = 0;
+
+	while (!(port80_reg->STS & PORT80_STS_FIFOEM) && i < P80_MAX_ITEM) {
+		evt.evt_data = port80_reg->DATA;
+		espi_send_callbacks(&espi_data->callbacks, dev, evt);
+		i++;
+	}
 }
 
 static int espi_peri_ch_port80_setup(const struct device *dev)
@@ -812,6 +833,38 @@ struct espi_vw_tx_cached {
 static struct espi_vw_ch_cached espi_vw_ch_cached_data;
 static struct espi_vw_tx_cached espi_vw_tx_cached_data;
 
+#ifdef CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS
+static struct {
+	/** If true, the payload struct contains valid data */
+	bool valid;
+	struct {
+		/** Internal-use version counter in case the number of fields
+		 *  below grows. If the struct size ever increases, use
+		 *  `version` to infer the size/format and adjust the size
+		 *  checks in espi_rts5912_set_preserved_data().
+		 *
+		 *  The firmware binary restoring the data may not be the same
+		 *  as the firmware binary that saved them. Ensure forward-
+		 *  and backward-compatibility for future changes.
+		 */
+		uint8_t version;
+		/* Use scalar values so we can control the packing of this
+		 * payload struct carefully. It needs to remain consistent
+		 * across different toolchains, images, or user FW versions
+		 */
+		uint8_t espi_vw_tx_cached_idx4;
+		uint8_t espi_vw_tx_cached_idx5;
+		uint8_t espi_vw_tx_cached_idx6;
+		uint8_t espi_vw_tx_cached_idx40;
+		/* End version=1 fields */
+
+		/* Append new values to end of struct. Increment value being
+		 * written to version.
+		 */
+	} __packed payload;
+} preserved_data;
+#endif /* CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS */
+
 static int espi_rts5912_send_vwire(const struct device *dev, enum espi_vwire_signal signal,
 				   uint8_t level);
 static int espi_rts5912_receive_vwire(const struct device *dev, enum espi_vwire_signal signal,
@@ -835,7 +888,7 @@ static void vw_sus_slp_a_handler(const struct device *dev);
 static void vw_slp_lan_handler(const struct device *dev);
 static void vw_slp_wlan_handler(const struct device *dev);
 static void vw_host_c10_handler(const struct device *dev);
-static void espi_vw_ch_setup(const struct device *dev);
+static void espi_vw_ch_setup(const struct device *dev, bool first_init);
 static void espi_vw_ch_isr(const struct device *dev);
 #ifdef CONFIG_ESPI_AUTOMATIC_BOOT_DONE_ACKNOWLEDGE
 static void send_target_bootdone(const struct device *dev);
@@ -874,27 +927,55 @@ static const struct espi_vw_signal_t vw_idx2_signals[] = {
 	{ESPI_VWIRE_SIGNAL_SLP_S5, vw_slp5_handler},
 };
 
-static void espi_vw_idx2_isr(const struct device *dev)
-{
-	const struct espi_rts5912_config *const espi_config = dev->config;
-	volatile struct espi_reg *const espi_reg = espi_config->espi_reg;
-	uint8_t cur_idx_data = espi_reg->EVIDX2;
-	uint8_t updated_bit = cur_idx_data ^ espi_vw_ch_cached_data.idx2;
+struct vw_idx2_msg {
+	const struct device *dev;
+	uint8_t data;
+};
 
-	if (espi_reg->EVSTS & ESPI_EVSTS_IDX2CHG) {
-		espi_vw_ch_cached_data.idx2 = cur_idx_data;
+/* using quesu to store vw status */
+K_MSGQ_DEFINE(espi_vw_idx2_msgq, sizeof(struct vw_idx2_msg), 8, 4);
+
+static void espi_vw_idx2_thread(void *p1, void *p2, void *p3)
+{
+	struct vw_idx2_msg msg;
+	uint8_t updated_bit;
+
+	while (1) {
+
+		k_msgq_get(&espi_vw_idx2_msgq, &msg, K_FOREVER);
+
+		updated_bit = msg.data ^ espi_vw_ch_cached_data.idx2;
+		espi_vw_ch_cached_data.idx2 = msg.data;
 
 		for (int i = 0; i < ARRAY_SIZE(vw_idx2_signals); i++) {
 			enum espi_vwire_signal vw_signal = vw_idx2_signals[i].signal;
 
-			if (updated_bit & vw_channel_list[vw_signal].level_mask &&
-			    vw_idx2_signals[i].vw_signal_callback != NULL) {
-				vw_idx2_signals[i].vw_signal_callback(dev);
+			if ((updated_bit & vw_channel_list[vw_signal].level_mask) &&
+			    (vw_idx2_signals[i].vw_signal_callback != NULL)) {
+				vw_idx2_signals[i].vw_signal_callback(msg.dev);
 			}
 		}
-		if (espi_vw_ch_cached_data.idx2 == espi_reg->EVIDX2) {
-			espi_reg->EVSTS = ESPI_EVSTS_IDX2CHG;
-		}
+	}
+}
+
+K_THREAD_DEFINE(vw_idx2_thread_id, 384, espi_vw_idx2_thread, NULL, NULL, NULL,
+		K_PRIO_COOP(5), 0, 0);
+
+static void espi_vw_idx2_isr(const struct device *dev)
+{
+	const struct espi_rts5912_config *const espi_config = dev->config;
+	volatile struct espi_reg *const espi_reg = espi_config->espi_reg;
+
+	if (espi_reg->EVSTS & ESPI_EVSTS_IDX2CHG) {
+		uint8_t cur_idx_data = espi_reg->EVIDX2;
+
+		espi_reg->EVSTS = ESPI_EVSTS_IDX2CHG;
+
+		struct vw_idx2_msg msg = {
+			.dev = dev,
+			.data = cur_idx_data
+		};
+		k_msgq_put(&espi_vw_idx2_msgq, &msg, K_NO_WAIT);
 	}
 }
 
@@ -1197,7 +1278,6 @@ static void notify_host_warning(const struct device *dev, enum espi_vwire_signal
 	uint8_t status = 0;
 
 	espi_rts5912_receive_vwire(dev, signal, &status);
-	k_busy_wait(200);
 
 	switch (signal) {
 	case ESPI_VWIRE_SIGNAL_SUS_WARN:
@@ -1369,6 +1449,7 @@ static int espi_rts5912_send_vwire(const struct device *dev, enum espi_vwire_sig
 
 	espi_reg->EVTXDAT = tx_data;
 
+	k_busy_wait(10);
 	WAIT_FOR(!(espi_reg->EVSTS & ESPI_EVSTS_TXFULL), VW_TIMEOUT_US, k_busy_wait(10));
 
 	switch (vw_idx) {
@@ -1394,8 +1475,6 @@ static int espi_rts5912_send_vwire(const struct device *dev, enum espi_vwire_sig
 static int espi_rts5912_receive_vwire(const struct device *dev, enum espi_vwire_signal signal,
 				      uint8_t *level)
 {
-	const struct espi_rts5912_config *const espi_config = dev->config;
-	volatile struct espi_reg *const espi_reg = espi_config->espi_reg;
 	uint8_t vw_idx, lev_msk, valid_msk;
 	uint8_t vw_data;
 
@@ -1412,9 +1491,6 @@ static int espi_rts5912_receive_vwire(const struct device *dev, enum espi_vwire_
 		vw_data = espi_vw_ch_cached_data.idx2;
 		break;
 	case VW_CH_IDX3:
-		if (espi_vw_ch_cached_data.idx3 != espi_reg->EVIDX3) {
-			espi_vw_ch_cached_data.idx3 = espi_reg->EVIDX3;
-		}
 		vw_data = espi_vw_ch_cached_data.idx3;
 		break;
 	case VW_CH_IDX4:
@@ -1427,60 +1503,33 @@ static int espi_rts5912_receive_vwire(const struct device *dev, enum espi_vwire_
 		vw_data = espi_vw_tx_cached_data.idx6;
 		break;
 	case VW_CH_IDX7:
-		if (espi_vw_ch_cached_data.idx7 != espi_reg->EVIDX7) {
-			espi_vw_ch_cached_data.idx7 = espi_reg->EVIDX7;
-		}
 		vw_data = espi_vw_ch_cached_data.idx7;
 		break;
 	case VW_CH_IDX40:
 		vw_data = espi_vw_tx_cached_data.idx40;
 		break;
 	case VW_CH_IDX41:
-		if (espi_vw_ch_cached_data.idx41 != espi_reg->EVIDX41) {
-			espi_vw_ch_cached_data.idx41 = espi_reg->EVIDX41;
-		}
 		vw_data = espi_vw_ch_cached_data.idx41;
 		break;
 	case VW_CH_IDX42:
-		if (espi_vw_ch_cached_data.idx42 != espi_reg->EVIDX42) {
-			espi_vw_ch_cached_data.idx42 = espi_reg->EVIDX42;
-		}
 		vw_data = espi_vw_ch_cached_data.idx42;
 		break;
 	case VW_CH_IDX43:
-		if (espi_vw_ch_cached_data.idx43 != espi_reg->EVIDX43) {
-			espi_vw_ch_cached_data.idx43 = espi_reg->EVIDX43;
-		}
 		vw_data = espi_vw_ch_cached_data.idx43;
 		break;
 	case VW_CH_IDX44:
-		if (espi_vw_ch_cached_data.idx44 != espi_reg->EVIDX44) {
-			espi_vw_ch_cached_data.idx44 = espi_reg->EVIDX44;
-		}
 		vw_data = espi_vw_ch_cached_data.idx44;
 		break;
 	case VW_CH_IDX47:
-		if (espi_vw_ch_cached_data.idx47 != espi_reg->EVIDX47) {
-			espi_vw_ch_cached_data.idx47 = espi_reg->EVIDX47;
-		}
 		vw_data = espi_vw_ch_cached_data.idx47;
 		break;
 	case VW_CH_IDX4A:
-		if (espi_vw_ch_cached_data.idx4a != espi_reg->EVIDX4A) {
-			espi_vw_ch_cached_data.idx4a = espi_reg->EVIDX4A;
-		}
 		vw_data = espi_vw_ch_cached_data.idx4a;
 		break;
 	case VW_CH_IDX51:
-		if (espi_vw_ch_cached_data.idx51 != espi_reg->EVIDX51) {
-			espi_vw_ch_cached_data.idx51 = espi_reg->EVIDX51;
-		}
 		vw_data = espi_vw_ch_cached_data.idx51;
 		break;
 	case VW_CH_IDX61:
-		if (espi_vw_ch_cached_data.idx61 != espi_reg->EVIDX61) {
-			espi_vw_ch_cached_data.idx61 = espi_reg->EVIDX61;
-		}
 		vw_data = espi_vw_ch_cached_data.idx61;
 		break;
 	default:
@@ -1501,7 +1550,7 @@ static int espi_rts5912_receive_vwire(const struct device *dev, enum espi_vwire_
 	return 0;
 }
 
-static void espi_vw_ch_setup(const struct device *dev)
+static void espi_vw_ch_setup(const struct device *dev, bool first_init)
 {
 	const struct espi_rts5912_config *const espi_config = dev->config;
 	volatile struct espi_reg *const espi_reg = espi_config->espi_reg;
@@ -1524,6 +1573,28 @@ static void espi_vw_ch_setup(const struct device *dev)
 	espi_vw_tx_cached_data.idx5 = 0;
 	espi_vw_tx_cached_data.idx6 = 0;
 	espi_vw_tx_cached_data.idx40 = 0;
+
+#ifdef CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS
+	if (preserved_data.valid && first_init) {
+		/* Restore cached TX data from the preserved data. Only do this
+		 * upon driver initialization (once per boot cycle). When this
+		 * function is called due to an eSPI bus reset (`first_init` is
+		 * false), leave the cached values set to zero (see above).
+		 */
+		espi_vw_tx_cached_data.idx4 = preserved_data.payload.espi_vw_tx_cached_idx4;
+		espi_vw_tx_cached_data.idx5 = preserved_data.payload.espi_vw_tx_cached_idx5;
+		espi_vw_tx_cached_data.idx6 = preserved_data.payload.espi_vw_tx_cached_idx6;
+		espi_vw_tx_cached_data.idx40 = preserved_data.payload.espi_vw_tx_cached_idx40;
+
+		LOG_INF("ESPI RTS5912: Restore preserved driver state.");
+
+		/* `preserved_data` isn't updated while the driver runs. It can be
+		 * applied only once at driver initialization, so invalidate it
+		 * now.
+		 */
+		preserved_data.valid = false;
+	}
+#endif /* CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS */
 
 	espi_reg->EVRXINTEN = (ESPI_EVRXINTEN_CFGCHGEN | ESPI_EVRXINTEN_RXCHGEN);
 
@@ -1694,6 +1765,9 @@ static int espi_rts5912_send_oob(const struct device *dev, struct espi_oob_packe
 	const struct espi_rts5912_config *const espi_config = dev->config;
 	struct espi_rts5912_data *espi_data = dev->data;
 	volatile struct espi_reg *const espi_reg = espi_config->espi_reg;
+	volatile struct acpi_reg *const acpi_reg = espi_config->acpi_reg;
+	volatile struct acpi_reg *const promt0_reg = espi_config->promt0_reg;
+	volatile struct kbc_reg *const kbc_reg = espi_config->kbc_reg;
 	int ret;
 
 	if (!(espi_reg->EOCFG & ESPI_EOCFG_CHRDY)) {
@@ -1711,12 +1785,25 @@ static int espi_rts5912_send_oob(const struct device *dev, struct espi_oob_packe
 		return -EINVAL;
 	}
 
+	/* Check if any data in port fifo */
+	if ((acpi_reg->STS & ACPI_STS_IBF) || (kbc_reg->STS & KBC_STS_IBF) ||
+		(promt0_reg->STS & ACPI_STS_IBF) || (acpi_reg->STS & ACPI_STS_OBF) ||
+		(kbc_reg->STS & KBC_STS_OBF) || (promt0_reg->STS & ACPI_STS_OBF)) {
+		LOG_ERR("%s: OOB channel need wait for io", __func__);
+		return -EBUSY;
+	}
+
+	__disable_irq();
+
 	for (int i = 0; i < pckt->len; i++) {
 		espi_data->oob_tx_ptr[i] = pckt->buf[i];
 	}
 
 	espi_reg->EOTXLEN = pckt->len - 1;
+
 	espi_reg->EOTXCTRL = ESPI_EOTXCTRL_TXSTR;
+
+	__enable_irq();
 
 	espi_data->oob_tx_busy = true;
 
@@ -2208,6 +2295,70 @@ static int espi_rts5912_manage_callback(const struct device *dev, struct espi_ca
 	return espi_manage_callback(&data->callbacks, callback, set);
 }
 
+#ifdef CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS
+#define ESPI_RTS5912_PRESERVED_DATA_FORMAT_VERSION 1
+
+int espi_rts5912_get_preserved_data(size_t buf_max_size, uint8_t *buf_out)
+{
+	if (buf_out == NULL) {
+		return -EINVAL;
+	}
+
+	if (buf_max_size < sizeof(preserved_data.payload)) {
+		/* Provided buffer is too small to fit all preserved data. */
+		return -ERANGE;
+	}
+
+	/* Gather data to preserve */
+	memset(&preserved_data.payload, 0, sizeof(preserved_data.payload));
+	preserved_data.payload.version = ESPI_RTS5912_PRESERVED_DATA_FORMAT_VERSION;
+	preserved_data.payload.espi_vw_tx_cached_idx4 = espi_vw_tx_cached_data.idx4;
+	preserved_data.payload.espi_vw_tx_cached_idx5 = espi_vw_tx_cached_data.idx5;
+	preserved_data.payload.espi_vw_tx_cached_idx6 = espi_vw_tx_cached_data.idx6;
+	preserved_data.payload.espi_vw_tx_cached_idx40 = espi_vw_tx_cached_data.idx40;
+
+	LOG_DBG("Get ESPI Cached Data: %02x %02x %02x %02x", espi_vw_tx_cached_data.idx4,
+		espi_vw_tx_cached_data.idx5, espi_vw_tx_cached_data.idx6,
+		espi_vw_tx_cached_data.idx40);
+
+	memcpy(buf_out, &preserved_data.payload, sizeof(preserved_data.payload));
+
+	/* Return number of bytes written out */
+	return sizeof(preserved_data.payload);
+}
+
+int espi_rts5912_set_preserved_data(size_t size, const uint8_t *buf_in)
+{
+	/* There can only be one instance of this driver. */
+	const struct device *dev = DEVICE_DT_GET(DT_DRV_INST(0));
+
+	if (device_is_ready(dev)) {
+		/* This function must be called before device init. */
+		return -EBUSY;
+	}
+
+	if (buf_in == NULL) {
+		return -EINVAL;
+	}
+
+	if (size < sizeof(preserved_data.payload)) {
+		return -ERANGE;
+	}
+
+	memcpy(&preserved_data.payload, buf_in, sizeof(preserved_data.payload));
+
+	if (preserved_data.payload.version != ESPI_RTS5912_PRESERVED_DATA_FORMAT_VERSION) {
+		LOG_ERR("ESPI RTS5912: Invalid preserved data (ver %u)",
+			preserved_data.payload.version);
+		return -EBADMSG;
+	}
+
+	preserved_data.valid = true;
+
+	return 0;
+}
+#endif /* CONFIG_ESPI_RTS5912_PRESERVED_DATA_HOOKS */
+
 static DEVICE_API(espi, espi_rts5912_driver_api) = {
 	.config = espi_rts5912_configure,
 	.get_channel_status = espi_rts5912_channel_ready,
@@ -2231,7 +2382,7 @@ static DEVICE_API(espi, espi_rts5912_driver_api) = {
 #endif
 };
 
-static void espi_vw_ch_setup(const struct device *dev);
+static void espi_vw_ch_setup(const struct device *dev, bool first_init);
 
 #define VW_RESET_DELAY 150UL
 
@@ -2256,7 +2407,7 @@ static void espi_rst_isr(const struct device *dev)
 			/* rst pin low go high trigger interrupt */
 			evt.evt_data = 1;
 #ifdef CONFIG_ESPI_VWIRE_CHANNEL
-			espi_vw_ch_setup(dev);
+			espi_vw_ch_setup(dev, /*first_init=*/false);
 			espi_reg->ESPICFG = data->config_data;
 			if (espi_reg->EVCFG & ESPI_EVCFG_CHEN) {
 				k_timeout_t delay = K_MSEC(VW_RESET_DELAY);
@@ -2286,6 +2437,11 @@ static void espi_bus_reset_setup(const struct device *dev)
 		espi_reg->ERSTCFG = ESPI_ERSTCFG_RSTMONEN | ESPI_ERSTCFG_RSTINTEN;
 	}
 
+	/* Clear the status register (this is a W1C bit) to prevent the bus_rst
+	 * ISR from immediately firing.
+	 */
+	espi_reg->ERSTCFG |= ESPI_ERSTCFG_RSTSTS;
+
 	NVIC_ClearPendingIRQ(DT_IRQ_BY_NAME(DT_DRV_INST(0), bus_rst, irq));
 
 	IRQ_CONNECT(DT_IRQ_BY_NAME(DT_DRV_INST(0), bus_rst, irq),
@@ -2293,7 +2449,18 @@ static void espi_bus_reset_setup(const struct device *dev)
 		    DEVICE_DT_GET(DT_DRV_INST(0)), 0);
 	irq_enable(DT_IRQ_BY_NAME(DT_DRV_INST(0), bus_rst, irq));
 }
+#ifdef CONFIG_PM
+void espi_cs_low_isr(const struct device *port, struct gpio_callback *cb, gpio_port_pins_t pins)
+{
+	gpio_flags_t cs_pin_config;
 
+	gpio_pin_get_config(port, pins, &cs_pin_config);
+	if (cs_pin_config & GPIO_INT_ENABLE) {
+		gpio_pin_interrupt_configure(port, (find_msb_set(pins) - 1),
+					     GPIO_INT_MODE_DISABLED);
+	}
+}
+#endif
 static int espi_rts5912_init(const struct device *dev)
 {
 	const struct espi_rts5912_config *const espi_config = dev->config;
@@ -2373,7 +2540,7 @@ static int espi_rts5912_init(const struct device *dev)
 
 #ifdef CONFIG_ESPI_VWIRE_CHANNEL
 	/* Setup eSPI virtual-wire channel */
-	espi_vw_ch_setup(dev);
+	espi_vw_ch_setup(dev, /*first_init=*/true);
 #endif
 
 #ifdef CONFIG_ESPI_OOB_CHANNEL
@@ -2393,13 +2560,44 @@ static int espi_rts5912_init(const struct device *dev)
 		goto exit;
 	}
 #endif
+#ifdef CONFIG_PM
+	static struct gpio_callback cb;
+	uint32_t cs_irq_nun = gpio_rts5912_get_pin_num(&espi_config->cs_pin);
 
+	NVIC_ClearPendingIRQ(cs_irq_nun);
+	gpio_init_callback(&cb, espi_cs_low_isr, BIT(espi_config->cs_pin.pin));
+	gpio_add_callback(espi_config->cs_pin.port, &cb);
+	irq_enable(cs_irq_nun);
+#endif
 exit:
 	return rc;
 }
+#ifdef CONFIG_PM
+static inline int espi_rts5912_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	const struct espi_rts5912_config *const espi_config = dev->config;
+	SYSTEM_Type *sys_reg = RTS5912_SCCON_REG_BASE;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		sys_reg->SLPCTRL &= ~SYSTEM_SLPCTRL_GPIOWKEN_Msk;
+		gpio_pin_interrupt_configure_dt(&espi_config->cs_pin, GPIO_INT_MODE_DISABLED);
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+		sys_reg->SLPCTRL |= SYSTEM_SLPCTRL_GPIOWKEN_Msk;
+		gpio_pin_interrupt_configure_dt(&espi_config->cs_pin,
+						GPIO_INT_MODE_EDGE | GPIO_INT_TRIG_LOW);
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+PM_DEVICE_DT_INST_DEFINE(0, espi_rts5912_pm_action);
+#endif
 
 PINCTRL_DT_INST_DEFINE(0);
-
 static struct espi_rts5912_data espi_rts5912_data_0;
 
 static const struct espi_rts5912_config espi_rts5912_config = {
@@ -2435,9 +2633,17 @@ static const struct espi_rts5912_config espi_rts5912_config = {
 	.port80_clk_grp = DT_CLOCKS_CELL_BY_NAME(DT_DRV_INST(0), port80, clk_grp),
 	.port80_clk_idx = DT_CLOCKS_CELL_BY_NAME(DT_DRV_INST(0), port80, clk_idx),
 #endif
+#ifdef CONFIG_PM
+	.cs_pin = GPIO_DT_SPEC_INST_GET(0, cs_gpios),
+#endif
 	.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(0)),
 	.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(0),
 };
-
+#ifdef CONFIG_PM
+DEVICE_DT_INST_DEFINE(0, &espi_rts5912_init, PM_DEVICE_DT_INST_GET(0), &espi_rts5912_data_0,
+		      &espi_rts5912_config, PRE_KERNEL_2, CONFIG_ESPI_INIT_PRIORITY,
+		      &espi_rts5912_driver_api);
+#else
 DEVICE_DT_INST_DEFINE(0, &espi_rts5912_init, NULL, &espi_rts5912_data_0, &espi_rts5912_config,
 		      PRE_KERNEL_2, CONFIG_ESPI_INIT_PRIORITY, &espi_rts5912_driver_api);
+#endif

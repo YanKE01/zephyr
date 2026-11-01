@@ -263,7 +263,7 @@ async def br_connect(hci_port, shell, address) -> None:
                     if attribute.id == 0x100:
                         service_name_found = True
                 if service_record_handle == service_record_handles[-1]:
-                    assert service_name_found is False
+                    assert service_name_found is True
 
             # Install SDP large Record
             shell.exec_command("sdp_server register_sdp_large_valid")
@@ -315,6 +315,193 @@ async def br_connect(hci_port, shell, address) -> None:
                     assert profile_found is True
 
 
+async def sdp_discover_with_range(hci_port, shell, address) -> None:
+    logger.info('<<< connect...')
+    async with await open_transport_or_link(hci_port) as hci_transport:
+        device = Device.with_hci(
+            'Bumble',
+            Address('F0:F1:F2:F3:F4:F5'),
+            hci_transport.source,
+            hci_transport.sink,
+        )
+
+        valid_attr_ids = []
+
+        with open("bumble_hci_sdp_s_discover_with_range.log", "wb") as snoop_file:
+            device.host.snooper = BtSnooper(snoop_file)
+            device.classic_enabled = True
+            device.le_enabled = False
+            await device_power_on(device)
+
+            target_address = address.split(" ")[0]
+            logger.info(f'=== Connecting to {target_address}...')
+            try:
+                connection = await device.connect(target_address, transport=BT_BR_EDR_TRANSPORT)
+                logger.info(f'=== Connected to {connection.peer_address}!')
+            except CommandTimeoutError as e:
+                logger.info('!!! Connection timed out')
+                raise e
+
+            # Connect to the SDP Server
+            sdp_client = SDP_Client(connection)
+            await sdp_client.connect()
+
+            shell.exec_command("sdp_server register_sdp_all")
+            shell.exec_command("sdp_server register_sdp_large")
+            shell.exec_command("sdp_server register_sdp_large_valid")
+            shell.exec_command("sdp_server register_sdp_uuid128")
+
+            logger.info("<<< 1 List all attributes and get all supported attribute ids")
+            search_result = await sdp_client.search_attributes(
+                [BT_L2CAP_PROTOCOL_ID], [SDP_ALL_ATTRIBUTES_RANGE]
+            )
+
+            assert len(search_result) != 0
+            logger.info('SEARCH RESULTS:')
+            for attribute_list in search_result:
+                logger.info('SERVICE:')
+                for attribute in attribute_list:
+                    logger.info(
+                        '  ' + '\n  '.join([attribute.to_string()])
+                    )
+                    if attribute.id not in valid_attr_ids:
+                        valid_attr_ids.append(attribute.id)
+
+            logger.info(f"attribute id list {valid_attr_ids}")
+
+            valid_attr_ids.sort()
+            logger.info(f"Sorted attribute id list {valid_attr_ids}")
+
+            range_list = []
+
+            for _, attr_id_start in enumerate(valid_attr_ids):
+                for _, attr_id_end in enumerate(valid_attr_ids):
+                    if attr_id_start >= attr_id_end:
+                        continue
+
+                    discover_attr_ids = []
+
+                    if attr_id_start > 0:
+                        discover_attr_ids.append(attr_id_start - 1)
+                    discover_attr_ids.append(attr_id_start)
+                    discover_attr_ids.append(attr_id_start + 1)
+                    if attr_id_end > 0:
+                        discover_attr_ids.append(attr_id_end - 1)
+                    discover_attr_ids.append(attr_id_end)
+                    if attr_id_end < 0xFFFF:
+                        discover_attr_ids.append(attr_id_end + 1)
+
+                    discover_attr_ids = list(dict.fromkeys(discover_attr_ids))
+                    discover_attr_ids.sort()
+
+                    for _, discover_start in enumerate(discover_attr_ids):
+                        for _, discover_end in enumerate(discover_attr_ids):
+                            if discover_start > discover_end:
+                                continue
+
+                            if (discover_start, discover_end) in range_list:
+                                continue
+
+                            range_list.append((discover_start, discover_end))
+
+                            # List all services in the root browse group
+                            logger.info(f"<<< Service search discovery UUID {BT_L2CAP_PROTOCOL_ID} "
+                                        f"with range ({discover_start}, {discover_end})")
+
+                            search_result = await sdp_client.search_attributes(
+                                [BT_L2CAP_PROTOCOL_ID], [(discover_start, discover_end)]
+                            )
+
+                            in_range = False
+                            for id in valid_attr_ids:
+                                if discover_start <= id <= discover_end:
+                                    logger.info(f"({discover_start} {discover_end}) in range")
+                                    in_range = True
+                                    break
+
+                            logger.info('SEARCH RESULTS:')
+                            for attr_list in search_result:
+                                logger.info('SERVICE:')
+                                logger.info(
+                                    '  ' + '\n'.join([attr.to_string() for attr in attr_list])
+                                )
+
+                            if in_range:
+                                assert len(search_result) != 0
+                            else:
+                                assert len(search_result) == 0
+
+
+async def sdp_unregister(hci_port, shell, address) -> None:
+    logger.info('<<< connect...')
+    async with await open_transport_or_link(hci_port) as hci_transport:
+        device = Device.with_hci(
+            'Bumble',
+            Address('F0:F1:F2:F3:F4:F5'),
+            hci_transport.source,
+            hci_transport.sink,
+        )
+
+        with open("bumble_hci_sdp_s_unregister.log", "wb") as snoop_file:
+            device.host.snooper = BtSnooper(snoop_file)
+            device.classic_enabled = True
+            device.le_enabled = False
+            await device_power_on(device)
+
+            target_address = address.split(" ")[0]
+            logger.info(f'=== Connecting to {target_address}...')
+            try:
+                connection = await device.connect(target_address, transport=BT_BR_EDR_TRANSPORT)
+                logger.info(f'=== Connected to {connection.peer_address}!')
+            except CommandTimeoutError as e:
+                logger.info('!!! Connection timed out')
+                raise e
+
+            # Register record 0
+            shell.exec_command("sdp_server register_sdp 0")
+
+            # Connect SDP and verify record is visible
+            sdp_client = SDP_Client(connection)
+            await sdp_client.connect()
+
+            logger.info("<<< 1 Verify record 0 is visible after register")
+            service_record_handles = await sdp_client.search_services([SDP_PUBLIC_BROWSE_ROOT])
+            logger.info(f'SERVICES: {service_record_handles}')
+            assert len(service_record_handles) == 1
+
+            # Disconnect SDP L2CAP channel so unregister can succeed
+            await sdp_client.disconnect()
+
+            # Unregister record 0
+            shell.exec_command("sdp_server unregister_sdp 0")
+
+            # Reconnect SDP and verify record is gone
+            await sdp_client.connect()
+
+            logger.info("<<< 2 Verify record 0 is gone after unregister")
+            service_record_handles = await sdp_client.search_services([SDP_PUBLIC_BROWSE_ROOT])
+            logger.info(f'SERVICES: {service_record_handles}')
+            assert len(service_record_handles) == 0
+
+            # Disconnect SDP again
+            await sdp_client.disconnect()
+
+            # Re-register record 0
+            shell.exec_command("sdp_server register_sdp 0")
+
+            # Reconnect SDP and verify record is back
+            await sdp_client.connect()
+
+            logger.info("<<< 3 Verify record 0 is visible after re-register")
+            service_record_handles = await sdp_client.search_services([SDP_PUBLIC_BROWSE_ROOT])
+            logger.info(f'SERVICES: {service_record_handles}')
+            assert len(service_record_handles) == 1
+
+            # Unregister to clean up for other tests
+            await sdp_client.disconnect()
+            shell.exec_command("sdp_server unregister_sdp 0")
+
+
 class TestSdpServer:
     def test_discovery_device(self, sdp_server_dut):
         """Test case to discover IUT"""
@@ -322,8 +509,20 @@ class TestSdpServer:
         hci, iut_address = sdp_server_dut
         asyncio.run(start_discovery(hci, iut_address))
 
+    def test_sdp_unregister(self, shell: Shell, dut: DeviceAdapter, sdp_server_dut):
+        """Test case to unregister and re-register SDP records"""
+        logger.info(f'test_sdp_unregister {sdp_server_dut}')
+        hci, iut_address = sdp_server_dut
+        asyncio.run(sdp_unregister(hci, shell, iut_address))
+
     def test_sdp_discover(self, shell: Shell, dut: DeviceAdapter, sdp_server_dut):
         """Test case to request SDP records"""
         logger.info(f'test_sdp_discover {sdp_server_dut}')
         hci, iut_address = sdp_server_dut
         asyncio.run(br_connect(hci, shell, iut_address))
+
+    def test_sdp_discover_with_range(self, shell: Shell, dut: DeviceAdapter, sdp_server_dut):
+        """Test case to request SDP records with range"""
+        logger.info(f'test_sdp_discover_with_range {sdp_server_dut}')
+        hci, iut_address = sdp_server_dut
+        asyncio.run(sdp_discover_with_range(hci, shell, iut_address))

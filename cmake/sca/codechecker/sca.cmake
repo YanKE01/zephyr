@@ -7,6 +7,9 @@ include(git)
 include(extensions)
 include(west)
 
+# CodeChecker setup for `cppcheck`
+include(${ZEPHYR_BASE}/cmake/sca/codechecker/cppcheck.cmake)
+
 find_program(CODECHECKER_EXE NAMES CodeChecker codechecker REQUIRED)
 message(STATUS "Found SCA: CodeChecker (${CODECHECKER_EXE})")
 
@@ -31,7 +34,7 @@ zephyr_get(TC_NAME)
 
 if(NOT CODECHECKER_NAME)
   if(TC_NAME)
-    set(CODECHECKER_NAME "${BOARD}${BOARD_QUALIFIERS}:${TC_NAME}")
+    set(CODECHECKER_NAME "${BOARD}/${BOARD_QUALIFIERS}:${TC_NAME}")
   else()
     set(CODECHECKER_NAME zephyr)
   endif()
@@ -67,34 +70,31 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(output_dir ${CMAKE_BINARY_DIR}/sca/codechecker)
 file(MAKE_DIRECTORY ${output_dir})
 
-# Use a dummy file to let CodeChecker know we can start analyzing
-set_property(GLOBAL APPEND PROPERTY extra_post_build_commands COMMAND
-  ${CMAKE_COMMAND} -E touch ${output_dir}/codechecker.ready)
-set_property(GLOBAL APPEND PROPERTY extra_post_build_byproducts
-  ${output_dir}/codechecker.ready)
-
 add_custom_target(codechecker ALL
   COMMAND ${CODECHECKER_EXE} analyze
     --keep-gcc-include-fixed
     --keep-gcc-intrin
     --output ${output_dir}/codechecker.plist
+    --analyzer-config cppcheck:cc-verbatim-args-file=${CPPCHECK_VERBATIM_ARGS_FILE}
     --name ${CODECHECKER_NAME} # Set a default metadata name
     ${CODECHECKER_CONFIG_FILE}
     ${CODECHECKER_ANALYZE_JOBS}
     ${CODECHECKER_ANALYZE_OPTS}
     ${CMAKE_BINARY_DIR}/compile_commands.json
     || ${CMAKE_COMMAND} -E true # allow to continue processing results
-  DEPENDS ${CMAKE_BINARY_DIR}/compile_commands.json ${output_dir}/codechecker.ready
+  DEPENDS
+    ${CMAKE_BINARY_DIR}/compile_commands.json
+    ${CPPCHECK_CC_HEADER}
   VERBATIM
   USES_TERMINAL
   COMMAND_EXPAND_LISTS
 )
 
-# Cleanup dummy file
-add_custom_command(
-  TARGET codechecker POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E rm ${output_dir}/codechecker.ready
-)
+# Add a dependency on the final zephyr ELF target so CodeChecker runs only
+# after the build is complete. logical_target_for_zephyr_elf is not yet
+# defined when this file is included, so defer the call until the end of
+# the top-level CMakeLists.txt scope.
+cmake_language(DEFER CALL add_dependencies codechecker ${logical_target_for_zephyr_elf})
 
 if(CODECHECKER_CLEANUP)
   add_custom_target(codechecker-cleanup ALL

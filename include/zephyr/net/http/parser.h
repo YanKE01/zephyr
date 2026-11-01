@@ -54,17 +54,6 @@ typedef unsigned __int64 uint64_t;
 extern "C" {
 #endif
 
-/* Maximum header size allowed. If the macro is not defined
- * before including this header then the default is used. To
- * change the maximum header size, define the macro in the build
- * environment (e.g. -DHTTP_MAX_HEADER_SIZE=<value>). To remove
- * the effective limit on the size of the header, define the macro
- * to a very large number (e.g. -DHTTP_MAX_HEADER_SIZE=0x7fffffff)
- */
-#ifndef HTTP_MAX_HEADER_SIZE
-# define HTTP_MAX_HEADER_SIZE (80 * 1024)
-#endif
-
 struct http_parser;
 struct http_parser_settings;
 
@@ -193,7 +182,7 @@ struct http_parser {
 	/* Remote socket address of http connection, where parser can initiate
 	 * replies if necessary.
 	 */
-	const struct sockaddr *addr;
+	const struct net_sockaddr *addr;
 };
 
 

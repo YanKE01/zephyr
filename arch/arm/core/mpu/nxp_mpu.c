@@ -20,13 +20,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(mpu);
 
-#define NODE_HAS_PROP_AND_OR(node_id, prop) \
-	DT_NODE_HAS_PROP(node_id, prop) ||
-
-BUILD_ASSERT((DT_FOREACH_STATUS_OKAY_NODE_VARGS(
-	      NODE_HAS_PROP_AND_OR, zephyr_memory_region_mpu) false) == false,
-	      "`zephyr,memory-region-mpu` was deprecated in favor of `zephyr,memory-attr`");
-
 /*
  * Global status variable holding the number of HW MPU region indices, which
  * have been reserved by the MPU driver to program the static (fixed) memory
@@ -51,9 +44,9 @@ static inline uint8_t get_num_regions(void)
 	return FSL_FEATURE_SYSMPU_DESCRIPTOR_COUNT;
 }
 
-/* @brief Partition sanity check
+/* @brief Partition coherence check
  *
- * This internal function performs run-time sanity check for
+ * This internal function performs run-time coherence check for
  * MPU region start address and size.
  *
  * @param part Pointer to the data structure holding the partition
@@ -297,11 +290,11 @@ static int mpu_sram_partitioning(uint8_t index,
 
 /* This internal function programs a set of given MPU regions
  * over a background memory area, optionally performing a
- * sanity check of the memory regions to be programmed.
+ * coherence check of the memory regions to be programmed.
  */
 static int mpu_configure_regions(const struct z_arm_mpu_partition regions[],
 				 uint8_t regions_num, uint8_t start_reg_index,
-				 bool do_sanity_check)
+				 bool do_coherence_check)
 {
 	int i;
 	int reg_index = start_reg_index;
@@ -312,9 +305,9 @@ static int mpu_configure_regions(const struct z_arm_mpu_partition regions[],
 		}
 		/* Non-empty region. */
 
-		if (do_sanity_check &&
+		if (do_coherence_check &&
 				(!mpu_partition_is_valid(&regions[i]))) {
-			LOG_ERR("Partition %u: sanity check failed.", i);
+			LOG_ERR("Partition %u: coherence check failed.", i);
 			return -EINVAL;
 		}
 
@@ -531,46 +524,6 @@ static inline int is_in_region(uint32_t r_index, uint32_t start, uint32_t size)
 	}
 
 	return 0;
-}
-
-/**
- * @brief update configuration of an active memory partition
- */
-void arm_core_mpu_mem_partition_config_update(
-	struct z_arm_mpu_partition *partition,
-	k_mem_partition_attr_t *new_attr)
-{
-	/* Find the partition. ASSERT if not found. */
-	uint8_t i;
-	uint8_t reg_index = get_num_regions();
-
-	for (i = static_regions_num; i < get_num_regions(); i++) {
-		if (!is_enabled_region(i)) {
-			continue;
-		}
-
-		uint32_t base = mpu_region_get_base(i);
-
-		if (base != partition->start) {
-			continue;
-		}
-
-		uint32_t size = mpu_region_get_size(i);
-
-		if (size != partition->size) {
-			continue;
-		}
-
-		/* Region found */
-		reg_index = i;
-		break;
-	}
-	__ASSERT(reg_index != get_num_regions(),
-		 "Memory domain partition not found\n");
-
-	/* Modify the permissions */
-	partition->attr = *new_attr;
-	mpu_configure_region(reg_index, partition);
 }
 
 /**

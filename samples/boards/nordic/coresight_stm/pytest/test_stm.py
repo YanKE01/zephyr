@@ -20,7 +20,7 @@ SB_CONFIG_APP_CPUPPR_RUN = None
 SB_CONFIG_APP_CPUFLPR_RUN = None
 
 # See definition of stm_m_id[] and stm_m_name[] in
-# https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/misc/coresight/nrf_etr.c
+# https://github.com/zephyrproject-rtos/zephyr/blob/main/drivers/debug/debug_nrf_etr.c
 STM_M_ID = {
     "sec": 33,
     "app": 34,
@@ -110,7 +110,7 @@ def check_benchmark_results(output: str, core: str, constraints: STMLimits) -> N
     """
     Use regular expressions to parse 'output' string.
     Search for benchmark results related to 'core' coprocessor.
-    Check that benchamrk results are lower than limits provided in 'constraints'.
+    Check that benchmark results are lower than limits provided in 'constraints'.
     """
 
     cfg = {
@@ -172,7 +172,7 @@ def nrfutil_dictionary_from_serial(
     decoded_file_name: str = "output.txt",
     collect_time: float = 60.0,
 ) -> None:
-    UART_PATH = dut.device_config.serial
+    UART_PATH = dut.device_config.serial_configs[0].port
     dut.close()
 
     logger.debug(f"Using serial: {UART_PATH}")
@@ -203,7 +203,12 @@ def nrfutil_dictionary_from_serial(
     try:
         # run nrfutil trace in background non-blocking
         logger.info(f"Executing:\n{cmd}")
-        proc = subprocess.Popen(cmd.split(), stdout=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd.split(),
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT,
+                                encoding='UTF-8',
+                                errors='replace')
     except OSError as exc:
         logger.error(f"Unable to start nrfutil trace:\n{cmd}\n{exc}")
     try:
@@ -212,6 +217,8 @@ def nrfutil_dictionary_from_serial(
         pass
     finally:
         _kill(proc)
+        outs, errs = proc.communicate()
+        logger.info(f"{outs=}\n{errs=}")
 
 
 def test_sample_STM_decoded(dut: DeviceAdapter):
@@ -226,7 +233,7 @@ def test_sample_STM_decoded(dut: DeviceAdapter):
     autoconf_file = f"{BUILD_DIR}/_sysbuild/autoconf.h"
 
     # nrf54h20 prints immediately after it is flashed.
-    # Wait a bit to skipp logs from previous test.
+    # Wait a bit to skip logs from previous test.
     sleep(5)
 
     # Get output from serial port
@@ -275,9 +282,9 @@ def test_STM_decoded(dut: DeviceAdapter):
 
     app_constraints = STMLimits(
         # all values in us
-        log_0_arg=1.8,
-        log_1_arg=2.1,
-        log_2_arg=2.0,
+        log_0_arg=0.6,
+        log_1_arg=0.6,
+        log_2_arg=2.1,
         log_3_arg=2.1,
         log_str=4.5,
         tracepoint=0.5,
@@ -286,32 +293,32 @@ def test_STM_decoded(dut: DeviceAdapter):
     )
     rad_constraints = STMLimits(
         # all values in us
-        log_0_arg=4.6,
-        log_1_arg=5.0,
-        log_2_arg=5.2,
-        log_3_arg=5.6,
-        log_str=6.3,
+        log_0_arg=5.6,
+        log_1_arg=5.8,
+        log_2_arg=6.1,
+        log_3_arg=6.4,
+        log_str=7.1,
         tracepoint=0.5,
         tracepoint_d32=0.5,
         tolerance=0.5,
     )
     ppr_constraints = STMLimits(
         # all values in us
-        log_0_arg=25.7,
-        log_1_arg=27.1,
-        log_2_arg=27.3,
-        log_3_arg=30.4,
-        log_str=65.7,
-        tracepoint=0.55,
+        log_0_arg=2.3,
+        log_1_arg=2.0,
+        log_2_arg=26.9,
+        log_3_arg=27.5,
+        log_str=68.3,
+        tracepoint=1.5,
         tracepoint_d32=0.25,
         tolerance=0.5,
     )
     flpr_constraints = STMLimits(
         # all values in us
-        log_0_arg=1.3,
-        log_1_arg=1.6,
-        log_2_arg=1.6,
-        log_3_arg=1.7,
+        log_0_arg=0.2,
+        log_1_arg=0.2,
+        log_2_arg=1.2,
+        log_3_arg=1.2,
         log_str=3.0,
         tracepoint=0.5,
         tracepoint_d32=0.5,
@@ -319,7 +326,7 @@ def test_STM_decoded(dut: DeviceAdapter):
     )
 
     # nrf54h20 prints immediately after it is flashed.
-    # Wait a bit to skipp logs from previous test.
+    # Wait a bit to skip logs from previous test.
     sleep(5)
 
     # Get output from serial port
@@ -447,8 +454,8 @@ def test_STM_dictionary_mode(dut: DeviceAdapter):
         log_2_arg=8.6,
         log_3_arg=17.4,
         log_str=45.2,
-        tracepoint=0.5,
-        tracepoint_d32=0.5,
+        tracepoint=1.5,
+        tracepoint_d32=1.5,
         tolerance=0.5,
     )
     flpr_constraints = STMLimits(

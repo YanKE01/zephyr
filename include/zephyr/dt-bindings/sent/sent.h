@@ -4,13 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_DT_BINDINGS_SENT_H_
-#define ZEPHYR_INCLUDE_DT_BINDINGS_SENT_H_
+#ifndef ZEPHYR_INCLUDE_DT_BINDINGS_SENT_SENT_H_
+#define ZEPHYR_INCLUDE_DT_BINDINGS_SENT_SENT_H_
 
 /**
- * @brief SENT Interface
- * @defgroup sent_interface SENT Interface
- * @ingroup io_interfaces
+ * @addtogroup sent_interface
  * @{
  */
 
@@ -44,4 +42,4 @@
 
 /** @} */
 
-#endif /* ZEPHYR_INCLUDE_DT_BINDINGS_SENT_H_ */
+#endif /* ZEPHYR_INCLUDE_DT_BINDINGS_SENT_SENT_H_ */

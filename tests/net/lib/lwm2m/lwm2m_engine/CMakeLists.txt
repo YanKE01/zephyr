@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 3.20.0)
+cmake_minimum_required(VERSION 3.28.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(lwm2m_engine_test)
 
@@ -16,7 +16,10 @@ zephyr_linker_sources(SECTIONS ${ZEPHYR_BASE}/subsys/net/lib/lwm2m/iterables.ld)
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(app PRIVATE ${ZEPHYR_BASE}/include/)
 target_include_directories(app PRIVATE ${ZEPHYR_BASE}/subsys/net/lib/lwm2m/)
-target_include_directories(app PRIVATE ${ZEPHYR_BASE}/../modules/crypto/mbedtls/include/)
+target_include_directories(app PRIVATE ${ZEPHYR_MBEDTLS_MODULE_DIR}/include/)
+target_include_directories(app PRIVATE ${CONFIG_TF_PSA_CRYPTO_MODULE_DIR}/include/)
+target_include_directories(app PRIVATE ${CONFIG_TF_PSA_CRYPTO_MODULE_DIR}/drivers/builtin/include/)
+target_include_directories(app PRIVATE ${CONFIG_TF_PSA_CRYPTO_MODULE_DIR}/dispatch/include/)
 
 add_compile_definitions(CONFIG_LWM2M_ENGINE_MAX_PENDING=2)
 add_compile_definitions(CONFIG_LWM2M_ENGINE_MAX_REPLIES=2)

@@ -115,16 +115,17 @@ static inline int ssd1320_write_bus_cmd_i2c(const struct device *dev, const uint
 					    const uint8_t *data, size_t len)
 {
 	const struct ssd1320_config *config = dev->config;
-	static uint8_t buf[SSD1320_MAXIMUM_CMD_LENGTH];
+	static uint8_t buf[SSD1320_MAXIMUM_CMD_LENGTH + 1];
 
 	if (len > SSD1320_MAXIMUM_CMD_LENGTH - 1) {
 		return -EINVAL;
 	}
 
-	buf[0] = cmd;
-	memcpy(&(buf[1]), data, len);
+	buf[0] = SSD1320_CONTROL_ALL_BYTES_CMD;
+	buf[1] = cmd;
+	memcpy(&(buf[2]), data, len);
 
-	return i2c_burst_write_dt(&config->i2c, SSD1320_CONTROL_ALL_BYTES_CMD, buf, len + 1);
+	return i2c_write_dt(&config->i2c, buf, len + 2);
 }
 
 static inline int ssd1320_set_hardware_config(const struct device *dev)
@@ -339,7 +340,12 @@ static int ssd1320_write(const struct device *dev, const uint16_t x, const uint1
 		return -EINVAL;
 	}
 
-	LOG_DBG("x %u, y %u, pitch %u, width %u, height %u, buf_len %u", x, y, desc->pitch,
+	if ((desc->width & 1) != 0U) {
+		LOG_ERR("Unsupported width");
+		return -EINVAL;
+	}
+
+	LOG_DBG("x %u, y %u, pitch %u, width %u, height %u, buf_len %zu", x, y, desc->pitch,
 		desc->width, desc->height, buf_len);
 
 	err = config->write_cmd(dev, SSD1320_SET_COLUMN_ADDR, x_position, sizeof(x_position));
@@ -366,7 +372,6 @@ static void ssd1320_get_capabilities(const struct device *dev, struct display_ca
 {
 	const struct ssd1320_config *config = dev->config;
 
-	memset(caps, 0, sizeof(struct display_capabilities));
 	caps->x_resolution = config->width;
 	caps->y_resolution = config->height;
 	caps->supported_pixel_formats = PIXEL_FORMAT_L_8;
@@ -522,7 +527,7 @@ static DEVICE_API(display, ssd1320_driver_api) = {
 	static const struct ssd1320_config config##node_id = {                                     \
 		.mipi_dev = DEVICE_DT_GET(DT_PARENT(node_id)),                                     \
 		.dbi_config = MIPI_DBI_CONFIG_DT(                                                  \
-			node_id, SSD1320_WORD_SIZE(node_id) | SPI_OP_MODE_MASTER, 0),              \
+			node_id, SSD1320_WORD_SIZE(node_id) | SPI_OP_MODE_CONTROLLER, 0),          \
 		.height = DT_PROP(node_id, height),                                                \
 		.width = DT_PROP(node_id, width),                                                  \
 		.oscillator_freq = DT_PROP(node_id, oscillator_freq),                              \

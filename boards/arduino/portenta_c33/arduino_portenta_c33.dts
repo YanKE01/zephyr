@@ -6,8 +6,8 @@
 /dts-v1/;
 
 #include <renesas/ra/ra6/r7fa6m5bh3cfc.dtsi>
-#include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/pwm/pwm.h>
 
@@ -19,9 +19,9 @@
 
 	chosen {
 		zephyr,sram = &sram0;
-		zephyr,flash-controller = &flash1;
+		zephyr,flash-controller = &code_flash_ctrl;
 		zephyr,code-partition = &code_partition;
-		zephyr,flash = &flash0;
+		zephyr,flash = &code_flash;
 		zephyr,console = &uart9;
 		zephyr,shell-uart = &uart9;
 		zephyr,entropy = &trng;
@@ -37,12 +37,12 @@
 		};
 
 		led2: led2 {
-			gpios = <&ioport4 0 GPIO_ACTIVE_HIGH>;
+			gpios = <&ioport4 0 GPIO_ACTIVE_LOW>;
 			label = "LEDG";
 		};
 
 		led3: led3 {
-			gpios = <&ioport8 0 GPIO_ACTIVE_HIGH>;
+			gpios = <&ioport8 0 GPIO_ACTIVE_LOW>;
 			label = "LEDB";
 		};
 	};
@@ -66,6 +66,16 @@
 
 	uart9: uart {
 		current-speed = <115200>;
+		status = "okay";
+	};
+};
+
+&sci4 {
+	pinctrl-0 = <&sci4_spi_default>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	sci4_spi: spi {
 		status = "okay";
 	};
 };
@@ -95,15 +105,39 @@
 	};
 };
 
-&option_setting_s {
+&option_setting_ofs0 {
 	status = "disabled";
 };
 
-&option_setting_sas {
+&option_setting_dualsel {
 	status = "disabled";
 };
 
-&option_setting_ofs {
+&option_setting_ofs1_sec {
+	status = "disabled";
+};
+
+&option_setting_banksel_sec {
+	status = "disabled";
+};
+
+&option_setting_bps_sec {
+	status = "disabled";
+};
+
+&option_setting_pbps_sec {
+	status = "disabled";
+};
+
+&option_setting_ofs1_sel {
+	status = "disabled";
+};
+
+&option_setting_banksel_sel {
+	status = "disabled";
+};
+
+&option_setting_bps_sel {
 	status = "disabled";
 };
 
@@ -138,7 +172,7 @@
 		   <&ioport1 4 GPIO_ACTIVE_LOW>;
 
 	esp_hosted@1 {
-		status = "ok";
+		status = "okay";
 		compatible = "espressif,esp-hosted";
 		reg = <0x1>;
 		spi-max-frequency = <DT_FREQ_M(5)>;
@@ -257,34 +291,37 @@
 	status = "okay";
 };
 
-&flash0 {
+&code_flash {
 	partitions {
-		compatible = "fixed-partitions";
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
 		boot_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "mcuboot";
 			reg = <0x00000000 DT_SIZE_K(64)>;
 			read-only;
 		};
 
 		code_partition: partition@10000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-0";
 			reg = <0x00010000 (DT_SIZE_M(2) - DT_SIZE_K(64))>;
 		};
 	};
 };
 
-&flash1 {
+&data_flash {
 	partitions {
-		compatible = "fixed-partitions";
+		ranges;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
 		storage_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
 			label = "storage";
-			reg = <0X0 DT_SIZE_K(8)>;
+			reg = <0x0 DT_SIZE_K(8)>;
 		};
 	};
 };
@@ -294,13 +331,15 @@
 };
 
 &eth {
-	local-mac-address = [74 90 50 B0 5D E9];
+	local-mac-address = [74 90 50 b0 5d e9];
 	status = "okay";
 	phy-handle = <&phy>;
+	pinctrl-0 = <&ether_default>;
+	pinctrl-names = "default";
 };
 
 &mdio {
-	pinctrl-0 = <&ether_default>;
+	pinctrl-0 = <&mdio_default>;
 	pinctrl-names = "default";
 	status = "okay";
 

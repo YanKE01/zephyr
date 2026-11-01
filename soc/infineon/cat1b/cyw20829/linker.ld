@@ -45,8 +45,8 @@
 #define ROM_SIZE (CONFIG_FLASH_SIZE * 1024 - CONFIG_FLASH_LOAD_OFFSET - ROM_END_OFFSET)
 #endif
 
-#define RAM_SIZE (CONFIG_SRAM_SIZE * 1K)
-#define RAM_ADDR CONFIG_SRAM_BASE_ADDRESS
+#define RAM_ADDR DT_CHOSEN_SRAM_ADDR
+#define RAM_SIZE DT_CHOSEN_SRAM_SIZE
 
 #if defined(CONFIG_CUSTOM_SECTION_ALIGN)
 _region_min_align = CONFIG_CUSTOM_SECTION_MIN_ALIGN_SIZE;
@@ -120,10 +120,7 @@ SECTIONS
 	{
 
 #include <zephyr/linker/rel-sections.ld>
-
-#ifdef CONFIG_LLEXT
 #include <zephyr/linker/llext-sections.ld>
-#endif
 
 	/*
 	 * .plt and .iplt are here according to 'arm-zephyr-elf-ld --verbose',
@@ -177,7 +174,7 @@ SECTIONS
 
 	__text_region_end = .;
 
-#if defined (CONFIG_CPP)
+#if defined (CONFIG_CPP) || defined(CONFIG_RUST) || defined(CONFIG_ARCH_STACKWALK)
 	SECTION_PROLOGUE(.ARM.extab,,)
 	{
 	/*
@@ -393,6 +390,12 @@ SECTIONS
 		*(".noinit.*")
 	*(".kernel_noinit.*")
 
+#if defined(CONFIG_LLEXT) && !defined(CONFIG_LLEXT_CUSTOM_HEAP_PLACEMENT)
+	*(.llext_heap)
+	*(.llext_ext_heap)
+	*(.llext_metadata_heap)
+#endif /* CONFIG_LLEXT && !CONFIG_LLEXT_CUSTOM_HEAP_PLACEMENT */
+
 /* Located in generated directory. This file is populated by the
  * zephyr_linker_sources() Cmake function.
  */
@@ -479,7 +482,6 @@ GROUP_END(DTCM)
 
 #include <zephyr/linker/debug-sections.ld>
 
-	/DISCARD/ : { *(.note.GNU-stack) }
 
 	SECTION_PROLOGUE(.ARM.attributes, 0,)
 	{

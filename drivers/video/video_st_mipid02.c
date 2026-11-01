@@ -6,17 +6,16 @@
 
 #define DT_DRV_COMPAT st_mipid02
 
-#include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/video.h>
-#include <zephyr/drivers/video-controls.h>
 #include <zephyr/dt-bindings/video/video-interfaces.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/video/video.h>
 
 #include "video_common.h"
-#include "video_device.h"
 
 LOG_MODULE_REGISTER(video_st_mipid02, CONFIG_VIDEO_LOG_LEVEL);
 
@@ -252,9 +251,6 @@ static int mipid02_get_caps(const struct device *dev, struct video_caps *caps)
 	}
 
 	caps->format_caps = drv_data->caps;
-	caps->min_vbuf_count = 1;
-	caps->min_line_count = LINE_COUNT_HEIGHT;
-	caps->max_line_count = LINE_COUNT_HEIGHT;
 
 	return 0;
 }

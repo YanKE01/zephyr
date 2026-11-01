@@ -404,7 +404,7 @@ static inline void can_renesas_ra_call_state_change_cb(const struct device *dev,
 		.tx_err_cnt = can_info.error_count_transmit,
 	};
 
-	data->common.state_change_cb(dev, state, err_cnt, data->common.state_change_cb_user_data);
+	can_fire_state_change_callbacks(dev, state, err_cnt);
 }
 
 static int can_renesas_ra_get_capabilities(const struct device *dev, can_mode_t *cap)
@@ -744,9 +744,7 @@ static int can_renesas_ra_get_state(const struct device *dev, enum can_state *st
 	return 0;
 }
 
-static void can_renesas_ra_set_state_change_callback(const struct device *dev,
-						     can_state_change_callback_t callback,
-						     void *user_data)
+static int can_renesas_ra_state_change_callbacks_enabled(const struct device *dev, bool enabled)
 {
 	struct can_renesas_ra_data *data = dev->data;
 	canfd_instance_ctrl_t *p_ctrl = data->fsp_can.p_ctrl;
@@ -754,7 +752,7 @@ static void can_renesas_ra_set_state_change_callback(const struct device *dev,
 
 	k_mutex_lock(&data->inst_mutex, K_FOREVER);
 
-	if (callback != NULL) {
+	if (enabled) {
 		/* Enable state change interrupt */
 		p_ctrl->p_reg->CFDC->CTR |= (uint32_t)CANFD_CFG_ERR_IRQ;
 	} else {
@@ -767,12 +765,11 @@ static void can_renesas_ra_set_state_change_callback(const struct device *dev,
 			  BIT(R_CANFD_CFDC_ERFL_EPF_Pos) | BIT(R_CANFD_CFDC_ERFL_BEF_Pos));
 	}
 
-	data->common.state_change_cb = callback;
-	data->common.state_change_cb_user_data = user_data;
-
 	k_mutex_unlock(&data->inst_mutex);
 
 	irq_unlock(key);
+
+	return 0;
 }
 
 static int can_renesas_ra_get_core_clock(const struct device *dev, uint32_t *rate)
@@ -963,6 +960,7 @@ static int can_renesas_ra_init(const struct device *dev)
 		return -ENODEV;
 	}
 
+	sys_slist_init(&data->common.state_change_callbacks);
 	k_mutex_init(&data->inst_mutex);
 	k_sem_init(&data->tx_sem, 1, 1);
 	data->common.started = false;
@@ -1027,7 +1025,7 @@ static DEVICE_API(can, can_renesas_ra_driver_api) = {
 	.recover = can_renesas_ra_recover,
 #endif /* CONFIG_CAN_MANUAL_RECOVERY_MODE */
 	.get_state = can_renesas_ra_get_state,
-	.set_state_change_callback = can_renesas_ra_set_state_change_callback,
+	.state_change_callbacks_enabled = can_renesas_ra_state_change_callbacks_enabled,
 	.get_core_clock = can_renesas_ra_get_core_clock,
 	.get_max_filters = can_renesas_ra_get_max_filters,
 	.timing_min = CAN_RENESAS_RA_TIMING_MIN,
@@ -1098,7 +1096,7 @@ DT_FOREACH_STATUS_OKAY(renesas_ra_canfd_global, CAN_RENESAS_RA_GLOBAL_DEFINE)
 	static canfd_afl_entry_t canfd_afl##index[DT_INST_PROP(index, rx_max_filters)];            \
 	struct can_renesas_ra_filter                                                               \
 		can_renesas_ra_rx_filter##index[DT_INST_PROP(index, rx_max_filters)];              \
-	static void can_renesas_ra_irq_configure##inst(void)                                       \
+	static void can_renesas_ra_irq_configure##index(void)                                      \
 	{                                                                                          \
 		R_ICU->IELSR_b[DT_INST_IRQ_BY_NAME(index, rx, irq)].IELS =                         \
 			EVENT_CAN_COMFRX(DT_INST_PROP(index, channel));                            \
@@ -1106,7 +1104,11 @@ DT_FOREACH_STATUS_OKAY(renesas_ra_canfd_global, CAN_RENESAS_RA_GLOBAL_DEFINE)
 			EVENT_CAN_TX(DT_INST_PROP(index, channel));                                \
 		R_ICU->IELSR_b[DT_INST_IRQ_BY_NAME(index, err, irq)].IELS =                        \
 			EVENT_CAN_CHERR(DT_INST_PROP(index, channel));                             \
-	                                                                                           \
+                                                                                                   \
+		BSP_ASSIGN_EVENT_TO_CURRENT_CORE(EVENT_CAN_COMFRX(DT_INST_PROP(index, channel)));  \
+		BSP_ASSIGN_EVENT_TO_CURRENT_CORE(EVENT_CAN_TX(DT_INST_PROP(index, channel)));      \
+		BSP_ASSIGN_EVENT_TO_CURRENT_CORE(EVENT_CAN_CHERR(DT_INST_PROP(index, channel)));   \
+                                                                                                   \
 		IRQ_CONNECT(DT_INST_IRQ_BY_NAME(index, rx, irq),                                   \
 			    DT_INST_IRQ_BY_NAME(index, rx, priority), canfd_common_fifo_rx_isr,    \
 			    NULL, 0);                                                              \
@@ -1131,7 +1133,7 @@ DT_FOREACH_STATUS_OKAY(renesas_ra_canfd_global, CAN_RENESAS_RA_GLOBAL_DEFINE)
 				.stop_bit = DT_INST_CLOCKS_CELL_BY_NAME(index, dllclk, stop_bit),  \
 			},                                                                         \
 		.rx_filter_num = DT_INST_PROP(index, rx_max_filters),                              \
-		.irq_configure = can_renesas_ra_irq_configure##inst,                               \
+		.irq_configure = can_renesas_ra_irq_configure##index,                              \
 	};                                                                                         \
 	static struct can_renesas_ra_data can_renesas_ra_data##index = {                           \
 		.fsp_can =                                                                         \
@@ -1149,7 +1151,7 @@ DT_FOREACH_STATUS_OKAY(renesas_ra_canfd_global, CAN_RENESAS_RA_GLOBAL_DEFINE)
 				.tx_irq = DT_INST_IRQ_BY_NAME(index, tx, irq),                     \
 				.p_extend = &can_renesas_ra_data##index.fsp_canfd_extend,          \
 				.p_bit_timing = &can_renesas_ra_data##index.bit_timing,            \
-				.p_context = DEVICE_DT_INST_GET(index),                            \
+				.p_context = (void *)DEVICE_DT_INST_GET(index),                    \
 				.p_callback = can_renesas_ra_fsp_cb,                               \
 			},                                                                         \
 		.fsp_canfd_extend =                                                                \

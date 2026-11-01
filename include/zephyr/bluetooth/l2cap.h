@@ -14,6 +14,8 @@
 /**
  * @brief L2CAP
  * @defgroup bt_l2cap L2CAP
+ * @since 1.0
+ * @version 1.0.1
  * @ingroup bluetooth
  * @{
  */
@@ -111,6 +113,20 @@ extern "C" {
  */
 #define BT_L2CAP_ECRED_MIN_MPS 64
 
+/** @brief L2CAP maximum MTU
+ *
+ *  The maximum MTU for an L2CAP Based Connection. This is the same with or without ECRED. This
+ *  requirement is taken from text in Core 3.A.4.22 and 3.A.4.26 v6.0.
+ */
+#define BT_L2CAP_MAX_MTU UINT16_MAX
+
+/** @brief L2CAP maximum MPS
+ *
+ *  The maximum MPS for an L2CAP Based Connection. This is the same with or without ECRED. This
+ *  requirement is taken from text in Core 3.A.4.22 and 3.A.4.26 v6.0.
+ */
+#define BT_L2CAP_MAX_MPS 65533
+
 /** @brief The maximum number of channels in ECRED L2CAP signaling PDUs
  *
  *  Currently, this is the maximum number of channels referred to in the
@@ -124,6 +140,27 @@ extern "C" {
  *  PDUs.
  */
 #define BT_L2CAP_ECRED_CHAN_MAX_PER_REQ 5
+
+/**
+ * @defgroup l2cap_cid L2CAP channel identifiers
+ * @ingroup bt_l2cap
+ * @{
+ *
+ *  @brief Standard L2CAP channel identifiers
+ */
+
+/** @brief BR signaling channel */
+#define BT_L2CAP_CID_BR_SIG             0x0001
+/** @brief Attribute Protocol channel */
+#define BT_L2CAP_CID_ATT                0x0004
+/** @brief LE signaling channel */
+#define BT_L2CAP_CID_LE_SIG             0x0005
+/** @brief Security Manager Protocol channel */
+#define BT_L2CAP_CID_SMP                0x0006
+/** @brief BR Security Manager Protocol channel */
+#define BT_L2CAP_CID_BR_SMP             0x0007
+
+/** @} */
 
 struct bt_l2cap_chan;
 
@@ -232,7 +269,30 @@ struct bt_l2cap_le_chan {
 	 * L2CAP_LE_CREDIT_BASED_CONNECTION_REQ/RSP or L2CAP_CONFIGURATION_REQ.
 	 */
 	struct bt_l2cap_le_endpoint	tx;
-	/** Channel Transmission queue (for SDUs) */
+	/** Channel Transmission queue
+	 *
+	 * Internal
+	 *
+	 * SDUs/PDUs given to @ref bt_l2cap_chan_send and @c bt_l2cap_send_pdu
+	 * are stored here until they are sent to the Controller.
+	 *
+	 * The SDU header is prepended to SDUs before they are stored here. The
+	 * head of this list (the next data to be sent) may be just the
+	 * remaining part of an already partially transmitted SDU/PDU due to
+	 * L2CAP segmentation and fragmentation.
+	 *
+	 * This is the outbox for a single channel. Channels may be serviced in
+	 * any order. The transmission order does not follow the sequence of
+	 * @ref bt_l2cap_chan_send calls across channels.
+	 *
+	 * There may be more data here than the channel currently has credits
+	 * for. The transmission will wait until credits are available.
+	 *
+	 * Callbacks given to @ref bt_l2cap_chan_send are stored in the
+	 * user_data of the buffer. These callbacks must be invoked when the
+	 * Controller gives a Number of Buffers Complete Event for the last
+	 * L2CAP PDU of the buffer or when the channel is disconnected.
+	 */
 	struct k_fifo                   tx_queue;
 #if defined(CONFIG_BT_L2CAP_DYNAMIC_CHANNEL)
 	/** Segment SDU packet from upper layer */
@@ -250,6 +310,8 @@ struct bt_l2cap_le_chan {
 	uint16_t			psm;
 	/** Helps match request context during CoC */
 	uint8_t				ident;
+	/** Opcode of the pending request. Used to match responses with requests. */
+	uint8_t                         pending_req;
 	bt_security_t			required_sec_level;
 
 	/* Response Timeout eXpired (RTX) timer */
@@ -259,8 +321,6 @@ struct bt_l2cap_le_chan {
 
 	/** @internal To be used with @ref bt_conn.upper_data_ready */
 	sys_snode_t			_pdu_ready;
-	/** @internal To be used with @ref bt_conn.upper_data_ready */
-	atomic_t			_pdu_ready_lock;
 	/** @internal Holds the length of the current PDU/segment */
 	size_t				_pdu_remaining;
 };
@@ -275,6 +335,73 @@ struct bt_l2cap_le_chan {
  *          the address of in question object.
  */
 #define BT_L2CAP_LE_CHAN(_ch) CONTAINER_OF(_ch, struct bt_l2cap_le_chan, chan)
+
+/** @brief Fixed L2CAP Channel structure. Should be defined using the
+ *  @ref BT_L2CAP_FIXED_CHANNEL_DEFINE macro.
+ */
+struct bt_l2cap_fixed_chan {
+	/** @brief Channel Identifier (CID)
+	 *
+	 *  @note Shall be in the range 0x0001 to 0x003F (Core 3.A.2.1 v6.0). The CIDs in this range
+	 *        are reserved by the stack, so the application needs to make sure that the CID is
+	 *        not already in use. Table 2.1 in Core 3.A.2.1 and @ref l2cap_cid shows the
+	 *        CIDs used by the stack.
+	 */
+	uint16_t cid;
+
+	/** @brief Channel accept callback
+	 *
+	 *  This callback needs to be provided by the application, and is invoked when a new
+	 *  connection has been established. If accepting the connection, the user is expected to
+	 *  allocate memory for a zero-initialized object of type @ref bt_l2cap_le_chan, and update
+	 *  the channel reference @p chan to point to the @ref bt_l2cap_le_chan.chan member of the
+	 *  allocated object. The channel should be initialized by assigning the callbacks to the
+	 *  @ref bt_l2cap_chan_ops field as follows:
+	 *  @code
+	 *  static int accept(struct bt_conn *conn, struct bt_l2cap_chan **chan)
+	 *  {
+	 *      // Allocation of fixed_chan and definition of the ops are assumed done prior.
+	 *      fixed_chan = (struct bt_l2cap_le_chan){
+	 *          .chan.ops = &ops,
+	 *      };
+	 *
+	 *      *chan = &fixed_chan.chan;
+	 *
+	 *      return 0;
+	 *  }
+	 *  @endcode
+	 *  The allocated context needs to be valid for the lifetime of the channel, i. e.
+	 *  freeing of the memory can be done in the @ref bt_l2cap_chan_ops.released callback.
+	 *
+	 *  @warning Even though the reference passed back through @p chan is a
+	 *           @ref bt_l2cap_chan, it must be the @ref bt_l2cap_le_chan.chan member of a
+	 *           @ref bt_l2cap_le_chan object. The stack uses the containing object, so
+	 *           returning a bare @ref bt_l2cap_chan would result in out-of-bounds access.
+	 *
+	 *  @param conn The connection that has been established.
+	 *  @param chan L2CAP channel reference.
+	 *
+	 *  @return 0 to accept the channel connection, negative error code otherwise.
+	 */
+	int (*accept)(struct bt_conn *conn, struct bt_l2cap_chan **chan);
+};
+
+/**
+ *  @brief Register a fixed L2CAP channel.
+ *
+ *  Define and register a fixed L2CAP channel of type @ref bt_l2cap_fixed_chan.
+ *
+ *  @note Fixed L2CAP channels are according to the Core Specification (3.A.2.1 v6.0) reserved
+ *        for the stack, but this allows the application to define their own, for instance if there
+ *        are memory constraints and dynamic channels are not suitable. The application needs to
+ *        make sure that the CID for the fixed channel is not already in use.
+ *
+ *  @param _name Name of the fixed L2CAP channel. The channels are sorted lexicographically, and
+ *  will be initialized in the same order.
+ */
+#define BT_L2CAP_FIXED_CHANNEL_DEFINE(_name)                                                       \
+	static const STRUCT_SECTION_ITERABLE(bt_l2cap_fixed_chan,                                  \
+					     _CONCAT(bt_l2cap_fixed_chan, _name))
 
 /** L2CAP Endpoint Link Mode. Basic mode. */
 #define BT_L2CAP_BR_LINK_MODE_BASIC  0x00
@@ -323,22 +450,22 @@ struct bt_l2cap_br_endpoint {
 	uint8_t                                 max_transmit;
 	/** Endpoint Retransmission Timeout
 	 * The field is configured by
-	 * `@kconfig{BT_L2CAP_BR_RET_TIMEOUT}`
+	 * @kconfig{CONFIG_BT_L2CAP_BR_RET_TIMEOUT}
 	 * The field should be no more than the field
 	 * `monitor_timeout`.
 	 */
 	uint16_t                                ret_timeout;
 	/** Endpoint Monitor Timeout
 	 * The field is configured by
-	 * `@kconfig{BT_L2CAP_BR_MONITOR_TIMEOUT}`
+	 * @kconfig{CONFIG_BT_L2CAP_BR_MONITOR_TIMEOUT}
 	 */
 	uint16_t                                monitor_timeout;
 	/** Endpoint Maximum PDU payload Size */
 	uint16_t                                mps;
 	/** Endpoint Maximum Window Size
 	 * MAX supported window size is configured by
-	 * `@kconfig{BT_L2CAP_MAX_WINDOW_SIZE}`. The field
-	 * should be no more then `CONFIG_BT_L2CAP_MAX_WINDOW_SIZE`.
+	 * @kconfig{CONFIG_BT_L2CAP_MAX_WINDOW_SIZE}. The field
+	 * should be no more than @kconfig{CONFIG_BT_L2CAP_MAX_WINDOW_SIZE}.
 	 */
 	uint16_t                                max_window;
 	/** Endpoint FCS Type
@@ -378,12 +505,12 @@ struct bt_l2cap_br_window {
 	uint8_t sar;
 	/** srej flag */
 	bool srej;
+	/** retransmit flag */
+	bool retransmit;
 	/* Save PDU state */
 	struct net_buf_simple_state sdu_state;
 	/** @internal Holds the sending buffer. */
 	struct net_buf *sdu;
-	/** @internal Total length of TX SDU */
-	uint16_t sdu_total_len;
 };
 
 /** @brief BREDR L2CAP Channel structure. */
@@ -408,6 +535,13 @@ struct bt_l2cap_br_chan {
 	struct k_work_delayable	        rtx_work;
 	struct k_work_sync              rtx_sync;
 
+	/** @cond INTERNAL_HIDDEN */
+
+	/** Retry worker for deferred signaling operations */
+	struct k_work_delayable         retry_work;
+
+	/** @endcond */
+
 	/** @internal To be used with @ref bt_conn.upper_data_ready */
 	sys_snode_t                     _pdu_ready;
 	/** @internal To be used with @ref bt_conn.upper_data_ready */
@@ -416,9 +550,6 @@ struct bt_l2cap_br_chan {
 	sys_slist_t                     _pdu_tx_queue;
 
 #if defined(CONFIG_BT_L2CAP_RET_FC) || defined(__DOXYGEN__)
-	/** @internal Total length of TX SDU */
-	uint16_t                        _sdu_total_len;
-
 	/** @internal Holds the remaining length of current sending buffer */
 	size_t                          _pdu_remaining;
 
@@ -494,6 +625,14 @@ struct bt_l2cap_br_chan {
 /** @brief L2CAP Channel operations structure.
  *
  * The object has to stay valid and constant for the lifetime of the channel.
+ *
+ * @note The callbacks are invoked from a thread context, never from an
+ *       ISR. Whether a callback is invoked from a context internal to
+ *       the stack or synchronously from within the API call that
+ *       triggers it, and from which context, is not part of the API and
+ *       may change between releases. See
+ *       @rstref{Callback execution contexts <bluetooth_callback_contexts>}
+ *       for the hazards of blocking in a callback and their mitigations.
  */
 struct bt_l2cap_chan_ops {
 	/** @brief Channel connected callback
@@ -525,7 +664,7 @@ struct bt_l2cap_chan_ops {
 	 *  controller.
 	 *
 	 *  @param chan The channel which has made encryption status changed.
-	 *  @param status HCI status of performed security procedure caused
+	 *  @param hci_status HCI status of performed security procedure caused
 	 *  by channel security requirements. The value is populated
 	 *  by HCI layer and set to 0 when success and to non-zero (reference to
 	 *  HCI Error Codes) when security/authentication failed.
@@ -552,6 +691,11 @@ struct bt_l2cap_chan_ops {
 	 *  must set this callback.
 	 *  If the application has not set a callback the L2CAP SDU MTU will be
 	 *  truncated to @ref BT_L2CAP_SDU_RX_MTU.
+	 *
+	 *  @note The stack stores the number of received segments in the first
+	 *        two bytes of the buffer user data. The buffer returned by this
+	 *        callback must have a user data size of at least
+	 *        @c sizeof(uint16_t).
 	 *
 	 *  @param chan The channel requesting a buffer.
 	 *
@@ -621,7 +765,7 @@ struct bt_l2cap_chan_ops {
 	 */
 	void (*reconfigured)(struct bt_l2cap_chan *chan);
 
-#if defined(CONFIG_BT_L2CAP_SEG_RECV)
+#if defined(CONFIG_BT_L2CAP_SEG_RECV) || defined(__DOXYGEN__)
 	/** @brief Handle L2CAP segments directly
 	 *
 	 *  This is an alternative to @ref bt_l2cap_chan_ops.recv. They cannot
@@ -707,10 +851,21 @@ struct bt_l2cap_server {
 	/** @brief Server accept callback
 	 *
 	 *  This callback is called whenever a new incoming connection requires
-	 *  authorization.
+	 *  authorization. If accepting the connection, the callback is expected
+	 *  to allocate a zero-initialized channel object and update the channel
+	 *  reference @p chan to point to its common member: for a server
+	 *  registered with bt_l2cap_server_register() the object must be of type
+	 *  @ref bt_l2cap_le_chan and @p chan set to its @ref bt_l2cap_le_chan.chan
+	 *  member, and for a server registered with bt_l2cap_br_server_register()
+	 *  the object must be of type @ref bt_l2cap_br_chan and @p chan set to its
+	 *  @ref bt_l2cap_br_chan.chan member.
 	 *
-	 *  @warning It is the responsibility of this callback to zero out the
-	 *  parent of the chan object.
+	 *  @warning Even though the reference passed back through @p chan is a
+	 *  @ref bt_l2cap_chan, it must be a member of a @ref bt_l2cap_le_chan or
+	 *  @ref bt_l2cap_br_chan object as described above. The stack uses the
+	 *  containing object, so returning a bare @ref bt_l2cap_chan would result in
+	 *  out-of-bounds access. It is the responsibility of this callback to
+	 *  zero out the containing object.
 	 *
 	 *  @param conn The connection that is requesting authorization
 	 *  @param server Pointer to the server structure this callback relates to
@@ -768,6 +923,16 @@ int bt_l2cap_server_register(struct bt_l2cap_server *server);
  *  @return 0 in case of success or negative value in case of error.
  */
 int bt_l2cap_br_server_register(struct bt_l2cap_server *server);
+
+/** @brief Unregister L2CAP server on BR/EDR oriented connection.
+ *
+ *  Unregister L2CAP server for a PSM.
+ *
+ *  @param server Server structure.
+ *
+ *  @return 0 in case of success or negative value in case of error.
+ */
+int bt_l2cap_br_server_unregister(struct bt_l2cap_server *server);
 
 /** @brief Connect Enhanced Credit Based L2CAP channels
  *
@@ -859,6 +1024,11 @@ int bt_l2cap_ecred_chan_reconfigure_explicit(struct bt_l2cap_chan **chans, size_
  *  the location (address) of bt_l2cap_chan type object which is a member
  *  of both transport dedicated objects.
  *
+ *  @note For BR/EDR connections, this function does not wait for a signaling buffer. If signaling
+ *  buffers are temporarily unavailable, the connection request will be retried asynchronously.
+ *  The return value 0 indicates that the connection process has been successfully initiated, not
+ *  that the connection request PDU has been sent.
+ *
  *  @warning It is the responsibility of the caller to zero out the
  *  parent of the chan object.
  *
@@ -878,6 +1048,11 @@ int bt_l2cap_chan_connect(struct bt_conn *conn, struct bt_l2cap_chan *chan,
  *  Regarding to input parameter, to get details see reference description
  *  to bt_l2cap_chan_connect() API above.
  *
+ *  @note For BR/EDR connections, this function does not wait for a signaling buffer. If signaling
+ *  buffers are temporarily unavailable, the disconnection request will be retried asynchronously.
+ *  The return value 0 indicates that the disconnection process has been successfully initiated,
+ *  not that the disconnection request PDU has been sent.
+ *
  *  @param chan Channel object.
  *
  *  @return 0 in case of success or negative value in case of error.
@@ -886,23 +1061,21 @@ int bt_l2cap_chan_disconnect(struct bt_l2cap_chan *chan);
 
 /** @brief Send data to L2CAP channel
  *
- *  Send data from buffer to the channel. If credits are not available, buf will
- *  be queued and sent as and when credits are received from peer.
- *  Regarding to first input parameter, to get details see reference description
- *  to bt_l2cap_chan_connect() API above.
+ *  Send data from buffer to the channel. For dynamic channels; if credits are
+ *  not available, buf will be queued and sent as and when credits are received
+ *  from peer.
  *
  *  Network buffer fragments (ie `buf->frags`) are not supported.
  *
- *  When sending L2CAP data over an BR/EDR connection the application is sending
- *  L2CAP PDUs. The application is required to have reserved
- *  @ref BT_L2CAP_CHAN_SEND_RESERVE bytes in the buffer before sending.
- *  The application should use the BT_L2CAP_BUF_SIZE() helper to correctly
- *  size the buffers for the for the outgoing buffer pool.
+ *  When sending L2CAP data over an BR/EDR connection or a fixed L2CAP channel,
+ *  the application is sending L2CAP PDUs. The application is required to have
+ *  reserved @ref BT_L2CAP_CHAN_SEND_RESERVE bytes in the buffer before sending.
+ *  The application should use the BT_L2CAP_BUF_SIZE() helper to correctly size
+ *  the buffers for the for the outgoing buffer pool.
  *
- *  When sending L2CAP data over an LE connection the application is sending
- *  L2CAP SDUs. The application shall reserve
+ *  When sending L2CAP data over a dynamic L2CAP channel, the application is
+ *  sending L2CAP SDUs. The application shall reserve
  *  @ref BT_L2CAP_SDU_CHAN_SEND_RESERVE bytes in the buffer before sending.
- *
  *  The application can use the BT_L2CAP_SDU_BUF_SIZE() helper to correctly size
  *  the buffer to account for the reserved headroom.
  *
@@ -918,9 +1091,19 @@ int bt_l2cap_chan_disconnect(struct bt_l2cap_chan *chan);
  *  @note Buffer ownership is transferred to the stack in case of success, in
  *  case of an error the caller retains the ownership of the buffer.
  *
+ *  @warning If the buffer's pool has a destroy callback defined, that callback
+ *  may be invoked from the ISR context when the HCI driver releases the buffer.
+ *  Thus, the destroy callback must not call any synchronization primitives
+ *  that are unsafe in the ISR context, i. e. blocking calls or locking the
+ *  scheduler.
+ *
+ *  @param chan The channel to send the data to. See @ref bt_l2cap_chan_connect
+ *              for more details.
+ *  @param buf Buffer containing the data.
+ *
  *  @return 0 in case of success or negative value in case of error.
  *  @return -EINVAL if `buf` or `chan` is NULL.
- *  @return -EINVAL if `chan` is not either BR/EDR or LE credit-based.
+ *  @return -EINVAL if `chan` is not either BR/EDR or LE based.
  *  @return -EINVAL if buffer doesn't have enough bytes reserved to fit header.
  *  @return -EINVAL if buffer's reference counter != 1
  *  @return -EMSGSIZE if `buf` is larger than `chan`'s MTU.

@@ -27,8 +27,11 @@ struct reg_val_pair {
 
 static void paa3905_complete_result(struct rtio *ctx,
 				    const struct rtio_sqe *sqe,
+				    int result,
 				    void *arg)
 {
+	ARG_UNUSED(result);
+
 	struct rtio_iodev_sqe *iodev_sqe = (struct rtio_iodev_sqe *)sqe->userdata;
 	struct rtio_cqe *cqe;
 	int err = 0;
@@ -174,6 +177,35 @@ static int detection_mode_standard(const struct device *dev)
 	return 0;
 }
 
+int paa3905_apply_led_config(const struct device *dev)
+{
+	const struct paa3905_config *cfg = dev->config;
+	int err;
+
+	/* The chip rewrites the LED control register on its own when its
+	 * automatic mode switching runs, so the configured state has to be
+	 * re-applied while the device operates, not just at init.
+	 */
+	struct reg_val_pair led_control_regs[] = {
+		{.reg = 0x7F, .val = 0x14},
+		{.reg = 0x6F, .val = cfg->led_control ? 0x0C : 0x2C},
+		{.reg = 0x7F, .val = 0x00},
+	};
+
+	for (size_t i = 0 ; i < ARRAY_SIZE(led_control_regs) ; i++) {
+		err = paa3905_bus_write(dev,
+					led_control_regs[i].reg,
+					&led_control_regs[i].val,
+					1);
+		if (err) {
+			LOG_ERR("Failed to write LED control reg");
+			return err;
+		}
+	}
+
+	return 0;
+}
+
 static int paa3905_configure(const struct device *dev)
 {
 	const struct paa3905_config *cfg = dev->config;
@@ -194,26 +226,7 @@ static int paa3905_configure(const struct device *dev)
 		return err;
 	}
 
-	if (cfg->led_control) {
-		struct reg_val_pair led_control_regs[] = {
-			{.reg = 0x7F, .val = 0x14},
-			{.reg = 0x6F, .val = 0x0C},
-			{.reg = 0x7F, .val = 0x00},
-		};
-
-		for (size_t i = 0 ; i < ARRAY_SIZE(led_control_regs) ; i++) {
-			err = paa3905_bus_write(dev,
-						led_control_regs[i].reg,
-						&led_control_regs[i].val,
-						1);
-			if (err) {
-				LOG_ERR("Failed to write LED control reg");
-				return err;
-			}
-		}
-	}
-
-	return 0;
+	return paa3905_apply_led_config(dev);
 }
 
 int paa3905_recover(const struct device *dev)
@@ -295,6 +308,9 @@ static int paa3905_init(const struct device *dev)
 }
 
 #define PAA3905_INIT(inst)									   \
+	BUILD_ASSERT(DT_INST_PROP(inst, spi_max_frequency) <= MHZ(2),		   \
+		     "PAA3905 supports a maximum SPI clock of 2 MHz");		   \
+										   \
 												   \
 	BUILD_ASSERT(DT_PROP(DT_DRV_INST(inst), resolution) > 0 &&				   \
 		     DT_PROP(DT_DRV_INST(inst), resolution) <= 0xFF,				   \
@@ -303,8 +319,8 @@ static int paa3905_init(const struct device *dev)
 	RTIO_DEFINE(paa3905_rtio_ctx_##inst, 8, 8);						   \
 	SPI_DT_IODEV_DEFINE(paa3905_bus_##inst,							   \
 			    DT_DRV_INST(inst),							   \
-			    SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB,		   \
-			    0U);								   \
+			    SPI_OP_MODE_CONTROLLER | SPI_MODE_CPOL | SPI_MODE_CPHA |		   \
+			    SPI_WORD_SET(8) | SPI_TRANSFER_MSB);				   \
 												   \
 	static const struct paa3905_config paa3905_cfg_##inst = {				   \
 		.int_gpio = GPIO_DT_SPEC_INST_GET_OR(inst, int_gpios, {0}),			   \

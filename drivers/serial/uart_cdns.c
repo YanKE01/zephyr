@@ -80,12 +80,12 @@ static void uart_cdns_irq_handler(const struct device *dev)
 	struct uart_cdns_regs *uart_regs = DEV_UART(dev);
 	struct uart_cdns_data *data = dev->data;
 
+	/* clear events by reading the status */
+	(void)uart_regs->channel_intr_status;
+
 	if (data->callback) {
 		data->callback(dev, data->cb_data);
 	}
-
-	/* clear events by reading the status */
-	(void)uart_regs->channel_intr_status;
 }
 
 static int uart_cdns_fill_fifo(const struct device *dev, const uint8_t *tx_data, int len)
@@ -195,12 +195,6 @@ static int uart_cdns_is_irq_pending(const struct device *dev)
 	return (uart_regs->channel_intr_status != 0);
 }
 
-/** Check for IRQ updates */
-static int uart_cdns_update_irq(const struct device *dev)
-{
-	return 1;
-}
-
 /** Set the callback function pointer for IRQ. */
 void uart_cdns_set_irq_callback(const struct device *dev, uart_irq_callback_user_data_t cb,
 				   void *cb_data)
@@ -229,7 +223,6 @@ static DEVICE_API(uart, uart_cdns_driver_api) = {
 	.irq_err_enable = uart_cdns_enable_irq_err,
 	.irq_err_disable = uart_cdns_disable_irq_err,
 	.irq_is_pending = uart_cdns_is_irq_pending,
-	.irq_update = uart_cdns_update_irq,
 	.irq_callback_set = uart_cdns_set_irq_callback
 #endif
 };

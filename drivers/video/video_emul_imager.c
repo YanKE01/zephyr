@@ -8,17 +8,16 @@
 
 #include <string.h>
 
-#include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/sys/util.h>
-#include <zephyr/sys/byteorder.h>
-#include <zephyr/drivers/video.h>
-#include <zephyr/drivers/video-controls.h>
 #include <zephyr/drivers/i2c.h>
+#include <zephyr/drivers/video.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/video/video.h>
 
-#include "video_ctrls.h"
-#include "video_device.h"
+#include "video_common.h"
 
 LOG_MODULE_REGISTER(video_emul_imager, CONFIG_VIDEO_LOG_LEVEL);
 
@@ -40,7 +39,7 @@ LOG_MODULE_REGISTER(video_emul_imager, CONFIG_VIDEO_LOG_LEVEL);
 #define EMUL_IMAGER_CID_CUSTOM (VIDEO_CID_PRIVATE_BASE + 0x01)
 
 /* Emulated register bank */
-uint8_t emul_imager_fake_regs[10];
+uint8_t emul_imager_fake_regs[20];
 
 enum emul_imager_fmt_id {
 	RGB565_320x240,
@@ -231,8 +230,13 @@ static int emul_imager_set_frmival(const struct device *dev, struct video_frmiva
 {
 	struct emul_imager_data *data = dev->data;
 	struct video_frmival_enum fie = {.format = &data->fmt, .discrete = *frmival};
+	int ret;
 
-	video_closest_frmival(dev, &fie);
+	ret = video_closest_frmival(dev, &fie);
+	if (ret < 0) {
+		return ret;
+	}
+
 	LOG_DBG("Applying frame interval number %u", fie.index);
 	return emul_imager_set_mode(dev, &emul_imager_modes[data->fmt_id][fie.index]);
 }

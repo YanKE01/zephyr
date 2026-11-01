@@ -2,10 +2,7 @@
 # Copyright (c) 2024 Antmicro <www.antmicro.com>
 # SPDX-License-Identifier: Apache-2.0
 
-if SOC_SERIES_SIFIVE_FREEDOM_FE300
-
-config SYS_CLOCK_HW_CYCLES_PER_SEC
-	default $(dt_node_int_prop_int,/clocks/core-clk,clock-frequency)
+if SOC_SERIES_FE300
 
 config RISCV_SOC_INTERRUPT_INIT
 	default y
@@ -22,4 +19,4 @@ config MAX_IRQ_PER_AGGREGATOR
 config NUM_IRQS
 	default 64
 
-endif # SOC_SERIES_SIFIVE_FREEDOM_FE300
+endif # SOC_SERIES_FE300
