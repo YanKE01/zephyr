@@ -1,0 +1,2 @@
+# Allwinner FEL download interface. Active desktop users and plugdev may access it.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1f3a", ATTR{idProduct}=="efe8", MODE="0660", GROUP="plugdev", TAG+="uaccess"

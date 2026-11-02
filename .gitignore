@@ -60,6 +60,7 @@ hide-defaults-note
 venv
 .venv
 .envrc
+/flash-backups/
 .DS_Store
 .clangd
 new.info

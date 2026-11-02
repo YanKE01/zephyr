@@ -65,15 +65,84 @@ Build and run
 
 .. code-block:: console
 
-   . ./env.sh                       # in the workspace: venv, ZEPHYR_BASE, toolchain
-   west build -b yuzukineko -d build/hello zephyr/samples/hello_world
+   cd /path/to/zephyr
+   source ./export.sh               # bash or zsh; source again in each new terminal
+   f101.py build flash monitor
+
+``f101.py`` defaults to YuzukiNeko and ``samples/hello_world``. It builds the
+application, waits up to 60 seconds for FEL, writes SPI NOR, verifies the
+image by reading it back, reboots from Flash, and monitors the UART. Hold FEL while
+powering on/reconnecting the board when prompted. A single USB UART is selected
+automatically; use ``-p`` if more than one is attached. Close any existing
+picocom/serial monitor before running the command. The monitor opens before
+the firmware starts, so it captures the first boot messages. Exit with ``Ctrl+]``.
+
+Examples::
+
+   f101.py menuconfig                     # configure the application interactively
+   f101.py build                          # compile only
+   f101.py flash monitor                  # also rebuilds before downloading
+   f101.py -p /dev/ttyUSB0 monitor         # attach to an already running board
+   f101.py --app samples/drivers/display build flash monitor
+   f101.py ram monitor                    # temporary PSRAM test, no Flash writes
+   f101.py -b f101_evb build ram monitor   # EVB currently supports RAM downloads
+
+``menuconfig`` creates the build configuration if needed and uses the same
+``--app``, ``-b`` and ``-d`` options as ``build``. Settings are saved in the build
+directory's ``zephyr/.config``. Use ``f101.py menuconfig build`` to configure then
+compile, or run ``f101.py build flash monitor`` afterwards. Copy settings that
+should survive a pristine build into the application's ``prj.conf``.
+
+Use ``-d`` for a custom build directory, ``--pristine`` to rebuild from scratch,
+``--wait-fel`` to change the connection timeout, and ``--baud`` to change the
+monitor baud rate (default 115200). ``flash`` now writes a persistent application
+and installs the matching SyterKit loader automatically. This replaces the
+factory boot environment. Before the first write, the entire 16 MiB Flash is
+read twice and saved with its SHA-256 under ``flash-backups/<chip-SID>/``. The
+original backup is retained across subsequent flashes; keep it for restoration.
+It is outside ``build/`` and ignored by Git. A corrupt/incomplete backup or any
+write verification failure stops the operation before continuing to the next step.
+
+The loader has three copies at ``0``, ``0x10000``, and ``0x20000``. The application
+has a 4 KiB header at ``0x200000`` and runs at ``0x40000000`` after boot. The
+``0x2f000`` flash-training sector is preserved. No UF2 downloader is installed;
+release PD5 at startup to run the application. Use ``ram`` for temporary tests.
+Persistent flashing currently supports YuzukiNeko with 16 MiB SPI NOR.
+
+Entering FEL still requires the board's button;
+the USB UART's TX/RX wires alone do not provide automatic boot-mode control.
+
+On Linux x86_64, ``export.sh`` prepares the Python environment with uv, west
+modules, the XuanTie 900 Newlib V3.2.0 toolchain, xfel, and the pinned SyterKit
+SPI NOR loader. It reuses existing
+tools under ``.venv/`` and ``build/``. Missing system dependencies are installed
+using apt on Debian/Ubuntu. Downloads and compilation run as the normal user.
+
+The first run also installs a udev rule for the Allwinner FEL USB interface
+(``1f3a:efe8``); installing system packages or this rule may ask for a sudo
+password once. Subsequent ``xfel`` downloads do not need sudo for active desktop
+users or members of ``plugdev``. Reconnect the board in FEL mode if necessary.
+In a non-interactive terminal the script prints the command to finish USB setup::
+
+   bash scripts/f101/setup.sh --usb-only
+
+Use ``source ./export.sh --no-usb`` to prepare a build-only machine, or
+``source ./export.sh --check`` to check existing tools without installing them.
+The script does not flash or start firmware when sourced. For the F101 EVB,
+replace ``-b yuzukineko`` with ``-b f101_evb`` and use a separate build directory.
 
 The image is linked at ``0x40000000``. Without boot media it is loaded over USB
 with ``xfel`` (FEL mode, power cycle before every download)::
 
+   xfel version
    xfel ddr f101-s3
-   xfel write 0x40000000 build/hello/zephyr/zephyr.bin
+   xfel write 0x40000000 build/neko-hello/zephyr/zephyr.bin
    xfel exec 0x40000000
+
+This runs the image in PSRAM until power-off. Open the UART console before
+``exec`` to see the output: YuzukiNeko uses PB0 (TX) / PB1 (RX), F101 EVB uses
+PE8 (TX) / PE9 (RX), both at 115200 8N1 with no flow control. USB FEL is not a
+serial console.
 
 Or write it to the SPI NOR flash and let the boot loader start it, see
 ``uf2-downloader`` in the ``zephyr-components`` repository (flash by copying a
