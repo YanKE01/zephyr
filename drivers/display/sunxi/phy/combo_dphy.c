@@ -175,16 +175,16 @@ struct dphy_pll_plan {
 };
 
 /*
- * The PLL runs at the per-lane bit rate times the post divider m; the low
- * speed output (div0 * div1 = m * bits per lane per pixel) is the pixel
- * clock that drives the TCON in DSI mode. Only integer bits per lane per
- * pixel can be produced.
+ * The PLL runs at the per-lane bit rate times the post divider m. The TCON
+ * CPU/DSI interface consumes data at one quarter of that lane bit rate,
+ * so the low-speed output must use div0 * div1 = m * 4. It is not the
+ * panel pixel clock: with RGB888 on two lanes it runs three times faster.
  */
 static int dphy_pll_plan(const struct combo_dphy_variant *v,
 			 uint32_t pixclk_hz, uint32_t bpp, uint32_t lanes,
 			 struct dphy_pll_plan *p)
 {
-	uint32_t coef;
+	uint32_t coef, total_div;
 	uint64_t rate;
 
 	if (!lanes || !pixclk_hz || bpp % lanes)
@@ -197,8 +197,21 @@ static int dphy_pll_plan(const struct combo_dphy_variant *v,
 	while (rate * p->m < v->vco_min_hz && p->m < v->pll_m_max)
 		p->m++;
 	p->n = (uint32_t)(rate * p->m / v->ref_hz);
-	p->div0 = (coef % 3 == 0) ? 3 : (coef % 2 == 0) ? 2 : 1;
-	p->div1 = p->m * coef / p->div0;
+	total_div = p->m * 4U;
+	p->div0 = (total_div % 3U == 0U) ? 3U : 2U;
+	p->div1 = total_div / p->div0;
+	if (p->div1 > v->pll_div1_max) {
+		uint32_t div0_max = DPY_FIELD_GET(DPHY_PLL0_LS_DIV0, DPHY_PLL0_LS_DIV0) + 1U;
+
+		/* Large post dividers may need a different split of the LS divider. */
+		for (uint32_t div0 = 1U; div0 <= div0_max; div0++) {
+			if (total_div % div0 == 0U && total_div / div0 <= v->pll_div1_max) {
+				p->div0 = div0;
+				p->div1 = total_div / div0;
+				break;
+			}
+		}
+	}
 
 	if (rate * p->m < v->vco_min_hz || p->div1 > v->pll_div1_max ||
 	    p->n > DPY_FIELD_GET(DPHY_PLL0_N, DPHY_PLL0_N))
@@ -331,6 +344,9 @@ int combo_dphy_dsi_enable(struct combo_dphy *phy,
 	if (hs_clk_hz)
 		*hs_clk_hz = phy->hs_clk;
 	dpy_info("D-PHY %u lane(s), HS clock %u Hz\n", cfg->lanes, phy->hs_clk);
+	dpy_info("TCON DSI interface clock %u Hz (HS / 4), panel pixel clock %u Hz\n",
+		 (uint32_t)((uint64_t)v->ref_hz * pll.n / (pll.div0 * pll.div1)),
+		 cfg->pixclk_hz);
 	return 0;
 }
 

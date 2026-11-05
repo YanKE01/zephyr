@@ -166,7 +166,14 @@ static void dsi_config_basic(struct dsi_hw *hw, const struct dsi_hw_cfg *cfg)
 		uint32_t sync_point = 40;
 		uint32_t line_num, edge0, edge1;
 
-		line_num = m->htotal * bpp / (8 * cfg->lanes) * 10 / 9;
+		/*
+		 * The combo PHY derives the lane bit rate as pixel_clock * bpp / lanes.
+		 * Count byte-clock cycles for exactly one horizontal period. An extra
+		 * burst margin here would slow the video rate without changing the PHY.
+		 */
+		line_num = DPY_DIV_ROUND_UP((uint64_t)m->htotal * bpp, 8U * cfg->lanes);
+		dpy_info("burst: %u byte clocks/line, %u pixel bytes/line, %u lanes\n",
+			 line_num, m->hdisplay * bpp / 8U, cfg->lanes);
 		edge1 = sync_point + (m->hdisplay + hbp + 20) * bpp /
 			(8 * cfg->lanes);
 		edge1 = DPY_MIN(edge1, line_num);
@@ -430,10 +437,15 @@ static int dsi_read_response(struct dsi_hw *hw, const struct dpy_dsi_msg *msg)
 	uint32_t i, n;
 	uint8_t type;
 
-	if (!(ctl & DSI_CMD_RX_FLAG))
+	if (!(ctl & DSI_CMD_RX_FLAG)) {
+		dpy_warn("read: no RX flag, ctl=%#x rx0=%#x\n", ctl,
+			 dsi_read(hw, DSI_CMD_RX(0)));
 		return -EIO;
-	if (ctl & DSI_CMD_RX_OVERFLOW)
+	}
+	if (ctl & DSI_CMD_RX_OVERFLOW) {
+		dpy_warn("read: RX overflow, ctl=%#x\n", ctl);
 		return -EOVERFLOW;
+	}
 
 	for (i = 0; i < 8; i++) {
 		uint32_t w = dsi_read(hw, DSI_CMD_RX(i));
@@ -447,6 +459,8 @@ static int dsi_read_response(struct dsi_hw *hw, const struct dpy_dsi_msg *msg)
 	type = rx[0] & 0x3f;
 	switch (type) {
 	case DPY_DSI_RX_ACK_ERR_REPORT:
+		dpy_warn("read: panel ACK/error report=%#x, ctl=%#x\n",
+			 (uint32_t)rx[1] | ((uint32_t)rx[2] << 8), ctl);
 		return -EIO;
 	case DPY_DSI_RX_DCS_SHORT_1:
 	case DPY_DSI_RX_GENERIC_SHORT_1:
@@ -466,6 +480,8 @@ static int dsi_read_response(struct dsi_hw *hw, const struct dpy_dsi_msg *msg)
 			memcpy(msg->rx_buf, &rx[4], DPY_MIN(n, msg->rx_len));
 		return (int)n;
 	default:
+		dpy_warn("read: unexpected packet type=%#x, ctl=%#x rx0=%#x\n",
+			 type, ctl, dsi_read(hw, DSI_CMD_RX(0)));
 		return -EIO;
 	}
 	if (msg->rx_buf)

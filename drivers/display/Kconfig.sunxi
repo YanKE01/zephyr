@@ -27,6 +27,12 @@ choice DISPLAY_SUNXI_PIXEL_FORMAT
 config DISPLAY_SUNXI_RGB565
 	bool "RGB565"
 
+config DISPLAY_SUNXI_RGB888
+	bool "RGB888"
+	help
+	  Use packed 24-bit pixels, three bytes per pixel in B, G, R memory
+	  order, matching PIXEL_FORMAT_RGB_888 and the display engine.
+
 config DISPLAY_SUNXI_ARGB8888
 	bool "ARGB8888"
 
